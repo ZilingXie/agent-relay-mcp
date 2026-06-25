@@ -1,0 +1,31 @@
+{
+  "name": "agent-relay-mcp",
+  "version": "0.1.0",
+  "description": "Public Codex MCP client for AgentRelay.",
+  "type": "module",
+  "bin": {
+    "agent-relay-mcp": "mcp/server.mjs"
+  },
+  "scripts": {
+    "mcp:server": "node mcp/server.mjs",
+    "print:codex-config": "node scripts/install-codex-mcp.mjs",
+    "install:codex": "node scripts/install-codex-mcp.mjs --write",
+    "doctor": "node scripts/doctor.mjs",
+    "test": "node scripts/mcp_smoke_test.mjs"
+  },
+  "keywords": [
+    "codex",
+    "mcp",
+    "agentrelay",
+    "a2a"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
+  }
+}

@@ -1,0 +1,220 @@
+#!/usr/bin/env node
+
+import http from "node:http";
+import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(__dirname, "..");
+let fakeRelay;
+let client;
+let transport;
+
+try {
+  fakeRelay = await startFakeRelay();
+  const { port } = fakeRelay.address();
+  const relayBaseUrl = `http://127.0.0.1:${port}/agentrelay`;
+  ({ client, transport } = await startMcpClient(relayBaseUrl));
+
+  const tools = await client.listTools();
+  assert(tools.tools.some((tool) => tool.name === "agentrelay_create_task"), "agentrelay_create_task not found");
+
+  await callJson("agentrelay_health", {});
+  await callJson("agentrelay_list_agents", {});
+  await callJson("agentrelay_get_agent_card", { agentId: "frank-agent" });
+
+  const created = await callJson("agentrelay_create_task", {
+    from: "zac-agent",
+    to: "frank-agent",
+    requesterThreadId: "zac-thread-smoke",
+    subject: "MCP smoke meeting availability",
+    requestText: "Ask Frank when he is available for an online meeting.",
+    doneCriteria: "Both Zac and Frank accept the same online meeting time.",
+    completionOwnerAgentId: "zac-agent",
+    humanBoundaryReason: "Frank must approve sharing availability."
+  });
+  const taskId = created.task.task_id;
+
+  const frankClaim = await callJson("agentrelay_claim_task", { agentId: "frank-agent" });
+  assert(frankClaim.task?.task_id === taskId, "frank-agent did not claim task");
+
+  await callJson("agentrelay_set_target_thread", {
+    agentId: "frank-agent",
+    taskId,
+    threadId: "frank-thread-smoke"
+  });
+
+  const afterArtifact = await callJson("agentrelay_submit_artifact", {
+    taskId,
+    from: "frank-agent",
+    to: "zac-agent",
+    kind: "meeting_availability",
+    text: "Frank is available Tuesday 10:00-11:00 China time."
+  });
+  assert(afterArtifact.task.status === "delivery_pending", "artifact should produce delivery_pending");
+
+  const zacClaim = await callJson("agentrelay_claim_task", { agentId: "zac-agent" });
+  assert(zacClaim.task?.task_id === taskId, "zac-agent did not claim returned task");
+
+  await callJson("agentrelay_mark_delivery", {
+    taskId,
+    deliveredByAgentId: "zac-agent",
+    threadId: "zac-thread-smoke",
+    deliveryStatus: "delivered",
+    pendingOnHumanId: "zac",
+    nextAction: "Ask Zac whether Tuesday 10:00 works."
+  });
+
+  const closed = await callJson("agentrelay_close_task", {
+    taskId,
+    closedByAgentId: "zac-agent",
+    terminalReason: "Requester confirmed the proposed meeting time."
+  });
+  assert(closed.task.status === "completed", "task did not close");
+
+  const events = await callJson("agentrelay_get_events", { taskId });
+  assert(events.events.length >= 4, "expected audit events");
+
+  console.log(JSON.stringify({ ok: true, taskId, status: closed.task.status }, null, 2));
+} finally {
+  await transport?.close().catch(() => {});
+  await client?.close().catch(() => {});
+  await new Promise((resolveClose) => fakeRelay?.close(resolveClose));
+}
+
+async function startMcpClient(relayBaseUrl) {
+  const mcpClient = new Client({ name: "agent-relay-mcp-smoke", version: "0.1.0" });
+  const mcpTransport = new StdioClientTransport({
+    command: "node",
+    args: ["mcp/server.mjs"],
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      AGENTRELAY_BASE_URL: relayBaseUrl
+    },
+    stderr: "pipe"
+  });
+  mcpTransport.stderr?.on("data", (chunk) => process.stderr.write(`[mcp:err] ${chunk}`));
+  await mcpClient.connect(mcpTransport);
+  return { client: mcpClient, transport: mcpTransport };
+}
+
+function startFakeRelay() {
+  const state = {
+    task: null,
+    events: []
+  };
+
+  const server = http.createServer(async (request, response) => {
+    try {
+      const url = new URL(request.url, "http://127.0.0.1");
+      const path = url.pathname.replace(/\/+$/, "") || "/";
+      const payload = await readJson(request);
+
+      if (request.method === "GET" && path === "/agentrelay/health") {
+        return sendJson(response, { ok: true, service: "agentrelay-fake" });
+      }
+      if (request.method === "GET" && path === "/agentrelay/agents") {
+        return sendJson(response, { agents: [{ agent_id: "frank-agent" }, { agent_id: "zac-agent" }] });
+      }
+      if (request.method === "GET" && path === "/agentrelay/agents/frank-agent/card") {
+        return sendJson(response, { name: "Frank Agent", skills: [{ id: "meeting-coordination" }] });
+      }
+      if (request.method === "POST" && path === "/agentrelay/tasks") {
+        state.task = {
+          task_id: "task_smoke",
+          status: "submitted",
+          requester_agent_id: payload.from,
+          target_agent_id: payload.to,
+          requester_thread_id: payload.requesterThreadId,
+          completion_owner_agent_id: payload.completionOwnerAgentId || payload.from,
+          pending_on_agent_id: payload.pendingOnAgentId || payload.to
+        };
+        state.events.push({ event_type: "task.created" });
+        return sendJson(response, { task: state.task }, 201);
+      }
+      if (request.method === "GET" && path === "/agentrelay/workers/frank-agent/claim") {
+        return sendJson(response, { task: state.task?.pending_on_agent_id === "frank-agent" ? state.task : null });
+      }
+      if (request.method === "GET" && path === "/agentrelay/workers/zac-agent/claim") {
+        return sendJson(response, { task: state.task?.pending_on_agent_id === "zac-agent" ? state.task : null });
+      }
+      if (request.method === "POST" && path === "/agentrelay/workers/frank-agent/tasks/task_smoke/thread") {
+        state.task.target_thread_id = payload.threadId;
+        state.events.push({ event_type: "thread.created" });
+        return sendJson(response, { task: state.task });
+      }
+      if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke/artifacts") {
+        state.task.status = "delivery_pending";
+        state.task.pending_on_agent_id = "zac-agent";
+        state.events.push({ event_type: "artifact.submitted" });
+        return sendJson(response, { task: state.task }, 201);
+      }
+      if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke/deliveries") {
+        state.task.status = "waiting_human";
+        state.task.delivered_to_thread_id = payload.threadId;
+        state.events.push({ event_type: "reply.delivered" });
+        return sendJson(response, { task: state.task });
+      }
+      if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke/close") {
+        state.task.status = "completed";
+        state.task.terminal_reason = payload.terminalReason;
+        state.events.push({ event_type: "task.completed" });
+        return sendJson(response, { task: state.task });
+      }
+      if (request.method === "GET" && path === "/agentrelay/tasks/task_smoke") {
+        return sendJson(response, { task: state.task });
+      }
+      if (request.method === "GET" && path === "/agentrelay/tasks/task_smoke/events") {
+        return sendJson(response, { events: state.events });
+      }
+      if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke/status") {
+        state.task.status = payload.status;
+        return sendJson(response, { task: state.task });
+      }
+
+      sendJson(response, { error: `not found: ${request.method} ${path}` }, 404);
+    } catch (error) {
+      sendJson(response, { error: error.message }, 500);
+    }
+  });
+
+  return new Promise((resolveListen) => server.listen(0, "127.0.0.1", () => resolveListen(server)));
+}
+
+async function readJson(request) {
+  if (request.method === "GET") return {};
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function sendJson(response, payload, status = 200) {
+  const body = JSON.stringify(payload);
+  response.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body)
+  });
+  response.end(body);
+}
+
+async function callJson(name, args) {
+  const result = await client.callTool({ name, arguments: args });
+  const first = result.content?.[0];
+  if (!first || first.type !== "text") {
+    throw new Error(`Tool ${name} did not return text content`);
+  }
+  return JSON.parse(first.text);
+}
+
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
