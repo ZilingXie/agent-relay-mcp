@@ -9,6 +9,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
+const smokeAuth = {
+  agentId: "zac-agent",
+  username: "zac",
+  token: "smoke-token"
+};
 let fakeRelay;
 let client;
 let transport;
@@ -93,7 +98,10 @@ async function startMcpClient(relayBaseUrl) {
     cwd: repoRoot,
     env: {
       ...process.env,
-      AGENTRELAY_BASE_URL: relayBaseUrl
+      AGENTRELAY_BASE_URL: relayBaseUrl,
+      AGENTRELAY_AGENT_ID: smokeAuth.agentId,
+      AGENTRELAY_USERNAME: smokeAuth.username,
+      AGENTRELAY_TOKEN: smokeAuth.token
     },
     stderr: "pipe"
   });
@@ -113,6 +121,7 @@ function startFakeRelay() {
       const url = new URL(request.url, "http://127.0.0.1");
       const path = url.pathname.replace(/\/+$/, "") || "/";
       const payload = await readJson(request);
+      assertRelayAuth(request);
 
       if (request.method === "GET" && path === "/agentrelay/health") {
         return sendJson(response, { ok: true, service: "agentrelay-fake" });
@@ -183,6 +192,15 @@ function startFakeRelay() {
   });
 
   return new Promise((resolveListen) => server.listen(0, "127.0.0.1", () => resolveListen(server)));
+}
+
+function assertRelayAuth(request) {
+  const auth = request.headers.authorization || "";
+  const agentId = request.headers["x-agentrelay-agent-id"] || "";
+  const username = request.headers["x-agentrelay-username"] || "";
+  if (auth !== `Bearer ${smokeAuth.token}` || agentId !== smokeAuth.agentId || username !== smokeAuth.username) {
+    throw new Error("missing or invalid AgentRelay auth headers");
+  }
 }
 
 async function readJson(request) {

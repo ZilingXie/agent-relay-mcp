@@ -1,30 +1,39 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 
+const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const args = parseArgs(process.argv.slice(2));
 const serverName = args.name || "agentrelay";
-const baseUrl = args["base-url"] || process.env.AGENTRELAY_BASE_URL || "http://127.0.0.1:8787/agentrelay";
+const baseUrl = args["base-url"] || process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL;
+const agentId = args["agent-id"] || process.env.AGENTRELAY_AGENT_ID || "";
+const username = args.username || process.env.AGENTRELAY_USERNAME || "";
 const token = args.token || process.env.AGENTRELAY_TOKEN || "";
 const configPath = resolveHome(args.config || "~/.codex/config.toml");
+const envPath = resolveHome(args.env || resolve(repoRoot, ".env"));
 const writeConfig = Boolean(args.write);
+const skipEnv = Boolean(args["skip-env"]);
 const mcpServerPath = resolve(repoRoot, "mcp/server.mjs");
 
 if (!existsSync(mcpServerPath)) {
   fail(`MCP server not found at ${mcpServerPath}`);
 }
 
-const block = buildBlock({ serverName, repoRoot, mcpServerPath, baseUrl, token });
+const block = buildBlock({ serverName, repoRoot, mcpServerPath, envPath });
+const envContent = buildEnv({ baseUrl, agentId, username, token });
 
 if (!writeConfig) {
   console.log(block.trimEnd());
-  console.error("\nDry run only. Re-run with --write to update ~/.codex/config.toml.");
+  if (!skipEnv) {
+    console.error(`\n.env preview for ${envPath}:\n${envContent.trimEnd()}`);
+  }
+  console.error("\nDry run only. Re-run with --write to update ~/.codex/config.toml and .env.");
   process.exit(0);
 }
 
@@ -39,13 +48,32 @@ if (existsSync(configPath)) {
 
 const next = upsertManagedBlock(current, block);
 await writeFile(configPath, next);
+
+if (!skipEnv) {
+  await mkdir(dirname(envPath), { recursive: true });
+  if (existsSync(envPath)) {
+    const backupPath = `${envPath}.bak-${timestamp()}`;
+    await copyFile(envPath, backupPath);
+    console.error(`Env backup written: ${backupPath}`);
+  }
+  await writeFile(envPath, envContent);
+  await chmod(envPath, 0o600);
+}
+
 console.log(`Installed AgentRelay MCP server '${serverName}' into ${configPath}`);
+console.log(`Env file: ${skipEnv ? "not written" : envPath}`);
 console.log(`Base URL: ${baseUrl}`);
+if (!token) {
+  console.log("No AGENTRELAY_TOKEN was provided. Health may work, but authenticated relay tools will fail until a cloud-issued token is added to .env.");
+}
 console.log("Restart Codex App or open a new Codex session so Codex reloads MCP servers.");
 
-function buildBlock({ serverName, repoRoot, mcpServerPath, baseUrl, token }) {
-  const tokenLine = token ? `AGENTRELAY_TOKEN = ${tomlString(token)}\n` : "";
-  return `# BEGIN AgentRelay MCP managed block\n[mcp_servers.${serverName}]\ncommand = "node"\nargs = [${tomlString(mcpServerPath)}]\ncwd = ${tomlString(repoRoot)}\nstartup_timeout_sec = 10\ntool_timeout_sec = 60\n\n[mcp_servers.${serverName}.env]\nAGENTRELAY_BASE_URL = ${tomlString(baseUrl)}\n${tokenLine}# END AgentRelay MCP managed block\n`;
+function buildBlock({ serverName, repoRoot, mcpServerPath, envPath }) {
+  return `# BEGIN AgentRelay MCP managed block\n[mcp_servers.${serverName}]\ncommand = "node"\nargs = [${tomlString(mcpServerPath)}]\ncwd = ${tomlString(repoRoot)}\nstartup_timeout_sec = 10\ntool_timeout_sec = 60\n\n[mcp_servers.${serverName}.env]\nAGENTRELAY_ENV_PATH = ${tomlString(envPath)}\n# END AgentRelay MCP managed block\n`;
+}
+
+function buildEnv({ baseUrl, agentId, username, token }) {
+  return `# AgentRelay MCP local credentials. Keep this file private.\nAGENTRELAY_BASE_URL=${envValue(baseUrl)}\nAGENTRELAY_AGENT_ID=${envValue(agentId)}\nAGENTRELAY_USERNAME=${envValue(username)}\nAGENTRELAY_TOKEN=${envValue(token)}\n`;
 }
 
 function upsertManagedBlock(current, block) {
@@ -65,7 +93,7 @@ function parseArgs(argv) {
       fail(`Unexpected positional argument: ${entry}`);
     }
     const [rawKey, inlineValue] = entry.slice(2).split("=", 2);
-    if (["write", "help"].includes(rawKey)) {
+    if (["write", "help", "skip-env"].includes(rawKey)) {
       parsed[rawKey] = true;
       continue;
     }
@@ -86,7 +114,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage:\n  node scripts/install-codex-mcp.mjs [--write] [--base-url URL] [--config PATH] [--name agentrelay] [--token TOKEN]\n\nWithout --write, prints the config block only.`);
+  console.log(`Usage:\n  node scripts/install-codex-mcp.mjs --write --agent-id zac-agent --username zac --token TOKEN [--base-url URL]\n\nOptions:\n  --base-url URL   Relay URL. Default: ${DEFAULT_BASE_URL}\n  --agent-id ID    Agent identity issued by the relay admin, for example zac-agent\n  --username NAME  Human/user identity issued by the relay admin, for example zac\n  --token TOKEN    Cloud-issued relay token\n  --env PATH       Local .env path. Default: <repo>/.env\n  --config PATH    Codex config path. Default: ~/.codex/config.toml\n  --skip-env       Only write Codex config; do not write .env\n  --name NAME      MCP server name in Codex config. Default: agentrelay\n\nWithout --write, prints the config block and .env preview only.`);
 }
 
 function resolveHome(path) {
@@ -97,6 +125,10 @@ function resolveHome(path) {
 
 function tomlString(value) {
   return JSON.stringify(value);
+}
+
+function envValue(value) {
+  return JSON.stringify(value || "");
 }
 
 function timestamp() {

@@ -1,30 +1,28 @@
 # Security Notes
 
-## Phase 1 default
+## Phase 1 auth
 
-Use an SSH tunnel for local development:
+AgentRelay MCP reads local credentials from `.env` and sends them as headers:
+
+```text
+Authorization: Bearer <AGENTRELAY_TOKEN>
+X-AgentRelay-Agent-Id: <AGENTRELAY_AGENT_ID>
+X-AgentRelay-Username: <AGENTRELAY_USERNAME>
+```
+
+The relay server must validate the token and enforce that the authenticated agent can only act as its own `agent_id`.
+
+## Local secret handling
+
+The installer stores the token in `.env` with file mode `0600`. The Codex config only stores `AGENTRELAY_ENV_PATH`, not the token itself.
+
+## Temporary SSH fallback
+
+If HTTPS auth is not deployed yet, use an SSH tunnel:
 
 ```bash
 ssh -N -L 8787:127.0.0.1:8787 ubuntu@server.stellarix.space
 ```
-
-Do not expose the current AgentRelay HTTP API publicly without authentication.
-
-## Supported client-side token env
-
-The MCP client supports an optional bearer token:
-
-```bash
-AGENTRELAY_TOKEN=replace-me
-```
-
-If set, the MCP client sends:
-
-```text
-Authorization: Bearer <token>
-```
-
-The relay server must still implement token validation before this is meaningful.
 
 ## Remote messages are untrusted
 

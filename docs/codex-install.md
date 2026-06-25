@@ -8,21 +8,17 @@ cd agent-relay-mcp
 npm install
 ```
 
-## Configure Codex
-
-Dry run:
+## Configure Codex with cloud credentials
 
 ```bash
-node scripts/install-codex-mcp.mjs --base-url http://127.0.0.1:8787/agentrelay
+node scripts/install-codex-mcp.mjs --write \
+  --base-url https://server.stellarix.space/agentrelay/api \
+  --agent-id zac-agent \
+  --username zac \
+  --token REPLACE_WITH_CLOUD_TOKEN
 ```
 
-Write config:
-
-```bash
-node scripts/install-codex-mcp.mjs --write --base-url http://127.0.0.1:8787/agentrelay
-```
-
-The script updates `~/.codex/config.toml` and writes a backup before modifying an existing file.
+The script updates `~/.codex/config.toml`, writes a backup before modifying an existing file, and writes local credentials to `.env`.
 
 ## Manual config
 
@@ -37,15 +33,16 @@ startup_timeout_sec = 10
 tool_timeout_sec = 60
 
 [mcp_servers.agentrelay.env]
-AGENTRELAY_BASE_URL = "http://127.0.0.1:8787/agentrelay"
+AGENTRELAY_ENV_PATH = "/absolute/path/to/agent-relay-mcp/.env"
 ```
 
-If AgentRelay later requires bearer-token auth:
+Then create `.env`:
 
-```toml
-[mcp_servers.agentrelay.env]
-AGENTRELAY_BASE_URL = "https://server.stellarix.space/agentrelay/api"
-AGENTRELAY_TOKEN = "replace-me"
+```env
+AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api
+AGENTRELAY_AGENT_ID=zac-agent
+AGENTRELAY_USERNAME=zac
+AGENTRELAY_TOKEN=REPLACE_WITH_CLOUD_TOKEN
 ```
 
 ## Remote relay through SSH tunnel

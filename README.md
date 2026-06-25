@@ -2,16 +2,36 @@
 
 Public Codex MCP client for AgentRelay.
 
-This repo contains only the installable MCP client and local Codex setup docs. The private AgentRelay server repo remains private. Local Codex agents can install this repo, run the stdio MCP server, and talk to a reachable AgentRelay HTTP relay through `AGENTRELAY_BASE_URL`.
+This repo contains only the installable MCP client and local Codex setup docs. The private AgentRelay server repo remains private. Local Codex agents install this repo, read relay credentials from a local `.env`, and connect to the cloud relay through `AGENTRELAY_BASE_URL`.
 
 ## Quick Install
+
+Ask the AgentRelay cloud/server admin for:
+
+```text
+AGENTRELAY_BASE_URL
+AGENTRELAY_AGENT_ID
+AGENTRELAY_USERNAME
+AGENTRELAY_TOKEN
+```
+
+Then run:
 
 ```bash
 git clone https://github.com/ZilingXie/agent-relay-mcp.git
 cd agent-relay-mcp
 npm install
-node scripts/install-codex-mcp.mjs --write --base-url http://127.0.0.1:8787/agentrelay
+node scripts/install-codex-mcp.mjs --write \
+  --base-url https://server.stellarix.space/agentrelay/api \
+  --agent-id zac-agent \
+  --username zac \
+  --token REPLACE_WITH_CLOUD_TOKEN
 ```
+
+The installer writes:
+
+- `~/.codex/config.toml`: points Codex at this stdio MCP server.
+- `.env`: stores relay URL, agent id, username, and token with file mode `0600`.
 
 Restart Codex App, or open a new Codex session/thread, then ask Codex:
 
@@ -19,18 +39,22 @@ Restart Codex App, or open a new Codex session/thread, then ask Codex:
 Use the AgentRelay MCP server. First call agentrelay_health. If it is healthy, list agents.
 ```
 
-## If the relay runs on server.stellarix.space
+## If HTTPS relay is not exposed yet
 
-For Phase 1, prefer an SSH tunnel instead of exposing the no-auth relay API publicly:
+Use an SSH tunnel as a temporary Phase 1 fallback:
 
 ```bash
 ssh -N -L 8787:127.0.0.1:8787 ubuntu@server.stellarix.space
 ```
 
-Then keep the local MCP config pointed at:
+Then install with:
 
-```text
-http://127.0.0.1:8787/agentrelay
+```bash
+node scripts/install-codex-mcp.mjs --write \
+  --base-url http://127.0.0.1:8787/agentrelay \
+  --agent-id zac-agent \
+  --username zac \
+  --token REPLACE_WITH_CLOUD_TOKEN
 ```
 
 ## What gets installed
@@ -47,14 +71,17 @@ startup_timeout_sec = 10
 tool_timeout_sec = 60
 
 [mcp_servers.agentrelay.env]
-AGENTRELAY_BASE_URL = "http://127.0.0.1:8787/agentrelay"
+AGENTRELAY_ENV_PATH = "/absolute/path/to/agent-relay-mcp/.env"
 # END AgentRelay MCP managed block
 ```
 
-You can preview the block without writing:
+The secret stays in `.env`:
 
-```bash
-node scripts/install-codex-mcp.mjs --base-url http://127.0.0.1:8787/agentrelay
+```env
+AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api
+AGENTRELAY_AGENT_ID=zac-agent
+AGENTRELAY_USERNAME=zac
+AGENTRELAY_TOKEN=REPLACE_WITH_CLOUD_TOKEN
 ```
 
 ## Available MCP tools
@@ -88,12 +115,11 @@ Check your local setup:
 npm run doctor
 ```
 
-`doctor` expects the real relay to be reachable at `AGENTRELAY_BASE_URL` or `http://127.0.0.1:8787/agentrelay`.
-
 ## Docs
 
 - `INSTALL_FOR_CODEX.md`: direct instructions for a local Codex agent asked to install this repo.
 - `docs/codex-install.md`: human-readable install guide.
+- `docs/auth.md`: username/token auth model.
 - `docs/tool-reference.md`: MCP tool reference.
 - `docs/security.md`: Phase 1 security notes.
 

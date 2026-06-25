@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:8787/agentrelay";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(__dirname, "..");
+loadDotEnv(process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
+
+const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL);
+const agentId = process.env.AGENTRELAY_AGENT_ID || "";
+const username = process.env.AGENTRELAY_USERNAME || "";
 const bearerToken = process.env.AGENTRELAY_TOKEN || "";
 
 const server = new McpServer({
@@ -276,6 +285,12 @@ async function relayRequest(method, path, payload) {
   if (bearerToken) {
     headers.Authorization = `Bearer ${bearerToken}`;
   }
+  if (agentId) {
+    headers["X-AgentRelay-Agent-Id"] = agentId;
+  }
+  if (username) {
+    headers["X-AgentRelay-Username"] = username;
+  }
 
   const response = await fetch(`${baseUrl}${path}`, {
     method,
@@ -308,6 +323,35 @@ function jsonResult(data) {
 
 function normalizeBaseUrl(value) {
   return value.replace(/\/+$/, "");
+}
+
+function loadDotEnv(path) {
+  if (!existsSync(path)) {
+    return;
+  }
+  const lines = readFileSync(path, "utf8").split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const equalsIndex = line.indexOf("=");
+    if (equalsIndex === -1) {
+      continue;
+    }
+    const key = line.slice(0, equalsIndex).trim();
+    const value = parseEnvValue(line.slice(equalsIndex + 1).trim());
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+function parseEnvValue(value) {
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1);
+  }
+  return value;
 }
 
 function compact(value) {
