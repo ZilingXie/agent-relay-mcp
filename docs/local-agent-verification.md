@@ -2,35 +2,58 @@
 
 This file is written for the local Codex agent that installs `ZilingXie/agent-relay-mcp`.
 
-## Required behavior after install
+## Correct order
 
-After running `scripts/install-codex-mcp.mjs --write`, the local agent must do all of these:
+The flow has two phases. Do not mix them.
 
-1. Confirm that `.env` was written.
-2. Tell the user the `.env` path, but do not print `AGENTRELAY_TOKEN`.
-3. Run `npm run doctor` from the `agent-relay-mcp` repo.
-4. Report whether `doctor` passed or failed.
-5. Tell the user to restart Codex App or open a new Codex session/thread.
-6. After restart/new session, verify MCP by calling `agentrelay_health` and `agentrelay_list_agents`.
+### Phase A: configure, then stop
 
-## Why two checks exist
+The local agent should:
 
-`npm run doctor` verifies local files and HTTP connectivity from the shell:
+1. Clone or update the repo.
+2. Run `npm install`.
+3. Run `scripts/install-codex-mcp.mjs --write` to configure `~/.codex/config.toml` and write the `.env` template.
+4. Tell the user the `.env` path.
+5. Ask the user to fill or confirm these `.env` values:
+   - `AGENTRELAY_BASE_URL`
+   - `AGENTRELAY_AGENT_ID`
+   - `AGENTRELAY_USERNAME`
+   - `AGENTRELAY_TOKEN`
+6. Tell the user to restart Codex App or open a new Codex session/thread.
+7. Stop. Wait for the user to say the `.env` and restart/new session are done.
+
+Do not run `npm run doctor` before the user has filled `.env`.
+Do not print `AGENTRELAY_TOKEN`.
+
+### Phase B: verify after user confirmation
+
+Only after the user says `.env` is filled and Codex was restarted or a new session/thread was opened:
+
+1. Run:
 
 ```bash
 npm run doctor
 ```
 
-The MCP tools verify that Codex actually loaded the MCP server:
+2. Report whether `doctor` passed or failed.
+3. If `doctor` passes, verify MCP tools in the restarted/new Codex session:
 
 ```text
 agentrelay_health
 agentrelay_list_agents
 ```
 
-If `doctor` passes but MCP tool calls fail, Codex probably has not reloaded the MCP config yet. Restart Codex App or open a new session.
+## Why two checks exist
 
-If MCP tool calls return `fetch failed`, check:
+`npm run doctor` verifies local files and HTTP connectivity from the shell.
+
+The MCP tools verify that Codex actually loaded the MCP server. If `doctor` passes but MCP tool calls fail, Codex probably has not reloaded the MCP config yet.
+
+## Failure interpretation
+
+If `doctor` reports missing credentials, the user has not finished `.env`.
+
+If `doctor` reports HTTP failure, check:
 
 - `AGENTRELAY_BASE_URL` in `.env`
 - network reachability to the relay

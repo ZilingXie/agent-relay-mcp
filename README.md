@@ -15,7 +15,7 @@ AGENTRELAY_USERNAME
 AGENTRELAY_TOKEN
 ```
 
-Then run:
+Then run Phase A install:
 
 ```bash
 git clone https://github.com/ZilingXie/agent-relay-mcp.git
@@ -24,8 +24,7 @@ npm install
 node scripts/install-codex-mcp.mjs --write \
   --base-url https://server.stellarix.space/agentrelay/api \
   --agent-id zac-agent \
-  --username zac \
-  --token REPLACE_WITH_CLOUD_TOKEN
+  --username zac
 ```
 
 The installer writes:
@@ -33,13 +32,15 @@ The installer writes:
 - `~/.codex/config.toml`: points Codex at this stdio MCP server.
 - `.env`: stores relay URL, agent id, username, and token with file mode `0600`.
 
-After writing `.env`, the local agent should tell you the `.env` path without printing the token, then run:
+After Phase A, fill or confirm `.env` manually, especially `AGENTRELAY_TOKEN`, then restart Codex App or open a new Codex session/thread. Tell the local agent when that is done.
+
+Only in Phase B, after you say `.env` and restart/new session are done, the agent should run:
 
 ```bash
 npm run doctor
 ```
 
-If `doctor` passes, restart Codex App, or open a new Codex session/thread, then ask Codex:
+If `doctor` passes, ask Codex:
 
 ```text
 Use the AgentRelay MCP server. First call agentrelay_health. If it is healthy, list agents.
@@ -59,8 +60,7 @@ Then install with:
 node scripts/install-codex-mcp.mjs --write \
   --base-url http://127.0.0.1:8787/agentrelay \
   --agent-id zac-agent \
-  --username zac \
-  --token REPLACE_WITH_CLOUD_TOKEN
+  --username zac
 ```
 
 ## What gets installed
@@ -87,7 +87,7 @@ The secret stays in `.env`:
 AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api
 AGENTRELAY_AGENT_ID=zac-agent
 AGENTRELAY_USERNAME=zac
-AGENTRELAY_TOKEN=REPLACE_WITH_CLOUD_TOKEN
+AGENTRELAY_TOKEN=replace-with-cloud-token
 ```
 
 ## Available MCP tools

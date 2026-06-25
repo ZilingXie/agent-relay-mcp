@@ -14,17 +14,10 @@ npm install
 node scripts/install-codex-mcp.mjs --write \
   --base-url https://server.stellarix.space/agentrelay/api \
   --agent-id zac-agent \
-  --username zac \
-  --token REPLACE_WITH_CLOUD_TOKEN
+  --username zac
 ```
 
-The script updates `~/.codex/config.toml`, writes a backup before modifying an existing file, and writes local credentials to `.env`.
-
-After `.env` is written, the installing agent should tell the user the `.env` path without printing the token, then run:
-
-```bash
-npm run doctor
-```
+The script updates `~/.codex/config.toml`, writes a backup before modifying an existing file, and writes a local `.env` template. The user should fill or confirm `.env`, including `AGENTRELAY_TOKEN`, then restart Codex App or open a new session/thread. Only after that should the agent run `npm run doctor`.
 
 ## Manual config
 
@@ -48,7 +41,7 @@ Then create `.env`:
 AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api
 AGENTRELAY_AGENT_ID=zac-agent
 AGENTRELAY_USERNAME=zac
-AGENTRELAY_TOKEN=REPLACE_WITH_CLOUD_TOKEN
+AGENTRELAY_TOKEN=replace-with-cloud-token
 ```
 
 ## Remote relay through SSH tunnel
@@ -67,7 +60,13 @@ AGENTRELAY_BASE_URL=http://127.0.0.1:8787/agentrelay
 
 ## Restart and verify
 
-If `npm run doctor` passes, restart Codex App or open a new session. Then ask Codex:
+After the user fills `.env` and restarts Codex App or opens a new session, run:
+
+```bash
+npm run doctor
+```
+
+If `doctor` passes, ask Codex:
 
 ```text
 Use the AgentRelay MCP server. Call agentrelay_health and agentrelay_list_agents.
