@@ -66,7 +66,11 @@ console.log(`Base URL: ${baseUrl}`);
 if (!token) {
   console.log("No AGENTRELAY_TOKEN was provided. Health may work, but authenticated relay tools will fail until a cloud-issued token is added to .env.");
 }
-console.log("Restart Codex App or open a new Codex session so Codex reloads MCP servers.");
+console.log("Next steps for the local agent:");
+console.log("1. Tell the user that the .env credentials were written and show the .env path, but do not print the token.");
+console.log("2. Run `npm run doctor` in this repo to verify config, .env, and relay HTTP connectivity.");
+console.log("3. Ask the user to restart Codex App or open a new Codex session so Codex reloads MCP servers.");
+console.log("4. In the restarted/new Codex session, call `agentrelay_health` and `agentrelay_list_agents`.");
 
 function buildBlock({ serverName, repoRoot, mcpServerPath, envPath }) {
   return `# BEGIN AgentRelay MCP managed block\n[mcp_servers.${serverName}]\ncommand = "node"\nargs = [${tomlString(mcpServerPath)}]\ncwd = ${tomlString(repoRoot)}\nstartup_timeout_sec = 10\ntool_timeout_sec = 60\n\n[mcp_servers.${serverName}.env]\nAGENTRELAY_ENV_PATH = ${tomlString(envPath)}\n# END AgentRelay MCP managed block\n`;

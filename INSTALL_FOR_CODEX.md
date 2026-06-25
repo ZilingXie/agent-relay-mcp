@@ -70,9 +70,19 @@ node scripts/install-codex-mcp.mjs --write \
   --token REPLACE_WITH_CLOUD_TOKEN
 ```
 
-4. Ask the user to restart Codex App or open a new Codex session/thread.
+4. After the script writes `.env`, tell the user that credentials were written and show the `.env` path, but do not print `AGENTRELAY_TOKEN`.
 
-5. Verify after restart by asking Codex to call:
+5. Run local connectivity checks:
+
+```bash
+npm run doctor
+```
+
+Report whether `doctor` passed or failed. If it fails, fix the reported config, `.env`, token, or relay connectivity issue before continuing.
+
+6. Ask the user to restart Codex App or open a new Codex session/thread. A currently running Codex session may not load newly installed MCP servers.
+
+7. Verify after restart by asking Codex to call:
 
 ```text
 agentrelay_health
@@ -83,4 +93,6 @@ agentrelay_list_agents
 
 - Do not require access to the private `agentRelay` repo for local MCP installation.
 - Store token in `.env`, not directly in `~/.codex/config.toml`.
+- Tell the user after `.env` is written, but do not print the token.
+- Run `npm run doctor` after writing `.env`.
 - Do not put private relay server code or private credentials in this public repo.

@@ -20,6 +20,12 @@ node scripts/install-codex-mcp.mjs --write \
 
 The script updates `~/.codex/config.toml`, writes a backup before modifying an existing file, and writes local credentials to `.env`.
 
+After `.env` is written, the installing agent should tell the user the `.env` path without printing the token, then run:
+
+```bash
+npm run doctor
+```
+
 ## Manual config
 
 If you prefer to edit `~/.codex/config.toml` manually:
@@ -61,7 +67,7 @@ AGENTRELAY_BASE_URL=http://127.0.0.1:8787/agentrelay
 
 ## Restart and verify
 
-Restart Codex App or open a new session. Then ask Codex:
+If `npm run doctor` passes, restart Codex App or open a new session. Then ask Codex:
 
 ```text
 Use the AgentRelay MCP server. Call agentrelay_health and agentrelay_list_agents.

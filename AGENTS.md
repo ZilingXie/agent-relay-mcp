@@ -9,8 +9,10 @@ When asked to install it for Codex:
 3. Run `node scripts/install-codex-mcp.mjs --write --base-url <relay-url> --agent-id <agent-id> --username <username> --token <token>`.
 4. Prefer `https://server.stellarix.space/agentrelay/api` when the authenticated relay API is deployed.
 5. Use `http://127.0.0.1:8787/agentrelay` only with an SSH tunnel fallback.
-6. Ask the user to restart Codex App or open a new Codex session.
-7. Verify with `agentrelay_health` and `agentrelay_list_agents` after restart.
+6. Tell the user the `.env` file was written and show its path, but do not print `AGENTRELAY_TOKEN`.
+7. Run `npm run doctor` and report pass/fail.
+8. Ask the user to restart Codex App or open a new Codex session.
+9. Verify with `agentrelay_health` and `agentrelay_list_agents` after restart.
 
 Do not assume the private AgentRelay server repo is accessible. This public repo should contain everything needed for MCP client installation.
 

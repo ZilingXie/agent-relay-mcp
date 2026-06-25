@@ -33,7 +33,13 @@ The installer writes:
 - `~/.codex/config.toml`: points Codex at this stdio MCP server.
 - `.env`: stores relay URL, agent id, username, and token with file mode `0600`.
 
-Restart Codex App, or open a new Codex session/thread, then ask Codex:
+After writing `.env`, the local agent should tell you the `.env` path without printing the token, then run:
+
+```bash
+npm run doctor
+```
+
+If `doctor` passes, restart Codex App, or open a new Codex session/thread, then ask Codex:
 
 ```text
 Use the AgentRelay MCP server. First call agentrelay_health. If it is healthy, list agents.
@@ -120,6 +126,7 @@ npm run doctor
 - `INSTALL_FOR_CODEX.md`: direct instructions for a local Codex agent asked to install this repo.
 - `docs/codex-install.md`: human-readable install guide.
 - `docs/auth.md`: username/token auth model.
+- `docs/local-agent-verification.md`: required post-install checks for the local Codex agent.
 - `docs/tool-reference.md`: MCP tool reference.
 - `docs/security.md`: Phase 1 security notes.
 
