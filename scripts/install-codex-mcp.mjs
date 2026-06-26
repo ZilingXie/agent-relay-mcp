@@ -69,12 +69,16 @@ console.log("Next steps for the local agent:");
 console.log("1. Tell the user that Codex MCP config is installed and the .env template is ready.");
 console.log("2. Tell the user to fill or confirm AGENTRELAY_BASE_URL, AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, and AGENTRELAY_TOKEN in the .env file.");
 console.log("3. Do not print AGENTRELAY_TOKEN in chat or logs.");
-console.log("4. Tell the user to restart Codex App or open a new Codex session, then tell the agent when that is done.");
-console.log("5. Only after the user says .env is filled and Codex is restarted/new-sessioned, run `npm run doctor`.");
-console.log("6. If doctor passes, verify MCP by calling `agentrelay_health` and `agentrelay_list_agents` in the restarted/new Codex session.");
-console.log("7. Start the WebSocket listener with `npm run listener`; keep it running so local agent notifications are written to the inbox.");
-console.log("8. Important: the listener only receives relay messages and writes inbox JSON files. It does not automatically inject messages into Codex App, Codex CLI, chat apps, or any current session.");
-console.log("9. To get automatic session updates, configure a local hook/thread adapter via AGENTRELAY_LISTENER_HOOK. Users choose their own adapter; see docs/reinstall-and-listener.md for the contract.");
+console.log("4. Before restart, ask how the user wants to receive messages:");
+console.log("   A) manual: use HTTP/MCP pending checks, e.g. agentrelay_pending_tasks or periodic polling.");
+console.log("   B) automatic: use the WebSocket listener, plus local inbox and a user-chosen notification/thread adapter.");
+console.log("5. If the user chooses automatic, explain that listener setup alone only writes inbox JSON. Ask how they want to be notified or which adapter/hook they want.");
+console.log("6. If they use Codex App and want an example adapter project/template, tell them: 'I can install the Codex App example adapter if you want.' Do not install it unless they ask.");
+console.log("7. Tell the user to restart Codex App or open a new Codex session, then tell the agent when that is done.");
+console.log("8. Only after the user says .env is filled and Codex is restarted/new-sessioned, run `npm run doctor`.");
+console.log("9. If doctor passes, verify MCP by calling `agentrelay_health` and `agentrelay_list_agents` in the restarted/new Codex session.");
+console.log("10. For manual mode, use `agentrelay_pending_tasks`/HTTP polling as the receive path.");
+console.log("11. For automatic mode, start `npm run listener` or `npm run install:listener`; configure AGENTRELAY_LISTENER_HOOK only after the user chooses a local adapter.");
 
 function buildBlock({ serverName, repoRoot, mcpServerPath, envPath }) {
   return `# BEGIN AgentRelay MCP managed block\n[mcp_servers.${serverName}]\ncommand = "node"\nargs = [${tomlString(mcpServerPath)}]\ncwd = ${tomlString(repoRoot)}\nstartup_timeout_sec = 10\ntool_timeout_sec = 60\n\n[mcp_servers.${serverName}.env]\nAGENTRELAY_ENV_PATH = ${tomlString(envPath)}\n# END AgentRelay MCP managed block\n`;

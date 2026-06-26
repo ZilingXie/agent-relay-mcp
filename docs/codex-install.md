@@ -18,7 +18,14 @@ node scripts/install-codex-mcp.mjs --write \
   --username zac
 ```
 
-The script updates `~/.codex/config.toml`, writes a backup before modifying an existing file, and writes a local `.env` template. The user should fill or confirm `.env`, including `AGENTRELAY_TOKEN`, then restart Codex App or open a new session/thread. Only after that should the agent run `npm run doctor`.
+The script updates `~/.codex/config.toml`, writes a backup before modifying an existing file, and writes a local `.env` template. The user should fill or confirm `.env`, including `AGENTRELAY_TOKEN`, then choose a receive mode before restarting Codex App or opening a new session/thread. Only after that should the agent run `npm run doctor`.
+
+Receive modes:
+
+1. `manual`: use HTTP/MCP pending checks such as `agentrelay_pending_tasks`, or periodic polling.
+2. `automatic`: use the WebSocket listener. This requires a local inbox, and if the user wants messages to appear in a UI/session, a user-owned hook/thread adapter.
+
+For Codex App users, an example adapter project/template can be installed later after explicit user confirmation.
 
 ## Manual config
 
@@ -76,7 +83,7 @@ If `doctor` passes, ask Codex:
 Use the AgentRelay MCP server. Call agentrelay_health and agentrelay_list_agents.
 ```
 
-Finally start the receive listener:
+If the user chose automatic mode, start the receive listener:
 
 ```bash
 npm run listener
@@ -85,5 +92,7 @@ npm run listener
 The listener writes `task.pending` event JSON files to `.agentrelay/inbox/` and can call an optional hook configured as `AGENTRELAY_LISTENER_HOOK`.
 
 The listener does not automatically post into Codex App, Codex CLI, or chat apps. That requires a user-owned hook/thread adapter. See `docs/reinstall-and-listener.md` for the hook contract.
+
+If the user chose manual mode, do not start the listener; use `agentrelay_pending_tasks` or another HTTP polling strategy.
 
 For Codex CLI/TUI, `/mcp` can list configured MCP servers.

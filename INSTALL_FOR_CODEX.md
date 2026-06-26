@@ -63,8 +63,15 @@ Please edit <path-to-agent-relay-mcp>/.env and fill:
 - AGENTRELAY_AGENT_ID
 - AGENTRELAY_USERNAME
 - AGENTRELAY_TOKEN
-Then restart Codex App or open a new Codex session/thread.
-After that, tell me "done" and I will run doctor and MCP tool checks.
+
+How do you want to receive incoming AgentRelay messages?
+
+1. manual: I will use HTTP/MCP to check pending messages, for example agentrelay_pending_tasks or periodic polling.
+2. automatic: I will use the WebSocket listener. This requires a local inbox and a user-chosen hook/thread adapter to notify you or update your preferred app/session.
+
+If you choose automatic and use Codex App, there is an example adapter project/template available. If you want it, tell me and I can help install it.
+
+After you fill .env and choose the receive mode, restart Codex App or open a new Codex session/thread. Then tell me "done" and I will run doctor and MCP tool checks.
 ```
 
 Do not print `AGENTRELAY_TOKEN`.
@@ -88,7 +95,16 @@ agentrelay_health
 agentrelay_list_agents
 ```
 
-4. Verify WebSocket connectivity is passing in `npm run doctor`, then start the local receive listener:
+4. Continue based on the user's receive mode.
+
+Manual mode:
+
+- Do not start the WebSocket listener unless the user asks.
+- Use `agentrelay_pending_tasks` or scheduled/periodic HTTP polling as the receive path.
+
+Automatic mode:
+
+- Verify WebSocket connectivity is passing in `npm run doctor`, then start the local receive listener:
 
 ```bash
 npm run listener
@@ -105,6 +121,9 @@ If the user wants a background listener instead of a foreground terminal process
 ```bash
 npm run install:listener
 ```
+
+- Ask the user how new inbox messages should notify them or enter their workflow.
+- If they use Codex App and want the example adapter project/template, ask for confirmation before installing it.
 
 ## Important constraints
 

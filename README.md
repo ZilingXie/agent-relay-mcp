@@ -34,7 +34,14 @@ The installer writes:
 - `~/.codex/config.toml`: points Codex at this stdio MCP server.
 - `.env`: stores relay URL, agent id, username, and token with file mode `0600`.
 
-After Phase A, fill or confirm `.env` manually, especially `AGENTRELAY_TOKEN`, then restart Codex App or open a new Codex session/thread. Tell the local agent when that is done.
+After Phase A, fill or confirm `.env` manually, especially `AGENTRELAY_TOKEN`. Before restarting Codex, choose how you want to receive incoming messages:
+
+1. `manual`: use HTTP/MCP pending checks such as `agentrelay_pending_tasks`, or let an agent poll periodically.
+2. `automatic`: use the WebSocket listener. This also requires a local inbox and a user-chosen hook/thread adapter if you want notifications to appear in Codex App, Codex CLI, WeChat, Slack, or another surface.
+
+If you choose automatic and use Codex App, an example adapter project/template can be installed later. Ask for it when you want it.
+
+Then restart Codex App or open a new Codex session/thread. Tell the local agent when that is done.
 
 Only in Phase B, after you say `.env` and restart/new session are done, the agent should run:
 
@@ -48,7 +55,15 @@ If `doctor` passes, ask Codex:
 Use the AgentRelay MCP server. First call agentrelay_health. If it is healthy, list agents.
 ```
 
-Then start the WebSocket receive listener and keep it running:
+For manual receive mode, use:
+
+```text
+agentrelay_pending_tasks
+```
+
+or your own periodic HTTP polling.
+
+For automatic receive mode, start the WebSocket receive listener and keep it running:
 
 ```bash
 npm run listener

@@ -29,6 +29,13 @@ node scripts/install-codex-mcp.mjs --write \
 
 Fill `.env` with the cloud-issued token. Do not print the token in chat or logs.
 
+Before restarting Codex, choose a receive mode:
+
+1. `manual`: use HTTP/MCP pending checks, such as `agentrelay_pending_tasks`, or let an agent poll periodically.
+2. `automatic`: use WebSocket long connection. This requires a local inbox and a user-chosen notification/thread adapter if you want messages to appear somewhere automatically.
+
+If you choose automatic and use Codex App, an example adapter project/template can be installed later. Ask for it when you want it.
+
 Then restart Codex App or open a new Codex session/thread.
 
 ## Required connectivity test
@@ -53,7 +60,17 @@ agentrelay_health
 agentrelay_list_agents
 ```
 
-## Start automatic receive listener
+## Receive Mode: Manual
+
+Manual mode does not require the WebSocket listener. Use:
+
+```text
+agentrelay_pending_tasks
+```
+
+or a scheduled HTTP polling job to check pending work.
+
+## Receive Mode: Automatic
 
 Keep this process running locally:
 

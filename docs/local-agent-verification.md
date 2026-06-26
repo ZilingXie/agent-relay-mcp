@@ -20,8 +20,12 @@ The local agent should:
    - `AGENTRELAY_AGENT_ID`
    - `AGENTRELAY_USERNAME`
    - `AGENTRELAY_TOKEN`
-6. Tell the user to restart Codex App or open a new Codex session/thread.
-7. Stop. Wait for the user to say the `.env` and restart/new session are done.
+6. Ask the user how they want to receive incoming messages:
+   - `manual`: use HTTP/MCP pending checks, such as `agentrelay_pending_tasks` or periodic polling.
+   - `automatic`: use the WebSocket listener, plus a local inbox and user-chosen hook/thread adapter for notification/session delivery.
+7. If the user chooses `automatic`, explain that the listener only writes inbox JSON files. Ask how they want to be notified or which adapter/hook they want. If they use Codex App and want the example adapter project/template, tell them you can install it after they confirm.
+8. Tell the user to restart Codex App or open a new Codex session/thread.
+9. Stop. Wait for the user to say the `.env`, receive-mode choice, and restart/new session are done.
 
 Do not run `npm run doctor` before the user has filled `.env`.
 Do not print `AGENTRELAY_TOKEN`.
@@ -44,7 +48,16 @@ agentrelay_health
 agentrelay_list_agents
 ```
 
-4. Start or verify the local WebSocket listener:
+4. Continue based on the chosen receive mode.
+
+Manual mode:
+
+- Do not start the WebSocket listener unless the user asks.
+- Verify receive flow with `agentrelay_pending_tasks` or the user's scheduled polling setup.
+
+Automatic mode:
+
+- Start or verify the local WebSocket listener:
 
 ```bash
 npm run listener
@@ -53,6 +66,8 @@ npm run listener
 The listener should print a `hello` log and then wait for `task.pending`. Incoming notifications are written to `.agentrelay/inbox/`.
 
 This does not mean messages will appear in the current Codex session. Automatic session delivery requires a user-configured hook/thread adapter via `AGENTRELAY_LISTENER_HOOK`.
+
+- If the user wants Codex App integration and asks for the example adapter, install/configure the example adapter project/template only after that explicit request.
 
 ## Why two checks exist
 
