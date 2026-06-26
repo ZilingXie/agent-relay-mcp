@@ -60,7 +60,11 @@ Or install it as a background listener:
 npm run install:listener
 ```
 
-The listener writes incoming `task.pending` notifications and fetched task bodies to `.agentrelay/inbox/`. A local Codex/thread adapter can watch that inbox or be configured with `AGENTRELAY_LISTENER_HOOK`.
+The listener writes incoming `task.pending` notifications and fetched task bodies to `.agentrelay/inbox/`.
+
+Important boundary: the listener is only the mailbox. It does not automatically inject messages into Codex App, Codex CLI, WeChat, Slack, or any current chat/session. To get that final step, configure a local hook/thread adapter with `AGENTRELAY_LISTENER_HOOK`. The adapter is intentionally user-owned because different users may prefer Codex App, Codex CLI, chat apps, or custom workflows.
+
+This repo provides the hook contract now; a default Codex App adapter template will be added separately.
 
 ## If HTTPS relay is not exposed yet
 

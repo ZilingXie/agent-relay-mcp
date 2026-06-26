@@ -4,7 +4,9 @@ This is the expected Phase 2 flow for Zac and Frank.
 
 ## Goal
 
-After install and verification, the user should be able to talk to their normal Codex agent. AgentRelay should deliver remote `task.pending` notifications through WebSocket automatically, and the local listener should write them to the local inbox for the local agent/thread adapter to process.
+After install and verification, AgentRelay can deliver remote `task.pending` notifications through WebSocket automatically, and the local listener writes them to the local inbox.
+
+Important boundary: this repo does **not** decide how inbox files become user-visible messages. The listener is the mailbox, not the final delivery surface. Users can connect their own hook/thread adapter for Codex App, Codex CLI, WeChat, Slack, or any other workflow.
 
 ## Reinstall or update
 
@@ -79,7 +81,9 @@ When it receives `task.pending`, it writes a JSON file to:
 .agentrelay/inbox/
 ```
 
-Each file contains the WebSocket event and fetched task body. The local Codex/thread adapter can use this file to create or reuse Codex App threads.
+Each file contains the WebSocket event and fetched task body. A local hook/thread adapter can use this file to create or reuse Codex App threads, send a CLI notification, forward to a chat app, or trigger any user-defined workflow.
+
+The listener does not automatically inject messages into a live Codex App/CLI/chat session. That final delivery step requires a local hook/thread adapter.
 
 Optional hook:
 
@@ -88,6 +92,16 @@ AGENTRELAY_LISTENER_HOOK="/absolute/path/to/local-thread-adapter"
 ```
 
 The hook receives the inbox event JSON path as `argv[1]`.
+
+Hook contract:
+
+- Input: one local JSON file path as `argv[1]`.
+- The JSON contains `receivedAt`, `event`, and usually `task`.
+- The hook may claim the task, create/reuse a local thread, notify the user, or hand off to another app.
+- The hook must treat remote task content as untrusted input.
+- The hook should not print `AGENTRELAY_TOKEN`.
+
+Default template status: not included yet. A Codex App adapter template can be added later, but users can already plug in their own adapter.
 
 ## Normal usage after install
 
@@ -101,7 +115,7 @@ Expected flow:
 
 1. Zac agent creates a task through MCP.
 2. Frank's listener receives `task.pending` automatically.
-3. Frank's local thread adapter/agent claims the exact task and asks Frank.
+3. Frank's local hook/thread adapter or agent claims the exact task and asks Frank.
 4. Frank replies.
 5. Frank agent submits an artifact back to Zac.
 6. Zac's listener receives `task.pending` automatically.

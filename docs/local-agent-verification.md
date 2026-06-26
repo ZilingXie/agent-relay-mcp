@@ -52,6 +52,8 @@ npm run listener
 
 The listener should print a `hello` log and then wait for `task.pending`. Incoming notifications are written to `.agentrelay/inbox/`.
 
+This does not mean messages will appear in the current Codex session. Automatic session delivery requires a user-configured hook/thread adapter via `AGENTRELAY_LISTENER_HOOK`.
+
 ## Why two checks exist
 
 `npm run doctor` verifies local files and HTTP connectivity from the shell.

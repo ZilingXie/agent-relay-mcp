@@ -80,6 +80,8 @@ Claims an exact task id after a WebSocket `task.pending` event.
 
 Acks a durable event after the local listener dispatched it. Optionally records a local thread binding.
 
+Note: acking an event does not deliver it into any UI. UI/session delivery is the responsibility of the user's local hook/thread adapter.
+
 ```json
 {
   "agentId": "frank-agent",

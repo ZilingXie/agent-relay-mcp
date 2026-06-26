@@ -84,4 +84,6 @@ npm run listener
 
 The listener writes `task.pending` event JSON files to `.agentrelay/inbox/` and can call an optional hook configured as `AGENTRELAY_LISTENER_HOOK`.
 
+The listener does not automatically post into Codex App, Codex CLI, or chat apps. That requires a user-owned hook/thread adapter. See `docs/reinstall-and-listener.md` for the hook contract.
+
 For Codex CLI/TUI, `/mcp` can list configured MCP servers.

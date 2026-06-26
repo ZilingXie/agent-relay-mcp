@@ -94,7 +94,11 @@ agentrelay_list_agents
 npm run listener
 ```
 
-Keep this process running. It writes incoming `task.pending` notifications to `.agentrelay/inbox/`. If the user's local Codex/thread adapter exists, configure it through `AGENTRELAY_LISTENER_HOOK`; the hook receives the event JSON path as argv[1].
+Keep this process running. It writes incoming `task.pending` notifications to `.agentrelay/inbox/`.
+
+Important: this listener is not a Codex session adapter. It will not automatically post into Codex App, Codex CLI, WeChat, Slack, or any currently open thread. To get automatic session updates, the user must configure a local hook/thread adapter through `AGENTRELAY_LISTENER_HOOK`; the hook receives the event JSON path as argv[1].
+
+Do not invent a user workflow here. The adapter is user-owned because different users may want different delivery surfaces. This repo documents the contract; a default Codex App adapter template can be added later.
 
 If the user wants a background listener instead of a foreground terminal process, run:
 

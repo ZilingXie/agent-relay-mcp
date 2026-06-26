@@ -73,13 +73,15 @@ console.log("4. Tell the user to restart Codex App or open a new Codex session, 
 console.log("5. Only after the user says .env is filled and Codex is restarted/new-sessioned, run `npm run doctor`.");
 console.log("6. If doctor passes, verify MCP by calling `agentrelay_health` and `agentrelay_list_agents` in the restarted/new Codex session.");
 console.log("7. Start the WebSocket listener with `npm run listener`; keep it running so local agent notifications are written to the inbox.");
+console.log("8. Important: the listener only receives relay messages and writes inbox JSON files. It does not automatically inject messages into Codex App, Codex CLI, chat apps, or any current session.");
+console.log("9. To get automatic session updates, configure a local hook/thread adapter via AGENTRELAY_LISTENER_HOOK. Users choose their own adapter; see docs/reinstall-and-listener.md for the contract.");
 
 function buildBlock({ serverName, repoRoot, mcpServerPath, envPath }) {
   return `# BEGIN AgentRelay MCP managed block\n[mcp_servers.${serverName}]\ncommand = "node"\nargs = [${tomlString(mcpServerPath)}]\ncwd = ${tomlString(repoRoot)}\nstartup_timeout_sec = 10\ntool_timeout_sec = 60\n\n[mcp_servers.${serverName}.env]\nAGENTRELAY_ENV_PATH = ${tomlString(envPath)}\n# END AgentRelay MCP managed block\n`;
 }
 
 function buildEnv({ baseUrl, wsUrl, agentId, username, token }) {
-  return `# AgentRelay MCP local credentials. Keep this file private.\n# Fill all values, then restart Codex App or open a new Codex session.\nAGENTRELAY_BASE_URL=${envValue(baseUrl)}\nAGENTRELAY_WS_URL=${envValue(wsUrl)}\nAGENTRELAY_AGENT_ID=${envValue(agentId || "replace-with-agent-id")}\nAGENTRELAY_USERNAME=${envValue(username || "replace-with-username")}\nAGENTRELAY_TOKEN=${envValue(token || "replace-with-cloud-token")}\n\n# Local listener writes received task.pending events here.\nAGENTRELAY_INBOX_DIR=${envValue(resolve(repoRoot, ".agentrelay", "inbox"))}\n\n# Optional local Codex/thread adapter command. It receives the inbox event JSON path as argv[1].\n# AGENTRELAY_LISTENER_HOOK=""\n`;
+  return `# AgentRelay MCP local credentials. Keep this file private.\n# Fill all values, then restart Codex App or open a new Codex session.\nAGENTRELAY_BASE_URL=${envValue(baseUrl)}\nAGENTRELAY_WS_URL=${envValue(wsUrl)}\nAGENTRELAY_AGENT_ID=${envValue(agentId || "replace-with-agent-id")}\nAGENTRELAY_USERNAME=${envValue(username || "replace-with-username")}\nAGENTRELAY_TOKEN=${envValue(token || "replace-with-cloud-token")}\n\n# Local listener writes received task.pending events here.\nAGENTRELAY_INBOX_DIR=${envValue(resolve(repoRoot, ".agentrelay", "inbox"))}\n\n# Optional local hook/thread adapter command. It receives the inbox event JSON path as argv[1].\n# This is user-owned: Codex App, Codex CLI, chat apps, and custom workflows can each use a different adapter.\n# AGENTRELAY_LISTENER_HOOK=""\n`;
 }
 
 function upsertManagedBlock(current, block) {
