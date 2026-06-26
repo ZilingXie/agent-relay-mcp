@@ -20,6 +20,7 @@ The token is stored only in the local MCP repo `.env` file:
 
 ```env
 AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api
+AGENTRELAY_WS_URL=wss://server.stellarix.space/agentrelay/api
 AGENTRELAY_AGENT_ID=zac-agent
 AGENTRELAY_USERNAME=zac
 AGENTRELAY_TOKEN=generated-secret-token
@@ -35,6 +36,12 @@ The MCP client sends:
 Authorization: Bearer <AGENTRELAY_TOKEN>
 X-AgentRelay-Agent-Id: <AGENTRELAY_AGENT_ID>
 X-AgentRelay-Username: <AGENTRELAY_USERNAME>
+```
+
+The WebSocket listener sends the same headers when connecting to:
+
+```text
+<AGENTRELAY_WS_URL>/workers/<AGENTRELAY_AGENT_ID>/events/ws
 ```
 
 ## Boundary rule

@@ -11,7 +11,11 @@
     "print:codex-config": "node scripts/install-codex-mcp.mjs",
     "install:codex": "node scripts/install-codex-mcp.mjs --write",
     "doctor": "node scripts/doctor.mjs",
-    "test": "node scripts/mcp_smoke_test.mjs"
+    "test": "npm run test:syntax && node scripts/mcp_smoke_test.mjs",
+    "listener": "node scripts/listener.mjs",
+    "listen": "node scripts/listener.mjs",
+    "install:listener": "node scripts/install-listener-service.mjs",
+    "test:syntax": "node --check mcp/server.mjs && node --check scripts/doctor.mjs && node --check scripts/install-codex-mcp.mjs && node --check scripts/install-listener-service.mjs && node --check scripts/listener.mjs && node --check scripts/mcp_smoke_test.mjs"
   },
   "keywords": [
     "codex",

@@ -10,6 +10,7 @@ Ask the AgentRelay cloud/server admin for:
 
 ```text
 AGENTRELAY_BASE_URL
+AGENTRELAY_WS_URL
 AGENTRELAY_AGENT_ID
 AGENTRELAY_USERNAME
 AGENTRELAY_TOKEN
@@ -23,6 +24,7 @@ cd agent-relay-mcp
 npm install
 node scripts/install-codex-mcp.mjs --write \
   --base-url https://server.stellarix.space/agentrelay/api \
+  --ws-url wss://server.stellarix.space/agentrelay/api \
   --agent-id zac-agent \
   --username zac
 ```
@@ -45,6 +47,20 @@ If `doctor` passes, ask Codex:
 ```text
 Use the AgentRelay MCP server. First call agentrelay_health. If it is healthy, list agents.
 ```
+
+Then start the WebSocket receive listener and keep it running:
+
+```bash
+npm run listener
+```
+
+Or install it as a background listener:
+
+```bash
+npm run install:listener
+```
+
+The listener writes incoming `task.pending` notifications and fetched task bodies to `.agentrelay/inbox/`. A local Codex/thread adapter can watch that inbox or be configured with `AGENTRELAY_LISTENER_HOOK`.
 
 ## If HTTPS relay is not exposed yet
 
@@ -85,6 +101,7 @@ The secret stays in `.env`:
 
 ```env
 AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api
+AGENTRELAY_WS_URL=wss://server.stellarix.space/agentrelay/api
 AGENTRELAY_AGENT_ID=zac-agent
 AGENTRELAY_USERNAME=zac
 AGENTRELAY_TOKEN=replace-with-cloud-token
@@ -97,6 +114,8 @@ AGENTRELAY_TOKEN=replace-with-cloud-token
 - `agentrelay_get_agent_card`
 - `agentrelay_create_task`
 - `agentrelay_claim_task`
+- `agentrelay_pending_tasks`
+- `agentrelay_claim_task_by_id`
 - `agentrelay_set_target_thread`
 - `agentrelay_submit_artifact`
 - `agentrelay_mark_delivery`
@@ -104,6 +123,7 @@ AGENTRELAY_TOKEN=replace-with-cloud-token
 - `agentrelay_close_task`
 - `agentrelay_get_task`
 - `agentrelay_get_events`
+- `agentrelay_ack_event`
 
 See `docs/tool-reference.md` for details.
 
@@ -128,6 +148,7 @@ npm run doctor
 - `docs/auth.md`: username/token auth model.
 - `docs/local-agent-verification.md`: required post-install checks for the local Codex agent.
 - `docs/tool-reference.md`: MCP tool reference.
+- `docs/reinstall-and-listener.md`: Phase 2 reinstall, connectivity test, and WebSocket listener flow.
 - `docs/security.md`: Phase 1 security notes.
 
 ## Source of Codex MCP config format

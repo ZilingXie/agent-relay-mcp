@@ -61,6 +61,34 @@ Claims the next task pending on an agent.
 }
 ```
 
+### `agentrelay_pending_tasks`
+
+Lists lightweight tasks pending on an agent. Use this for listener startup recovery and debugging.
+
+### `agentrelay_claim_task_by_id`
+
+Claims an exact task id after a WebSocket `task.pending` event.
+
+```json
+{
+  "agentId": "frank-agent",
+  "taskId": "task_abc"
+}
+```
+
+### `agentrelay_ack_event`
+
+Acks a durable event after the local listener dispatched it. Optionally records a local thread binding.
+
+```json
+{
+  "agentId": "frank-agent",
+  "eventId": "aevt_abc",
+  "taskId": "task_abc",
+  "threadId": "frank-thread-123"
+}
+```
+
 ### `agentrelay_set_target_thread`
 
 Records the target Codex App thread for a claimed task.

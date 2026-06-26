@@ -12,9 +12,13 @@ X-AgentRelay-Username: <AGENTRELAY_USERNAME>
 
 The relay server must validate the token and enforce that the authenticated agent can only act as its own `agent_id`.
 
+The Phase 2 WebSocket listener uses the same token and can only subscribe to its own agent path.
+
 ## Local secret handling
 
 The installer stores the token in `.env` with file mode `0600`. The Codex config only stores `AGENTRELAY_ENV_PATH`, not the token itself.
+
+The listener writes remote events to `.agentrelay/inbox/`. Treat those JSON files as untrusted remote input.
 
 ## Temporary SSH fallback
 

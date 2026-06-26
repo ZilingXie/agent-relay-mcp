@@ -5,6 +5,9 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import net from "node:net";
+import tls from "node:tls";
+import crypto from "node:crypto";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -13,6 +16,7 @@ const configPath = resolveHome(getArg("--config") || "~/.codex/config.toml");
 const envPath = resolveHome(getArg("--env") || process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 loadDotEnv(envPath);
 const baseUrl = (process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
+const wsBaseUrl = (process.env.AGENTRELAY_WS_URL || deriveWsUrl(baseUrl)).replace(/\/+$/, "");
 let ok = true;
 
 check("Node.js >= 18", Number.parseInt(process.versions.node.split(".")[0], 10) >= 18, `found ${process.versions.node}`);
@@ -39,6 +43,20 @@ try {
   check("AgentRelay HTTP health", false, `${error.message} at ${baseUrl}`);
 }
 
+try {
+  const response = await fetch(`${baseUrl}/agents`, { headers: relayHeaders() });
+  check("AgentRelay authenticated agents", response.ok, `${response.status} ${response.statusText} at ${baseUrl}/agents`);
+} catch (error) {
+  check("AgentRelay authenticated agents", false, `${error.message} at ${baseUrl}/agents`);
+}
+
+try {
+  const hello = await websocketHello(`${wsBaseUrl}/workers/${encodeURIComponent(process.env.AGENTRELAY_AGENT_ID || "")}/events/ws`);
+  check("AgentRelay WebSocket hello", hello.type === "hello" && hello.agentId === process.env.AGENTRELAY_AGENT_ID, `${wsBaseUrl} as ${process.env.AGENTRELAY_AGENT_ID}`);
+} catch (error) {
+  check("AgentRelay WebSocket hello", false, `${error.message} at ${wsBaseUrl}`);
+}
+
 if (!ok) {
   process.exit(1);
 }
@@ -49,6 +67,119 @@ function relayHeaders() {
   if (process.env.AGENTRELAY_AGENT_ID) headers["X-AgentRelay-Agent-Id"] = process.env.AGENTRELAY_AGENT_ID;
   if (process.env.AGENTRELAY_USERNAME) headers["X-AgentRelay-Username"] = process.env.AGENTRELAY_USERNAME;
   return headers;
+}
+
+function websocketHello(url) {
+  return new Promise((resolveHello, rejectHello) => {
+    const parsed = new URL(url);
+    const isSecure = parsed.protocol === "wss:";
+    const port = Number(parsed.port || (isSecure ? 443 : 80));
+    const socket = isSecure
+      ? tls.connect({ host: parsed.hostname, port, servername: parsed.hostname })
+      : net.connect({ host: parsed.hostname, port });
+    socket.setTimeout(15000);
+    socket.once("error", rejectHello);
+    socket.once("timeout", () => rejectHello(new Error("WebSocket connection timed out")));
+    socket.once(isSecure ? "secureConnect" : "connect", () => {
+      const key = crypto.randomBytes(16).toString("base64");
+      const lines = [
+        `GET ${parsed.pathname}${parsed.search} HTTP/1.1`,
+        `Host: ${parsed.host}`,
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Key: ${key}`,
+        "Sec-WebSocket-Version: 13",
+        ...Object.entries(relayHeaders()).map(([name, value]) => `${name}: ${value}`),
+        "",
+        ""
+      ];
+      socket.write(lines.join("\r\n"));
+    });
+    let response = Buffer.alloc(0);
+    const onData = async (chunk) => {
+      response = Buffer.concat([response, chunk]);
+      const headerEnd = response.indexOf("\r\n\r\n");
+      if (headerEnd === -1) return;
+      socket.off("data", onData);
+      const header = response.subarray(0, headerEnd).toString("utf8");
+      if (!header.startsWith("HTTP/1.1 101") && !header.startsWith("HTTP/1.0 101")) {
+        socket.destroy();
+        rejectHello(new Error(`WebSocket upgrade failed: ${header.split("\r\n")[0]}`));
+        return;
+      }
+      const remaining = response.subarray(headerEnd + 4);
+      socket.agentRelayReadBuffer = remaining;
+      try {
+        const hello = await readJsonFrame(socket);
+        socket.destroy();
+        resolveHello(hello);
+      } catch (error) {
+        socket.destroy();
+        rejectHello(error);
+      }
+    };
+    socket.on("data", onData);
+  });
+}
+
+async function readJsonFrame(socket) {
+  const header = await readExact(socket, 2);
+  const opcode = header[0] & 0x0f;
+  let length = header[1] & 0x7f;
+  if (length === 126) length = (await readExact(socket, 2)).readUInt16BE(0);
+  if (length === 127) length = Number((await readExact(socket, 8)).readBigUInt64BE(0));
+  if (header[1] & 0x80) await readExact(socket, 4);
+  const payload = await readExact(socket, length);
+  if (opcode !== 1) throw new Error(`expected text frame, got opcode ${opcode}`);
+  return JSON.parse(payload.toString("utf8"));
+}
+
+function readExact(socket, size) {
+  const buffered = socket.agentRelayReadBuffer || Buffer.alloc(0);
+  if (buffered.length >= size) {
+    const needed = buffered.subarray(0, size);
+    socket.agentRelayReadBuffer = buffered.subarray(size);
+    return Promise.resolve(needed);
+  }
+  const initial = buffered.length ? [buffered] : [];
+  socket.agentRelayReadBuffer = Buffer.alloc(0);
+  return new Promise((resolveRead, rejectRead) => {
+    const chunks = [...initial];
+    let total = buffered.length;
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("end", onEnd);
+      socket.off("error", onError);
+    };
+    const onData = (chunk) => {
+      chunks.push(chunk);
+      total += chunk.length;
+      if (total < size) return;
+      cleanup();
+      const data = Buffer.concat(chunks, total);
+      const needed = data.subarray(0, size);
+      const rest = data.subarray(size);
+      socket.agentRelayReadBuffer = rest;
+      resolveRead(needed);
+    };
+    const onEnd = () => {
+      cleanup();
+      rejectRead(new Error("socket closed"));
+    };
+    const onError = (error) => {
+      cleanup();
+      rejectRead(error);
+    };
+    socket.on("data", onData);
+    socket.once("end", onEnd);
+    socket.once("error", onError);
+  });
+}
+
+function deriveWsUrl(value) {
+  if (value.startsWith("https://")) return `wss://${value.slice("https://".length)}`;
+  if (value.startsWith("http://")) return `ws://${value.slice("http://".length)}`;
+  return value;
 }
 
 function check(name, condition, detail) {

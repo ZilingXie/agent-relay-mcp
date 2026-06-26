@@ -141,6 +141,32 @@ function registerTools(mcpServer) {
   );
 
   mcpServer.registerTool(
+    "agentrelay_pending_tasks",
+    {
+      title: "List pending AgentRelay tasks",
+      description: "List lightweight tasks pending on an agent. Use this for listener recovery and debugging.",
+      inputSchema: {
+        agentId: z.string().min(1)
+      }
+    },
+    async ({ agentId }) => jsonResult(await relayGet(`/workers/${encodeURIComponent(agentId)}/pending`))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_claim_task_by_id",
+    {
+      title: "Claim exact AgentRelay task",
+      description: "Claim a specific task id after receiving a WebSocket task.pending event.",
+      inputSchema: {
+        agentId: z.string().min(1),
+        taskId: z.string().min(1)
+      }
+    },
+    async ({ agentId, taskId }) =>
+      jsonResult(await relayPost(`/workers/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/claim`, {}))
+  );
+
+  mcpServer.registerTool(
     "agentrelay_set_target_thread",
     {
       title: "Record target thread",
@@ -269,6 +295,30 @@ function registerTools(mcpServer) {
     },
     async ({ taskId, closedByAgentId, terminalReason }) =>
       jsonResult(await relayPost(`/tasks/${encodeURIComponent(taskId)}/close`, { closedByAgentId, terminalReason }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_ack_event",
+    {
+      title: "Ack AgentRelay event",
+      description: "Ack a durable agent event after the local listener dispatched it. Optionally records the local thread binding.",
+      inputSchema: {
+        agentId: z.string().min(1),
+        eventId: z.string().min(1),
+        taskId: z.string().optional(),
+        status: z.string().optional(),
+        threadId: z.string().optional(),
+        threadRole: z.string().optional(),
+        projectPath: z.string().optional()
+      }
+    },
+    async ({ agentId, eventId, taskId, status, threadId, threadRole, projectPath }) =>
+      jsonResult(
+        await relayPost(
+          `/workers/${encodeURIComponent(agentId)}/events/${encodeURIComponent(eventId)}/ack`,
+          compact({ taskId, status, threadId, threadRole, projectPath })
+        )
+      )
   );
 }
 

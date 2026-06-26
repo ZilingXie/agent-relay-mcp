@@ -13,6 +13,7 @@ npm install
 ```bash
 node scripts/install-codex-mcp.mjs --write \
   --base-url https://server.stellarix.space/agentrelay/api \
+  --ws-url wss://server.stellarix.space/agentrelay/api \
   --agent-id zac-agent \
   --username zac
 ```
@@ -39,6 +40,7 @@ Then create `.env`:
 
 ```env
 AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api
+AGENTRELAY_WS_URL=wss://server.stellarix.space/agentrelay/api
 AGENTRELAY_AGENT_ID=zac-agent
 AGENTRELAY_USERNAME=zac
 AGENTRELAY_TOKEN=replace-with-cloud-token
@@ -66,10 +68,20 @@ After the user fills `.env` and restarts Codex App or opens a new session, run:
 npm run doctor
 ```
 
+`doctor` checks HTTP health, authenticated `/agents`, and WebSocket `hello`.
+
 If `doctor` passes, ask Codex:
 
 ```text
 Use the AgentRelay MCP server. Call agentrelay_health and agentrelay_list_agents.
 ```
+
+Finally start the receive listener:
+
+```bash
+npm run listener
+```
+
+The listener writes `task.pending` event JSON files to `.agentrelay/inbox/` and can call an optional hook configured as `AGENTRELAY_LISTENER_HOOK`.
 
 For Codex CLI/TUI, `/mcp` can list configured MCP servers.

@@ -16,6 +16,7 @@ The local agent should:
 4. Tell the user the `.env` path.
 5. Ask the user to fill or confirm these `.env` values:
    - `AGENTRELAY_BASE_URL`
+   - `AGENTRELAY_WS_URL`
    - `AGENTRELAY_AGENT_ID`
    - `AGENTRELAY_USERNAME`
    - `AGENTRELAY_TOKEN`
@@ -43,9 +44,18 @@ agentrelay_health
 agentrelay_list_agents
 ```
 
+4. Start or verify the local WebSocket listener:
+
+```bash
+npm run listener
+```
+
+The listener should print a `hello` log and then wait for `task.pending`. Incoming notifications are written to `.agentrelay/inbox/`.
+
 ## Why two checks exist
 
 `npm run doctor` verifies local files and HTTP connectivity from the shell.
+It also verifies the WebSocket endpoint by expecting a `hello` frame.
 
 The MCP tools verify that Codex actually loaded the MCP server. If `doctor` passes but MCP tool calls fail, Codex probably has not reloaded the MCP config yet.
 
@@ -59,6 +69,12 @@ If `doctor` reports HTTP failure, check:
 - network reachability to the relay
 - whether the cloud relay is running
 - whether the URL is `https://server.stellarix.space/agentrelay/api`
+
+If `doctor` reports WebSocket failure, check:
+
+- `AGENTRELAY_WS_URL` is `wss://server.stellarix.space/agentrelay/api`
+- the cloud `agentrelay-ws` service is running
+- the token agent id matches the WebSocket path agent id
 
 If MCP tool calls return `401` or `403`, check:
 

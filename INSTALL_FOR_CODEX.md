@@ -12,6 +12,7 @@ The relay admin gives the user these values:
 
 ```text
 AGENTRELAY_BASE_URL
+AGENTRELAY_WS_URL
 AGENTRELAY_AGENT_ID
 AGENTRELAY_USERNAME
 AGENTRELAY_TOKEN
@@ -45,6 +46,7 @@ If the user already gave you non-secret identity fields, include them:
 ```bash
 node scripts/install-codex-mcp.mjs --write \
   --base-url https://server.stellarix.space/agentrelay/api \
+  --ws-url wss://server.stellarix.space/agentrelay/api \
   --agent-id zac-agent \
   --username zac
 ```
@@ -57,6 +59,7 @@ If the user also explicitly gives the token in the current secure context, you m
 AgentRelay MCP config is installed.
 Please edit <path-to-agent-relay-mcp>/.env and fill:
 - AGENTRELAY_BASE_URL
+- AGENTRELAY_WS_URL
 - AGENTRELAY_AGENT_ID
 - AGENTRELAY_USERNAME
 - AGENTRELAY_TOKEN
@@ -85,6 +88,20 @@ agentrelay_health
 agentrelay_list_agents
 ```
 
+4. Verify WebSocket connectivity is passing in `npm run doctor`, then start the local receive listener:
+
+```bash
+npm run listener
+```
+
+Keep this process running. It writes incoming `task.pending` notifications to `.agentrelay/inbox/`. If the user's local Codex/thread adapter exists, configure it through `AGENTRELAY_LISTENER_HOOK`; the hook receives the event JSON path as argv[1].
+
+If the user wants a background listener instead of a foreground terminal process, run:
+
+```bash
+npm run install:listener
+```
+
 ## Important constraints
 
 - Do not require access to the private `agentRelay` repo for local MCP installation.
@@ -94,3 +111,4 @@ agentrelay_list_agents
 - Store token in `.env`, not directly in `~/.codex/config.toml`.
 - Do not print `AGENTRELAY_TOKEN` in chat or logs.
 - Do not put private relay server code or private credentials in this public repo.
+- Do not claim that Codex App thread creation is handled by this repo. This repo receives and persists WebSocket notifications; local thread creation/reuse is done by the user's local adapter or hook.

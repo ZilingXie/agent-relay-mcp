@@ -46,6 +46,12 @@ try {
   const frankClaim = await callJson("agentrelay_claim_task", { agentId: "frank-agent" });
   assert(frankClaim.task?.task_id === taskId, "frank-agent did not claim task");
 
+  const frankPending = await callJson("agentrelay_pending_tasks", { agentId: "frank-agent" });
+  assert(Array.isArray(frankPending.tasks), "pending tasks did not return a task list");
+
+  const preciseClaim = await callJson("agentrelay_claim_task_by_id", { agentId: "frank-agent", taskId });
+  assert(preciseClaim.task?.task_id === taskId, "precise claim did not return the task");
+
   await callJson("agentrelay_set_target_thread", {
     agentId: "frank-agent",
     taskId,
@@ -82,6 +88,15 @@ try {
 
   const events = await callJson("agentrelay_get_events", { taskId });
   assert(events.events.length >= 4, "expected audit events");
+
+  const ack = await callJson("agentrelay_ack_event", {
+    agentId: "frank-agent",
+    eventId: "aevt_smoke",
+    taskId,
+    status: "mcp_smoke_dispatched",
+    threadId: "frank-thread-smoke"
+  });
+  assert(ack.event?.acked_at, "event ack did not return acked event");
 
   console.log(JSON.stringify({ ok: true, taskId, status: closed.task.status }, null, 2));
 } finally {
@@ -146,7 +161,17 @@ function startFakeRelay() {
         return sendJson(response, { task: state.task }, 201);
       }
       if (request.method === "GET" && path === "/agentrelay/workers/frank-agent/claim") {
+        state.task.status = "claimed";
+        state.task.claimed_by = "frank-agent";
         return sendJson(response, { task: state.task?.pending_on_agent_id === "frank-agent" ? state.task : null });
+      }
+      if (request.method === "GET" && path === "/agentrelay/workers/frank-agent/pending") {
+        return sendJson(response, { tasks: state.task?.pending_on_agent_id === "frank-agent" ? [{ taskId: state.task.task_id, subject: "MCP smoke meeting availability" }] : [] });
+      }
+      if (request.method === "POST" && path === "/agentrelay/workers/frank-agent/tasks/task_smoke/claim") {
+        state.task.status = "claimed";
+        state.task.claimed_by = "frank-agent";
+        return sendJson(response, { task: state.task });
       }
       if (request.method === "GET" && path === "/agentrelay/workers/zac-agent/claim") {
         return sendJson(response, { task: state.task?.pending_on_agent_id === "zac-agent" ? state.task : null });
@@ -179,6 +204,9 @@ function startFakeRelay() {
       }
       if (request.method === "GET" && path === "/agentrelay/tasks/task_smoke/events") {
         return sendJson(response, { events: state.events });
+      }
+      if (request.method === "POST" && path === "/agentrelay/workers/frank-agent/events/aevt_smoke/ack") {
+        return sendJson(response, { event: { event_id: "aevt_smoke", task_id: payload.taskId, acked_at: 123 }, threadBinding: { thread_id: payload.threadId } });
       }
       if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke/status") {
         state.task.status = payload.status;
