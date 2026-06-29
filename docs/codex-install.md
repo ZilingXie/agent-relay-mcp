@@ -91,7 +91,15 @@ npm run listener
 
 The listener writes `task.pending` event JSON files to `.agentrelay/inbox/` and can call an optional hook configured as `AGENTRELAY_LISTENER_HOOK`.
 
-The listener does not automatically post into Codex App, Codex CLI, or chat apps. That requires a user-owned hook/thread adapter. See `docs/reinstall-and-listener.md` for the hook contract.
+The listener does not automatically post into Codex App, Codex CLI, or chat apps by itself. That final delivery step requires a user-owned hook/thread adapter. See `docs/reinstall-and-listener.md` for the hook contract.
+
+If you use Codex App and want incoming messages to appear as threads, install the optional receiver example:
+
+```bash
+npm run install:codex-app-inbox -- --project-path /path/to/project
+```
+
+Then open `/path/to/project/agentInbox` in Codex App. See `docs/codex-app-inbox-receiver.md`.
 
 If the user chose manual mode, do not start the listener; use `agentrelay_pending_tasks` or another HTTP polling strategy.
 

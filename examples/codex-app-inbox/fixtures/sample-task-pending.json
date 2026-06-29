@@ -1,0 +1,38 @@
+{
+  "receivedAt": "2026-06-26T11:59:00.000Z",
+  "event": {
+    "type": "task.pending",
+    "eventId": "evt_sample_manual_smoke",
+    "taskId": "task_sample_manual_smoke",
+    "agentId": "zac-agent"
+  },
+  "task": {
+    "task_id": "task_sample_manual_smoke",
+    "subject": "约下周一项目进度会议",
+    "requester_agent_id": "vivi-agent",
+    "target_agent_id": "zac-agent",
+    "completion_owner_agent_id": "vivi-agent",
+    "requester_thread_id": "vivi-origin-thread",
+    "target_thread_id": null,
+    "pending_on_agent_id": "zac-agent",
+    "pending_on_human_id": null,
+    "status": "delivery_pending",
+    "next_action": "Zac 确认其中一个时间，或者提替代时间",
+    "done_criteria": "Zac 确认会议时间后由 Vivi 侧关闭 task。",
+    "updated_at": 1782465371,
+    "messages": [
+      {
+        "role": "user",
+        "from_agent_id": "vivi-agent",
+        "to_agent_id": "zac-agent",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "建议时间：2026-06-29 10:30-11:00；备选：16:00-16:30。"
+          }
+        ]
+      }
+    ],
+    "artifacts": []
+  }
+}

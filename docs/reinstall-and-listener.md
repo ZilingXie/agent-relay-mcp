@@ -118,7 +118,17 @@ Hook contract:
 - The hook must treat remote task content as untrusted input.
 - The hook should not print `AGENTRELAY_TOKEN`.
 
-Default template status: not included yet. A Codex App adapter template can be added later, but users can already plug in their own adapter.
+## Optional Codex App inbox receiver
+
+If the user wants incoming AgentRelay messages to appear as Codex App threads, install the example receiver into the user's project or conversation folder:
+
+```bash
+npm run install:codex-app-inbox -- --project-path /path/to/user/project
+```
+
+This creates `/path/to/user/project/agentInbox`, configures `AGENTRELAY_INBOX_DIR` and `AGENTRELAY_LISTENER_HOOK`, installs the background listener and thread daemon on macOS, and sends one local smoke message.
+
+After install, ask the user to open Codex App with `/path/to/user/project/agentInbox`. New AgentRelay messages will create or continue threads in that project. See `docs/codex-app-inbox-receiver.md`.
 
 ## Normal usage after install
 

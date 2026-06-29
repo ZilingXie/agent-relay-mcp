@@ -1,0 +1,13 @@
+{
+  "name": "agentrelay-codex-thread-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "daemon": "node scripts/agentrelay-thread-daemon.mjs",
+    "install:daemon": "node scripts/install-thread-daemon-service.mjs",
+    "smoke": "node scripts/smoke-codex-app-inbox.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check scripts/agentrelay-thread-adapter.mjs && node --check scripts/agentrelay-thread-daemon.mjs && node --check scripts/install-thread-daemon-service.mjs && node --check scripts/smoke-codex-app-inbox.mjs && node --test test/*.test.mjs"
+  }
+}

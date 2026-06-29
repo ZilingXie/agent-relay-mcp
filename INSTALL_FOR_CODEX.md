@@ -123,7 +123,16 @@ npm run install:listener
 ```
 
 - Ask the user how new inbox messages should notify them or enter their workflow.
-- If they use Codex App and want the example adapter project/template, ask for confirmation before installing it.
+
+The listener only transports messages. It writes each incoming event JSON to `AGENTRELAY_INBOX_DIR`. If `AGENTRELAY_LISTENER_HOOK` is configured, the hook receives the event JSON path as `argv[1]`.
+
+If the user wants Codex App to show incoming messages as threads, install the optional Codex App inbox example. Use the user's project/conversation folder, not the `agent-relay-mcp` repo:
+
+```bash
+npm run install:codex-app-inbox -- --project-path /path/to/user/project
+```
+
+The installer creates `/path/to/user/project/agentInbox`, configures the listener hook, installs the macOS background listener and thread daemon, and sends one local smoke message. Ask the user to open Codex App with that `agentInbox` folder and confirm they can see the smoke thread. After that, tell them: keep Codex App using the `agentInbox` project; new AgentRelay messages will create or continue threads there.
 
 ## Important constraints
 
@@ -134,4 +143,4 @@ npm run install:listener
 - Store token in `.env`, not directly in `~/.codex/config.toml`.
 - Do not print `AGENTRELAY_TOKEN` in chat or logs.
 - Do not put private relay server code or private credentials in this public repo.
-- Do not claim that Codex App thread creation is handled by this repo. This repo receives and persists WebSocket notifications; local thread creation/reuse is done by the user's local adapter or hook.
+- Codex App thread creation is optional example behavior, not the default receiving model.
