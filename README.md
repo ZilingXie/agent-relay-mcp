@@ -32,14 +32,17 @@ node scripts/install-codex-mcp.mjs --write \
 The installer writes:
 
 - `~/.codex/config.toml`: points Codex at this stdio MCP server.
-- `.env`: stores relay URL, agent id, username, and token with file mode `0600`.
+- `.env`: stores relay URL, agent id, username, and token with file mode `0600`. If `.env` already exists, the installer preserves it by default.
+
+Use `--overwrite-env` only when you intentionally want to replace an existing `.env` after a timestamped backup.
 
 After Phase A, fill or confirm `.env` manually, especially `AGENTRELAY_TOKEN`. Before restarting Codex, choose how you want to receive incoming messages:
 
 1. `manual`: use HTTP/MCP pending checks such as `agentrelay_pending_tasks`, or let an agent poll periodically.
-2. `automatic`: use the WebSocket listener. This also requires a local inbox and a user-chosen hook/thread adapter if you want notifications to appear in Codex App, Codex CLI, WeChat, Slack, or another surface.
+2. `automatic listener`: use the WebSocket listener. It receives `task.pending` events and writes JSON files to the local inbox. It does not automatically post into the current Codex session.
+3. `automatic Codex App example`: install the optional `agentInbox` receiver so incoming events create or continue Codex App threads.
 
-If you choose automatic and use Codex App, an example adapter project/template can be installed later. Ask for it when you want it.
+If you choose automatic and use Codex App, ask for the example receiver and choose the project/conversation folder where `agentInbox` should live.
 
 Then restart Codex App or open a new Codex session/thread. Tell the local agent when that is done.
 
@@ -63,7 +66,7 @@ agentrelay_pending_tasks
 
 or your own periodic HTTP polling.
 
-For automatic receive mode, start the WebSocket receive listener and keep it running:
+For automatic listener-only receive mode, start the WebSocket receive listener and keep it running:
 
 ```bash
 npm run listener
@@ -79,14 +82,14 @@ The listener writes incoming `task.pending` notifications and fetched task bodie
 
 Important boundary: the listener is only the mailbox. It does not automatically inject messages into Codex App, Codex CLI, WeChat, Slack, or any current chat/session. To get that final step, configure a local hook/thread adapter with `AGENTRELAY_LISTENER_HOOK`. The adapter is intentionally user-owned because different users may prefer Codex App, Codex CLI, chat apps, or custom workflows.
 
-This repo provides the hook contract and an optional Codex App receiver example.
+This repo provides the hook contract and an optional Codex App receiver example. Final verification depends on the chosen receive mode: call `agentrelay_pending_tasks` for manual mode, inspect the inbox JSON directory for listener-only mode, or open the `agentInbox` folder in Codex App and confirm the smoke/new thread for the Codex App example.
 
 ## Receiving messages
 
 AgentRelay separates transport from the local user experience:
 
 - Manual: ask your Codex agent to call `agentrelay_pending_tasks`, then claim and process a task.
-- Automatic listener: run `npm run listener` or `npm run install:listener`; every received event is written as JSON under `AGENTRELAY_INBOX_DIR`.
+- Automatic listener-only: run `npm run listener` or `npm run install:listener`; every received event is written as JSON under `AGENTRELAY_INBOX_DIR`.
 - Custom receiver: set `AGENTRELAY_LISTENER_HOOK=/absolute/path/to/hook`; the hook receives the written event JSON path as `argv[1]`.
 - Codex App example: install an optional `agentInbox` project that turns new events into visible Codex App threads.
 

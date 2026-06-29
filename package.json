@@ -11,7 +11,7 @@
     "print:codex-config": "node scripts/install-codex-mcp.mjs",
     "install:codex": "node scripts/install-codex-mcp.mjs --write",
     "doctor": "node scripts/doctor.mjs",
-    "test": "npm run test:syntax && node scripts/mcp_smoke_test.mjs",
+    "test": "npm run test:syntax && npm run test:examples && node scripts/mcp_smoke_test.mjs",
     "install:codex-app-inbox": "node scripts/install-codex-app-inbox-example.mjs --write",
     "listener": "node scripts/listener.mjs",
     "listen": "node scripts/listener.mjs",

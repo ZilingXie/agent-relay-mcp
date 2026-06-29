@@ -4,7 +4,7 @@ If the user says: "install ZilingXie/agent-relay-mcp.git", do this.
 
 ## Goal
 
-Install this repo as a Codex stdio MCP server named `agentrelay`, create the local `.env` credential template, then stop and ask the user to fill `.env` and restart Codex. Only after the user comes back and says that is done should the agent run `doctor` and MCP tool checks.
+Install this repo as a Codex stdio MCP server named `agentrelay`, protect any existing local `.env`, explain how AgentRelay messages are received, ask the user which receive mode they want, then stop for restart. Only after the user comes back and says `.env` plus restart/new session are done should the agent run `doctor` and MCP tool checks.
 
 ## Required credential values
 
@@ -39,7 +39,7 @@ cd agent-relay-mcp
 npm install
 ```
 
-3. Install Codex MCP config and write the local `.env` template.
+3. Install Codex MCP config. The installer writes a local `.env` template only when `.env` does not already exist. If `.env` exists, preserve it unless the user explicitly asks to overwrite it.
 
 If the user already gave you non-secret identity fields, include them:
 
@@ -51,13 +51,13 @@ node scripts/install-codex-mcp.mjs --write \
   --username zac
 ```
 
-If the user also explicitly gives the token in the current secure context, you may include it with `--token`. Otherwise leave it out so the user can fill `.env` manually.
+If the user also explicitly gives the token in the current secure context, you may include it with `--token`, but do not print it. Otherwise leave it out so the user can fill `.env` manually.
 
 4. Stop after installation. Tell the user:
 
 ```text
 AgentRelay MCP config is installed.
-Please edit <path-to-agent-relay-mcp>/.env and fill:
+I preserved the existing .env if one was already present. Please edit or confirm <path-to-agent-relay-mcp>/.env:
 - AGENTRELAY_BASE_URL
 - AGENTRELAY_WS_URL
 - AGENTRELAY_AGENT_ID
@@ -67,11 +67,12 @@ Please edit <path-to-agent-relay-mcp>/.env and fill:
 How do you want to receive incoming AgentRelay messages?
 
 1. manual: I will use HTTP/MCP to check pending messages, for example agentrelay_pending_tasks or periodic polling.
-2. automatic: I will use the WebSocket listener. This requires a local inbox and a user-chosen hook/thread adapter to notify you or update your preferred app/session.
+2. automatic listener: I will use the WebSocket listener. It receives task.pending events and writes JSON files to the local inbox. It does not automatically post into the current Codex session.
+3. automatic Codex App example: I can install the optional agentInbox receiver so incoming events create or continue Codex App threads.
 
-If you choose automatic and use Codex App, there is an example adapter project/template available. If you want it, tell me and I can help install it.
+If you want the Codex App example receiver, say so and tell me which project/conversation folder should contain agentInbox. I will not install it unless you explicitly confirm.
 
-After you fill .env and choose the receive mode, restart Codex App or open a new Codex session/thread. Then tell me "done" and I will run doctor and MCP tool checks.
+After you fill .env and choose/install the receive mode, restart Codex App or open a new Codex session/thread. Then tell me "done" and I will run doctor, MCP tool checks, and the receive-mode-specific final check.
 ```
 
 Do not print `AGENTRELAY_TOKEN`.
@@ -101,8 +102,9 @@ Manual mode:
 
 - Do not start the WebSocket listener unless the user asks.
 - Use `agentrelay_pending_tasks` or scheduled/periodic HTTP polling as the receive path.
+- Final check: call `agentrelay_pending_tasks` for the configured agent id.
 
-Automatic mode:
+Automatic listener-only mode:
 
 - Verify WebSocket connectivity is passing in `npm run doctor`, then start the local receive listener:
 
@@ -125,6 +127,9 @@ npm run install:listener
 - Ask the user how new inbox messages should notify them or enter their workflow.
 
 The listener only transports messages. It writes each incoming event JSON to `AGENTRELAY_INBOX_DIR`. If `AGENTRELAY_LISTENER_HOOK` is configured, the hook receives the event JSON path as `argv[1]`.
+- Final check: tell the user the configured `AGENTRELAY_INBOX_DIR` path and ask them to confirm incoming JSON appears there, or inspect the directory when a smoke/real task is available.
+
+Automatic Codex App example mode:
 
 If the user wants Codex App to show incoming messages as threads, install the optional Codex App inbox example. Use the user's project/conversation folder, not the `agent-relay-mcp` repo:
 
@@ -132,12 +137,13 @@ If the user wants Codex App to show incoming messages as threads, install the op
 npm run install:codex-app-inbox -- --project-path /path/to/user/project
 ```
 
-The installer creates `/path/to/user/project/agentInbox`, configures the listener hook, installs the macOS background listener and thread daemon, and sends one local smoke message. Ask the user to open Codex App with that `agentInbox` folder and confirm they can see the smoke thread. After that, tell them: keep Codex App using the `agentInbox` project; new AgentRelay messages will create or continue threads there.
+The installer creates `/path/to/user/project/agentInbox`, configures the listener hook, installs the macOS background listener and thread daemon, and sends one local smoke message. Final check: ask the user to open Codex App with that `agentInbox` folder and confirm they can see the smoke thread. After that, tell them: keep Codex App using the `agentInbox` project; new AgentRelay messages will create or continue threads there.
 
 ## Important constraints
 
 - Do not require access to the private `agentRelay` repo for local MCP installation.
-- The installing agent configures Codex and writes the `.env` template first.
+- The installing agent configures Codex and writes the `.env` template only if `.env` does not already exist.
+- Preserve an existing `.env` unless the user explicitly requests overwrite.
 - The user fills or confirms `.env`, then restarts Codex or opens a new session.
 - The agent runs `npm run doctor` only after the user says `.env` and restart/new session are done.
 - Store token in `.env`, not directly in `~/.codex/config.toml`.

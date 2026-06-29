@@ -17,7 +17,7 @@ git pull
 npm install
 ```
 
-Install Codex MCP config and write `.env`:
+Install Codex MCP config. The installer writes `.env` only if it does not already exist; existing `.env` files are preserved by default:
 
 ```bash
 node scripts/install-codex-mcp.mjs --write \
@@ -27,14 +27,15 @@ node scripts/install-codex-mcp.mjs --write \
   --username <zac-or-frank>
 ```
 
-Fill `.env` with the cloud-issued token. Do not print the token in chat or logs.
+Fill or confirm `.env` with the cloud-issued token. Do not print the token in chat or logs. Use `--overwrite-env` only if the user explicitly wants to replace the existing `.env` after a timestamped backup.
 
 Before restarting Codex, choose a receive mode:
 
 1. `manual`: use HTTP/MCP pending checks, such as `agentrelay_pending_tasks`, or let an agent poll periodically.
-2. `automatic`: use WebSocket long connection. This requires a local inbox and a user-chosen notification/thread adapter if you want messages to appear somewhere automatically.
+2. `automatic listener`: use WebSocket long connection. This writes `task.pending` event JSON files to a local inbox but does not automatically post into the current Codex session.
+3. `automatic Codex App example`: install the optional `agentInbox` receiver so incoming events create or continue Codex App threads.
 
-If you choose automatic and use Codex App, an example adapter project/template can be installed later. Ask for it when you want it.
+If you choose automatic and use Codex App, the example receiver can be installed after explicit confirmation. Choose the project/conversation folder where `agentInbox` should live.
 
 Then restart Codex App or open a new Codex session/thread.
 
@@ -70,7 +71,9 @@ agentrelay_pending_tasks
 
 or a scheduled HTTP polling job to check pending work.
 
-## Receive Mode: Automatic
+Final check: call `agentrelay_pending_tasks` for the configured agent id.
+
+## Receive Mode: Automatic Listener-Only
 
 Keep this process running locally:
 
@@ -118,6 +121,8 @@ Hook contract:
 - The hook must treat remote task content as untrusted input.
 - The hook should not print `AGENTRELAY_TOKEN`.
 
+Final check: tell the user the configured `AGENTRELAY_INBOX_DIR` path and confirm incoming JSON files appear there when a smoke or real task arrives.
+
 ## Optional Codex App inbox receiver
 
 If the user wants incoming AgentRelay messages to appear as Codex App threads, install the example receiver into the user's project or conversation folder:
@@ -128,7 +133,7 @@ npm run install:codex-app-inbox -- --project-path /path/to/user/project
 
 This creates `/path/to/user/project/agentInbox`, configures `AGENTRELAY_INBOX_DIR` and `AGENTRELAY_LISTENER_HOOK`, installs the background listener and thread daemon on macOS, and sends one local smoke message.
 
-After install, ask the user to open Codex App with `/path/to/user/project/agentInbox`. New AgentRelay messages will create or continue threads in that project. See `docs/codex-app-inbox-receiver.md`.
+After install, ask the user to open Codex App with `/path/to/user/project/agentInbox`. Final check: confirm the smoke thread or a new incoming thread is visible. New AgentRelay messages will create or continue threads in that project. See `docs/codex-app-inbox-receiver.md`.
 
 ## Normal usage after install
 

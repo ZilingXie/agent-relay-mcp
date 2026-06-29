@@ -18,14 +18,17 @@ node scripts/install-codex-mcp.mjs --write \
   --username zac
 ```
 
-The script updates `~/.codex/config.toml`, writes a backup before modifying an existing file, and writes a local `.env` template. The user should fill or confirm `.env`, including `AGENTRELAY_TOKEN`, then choose a receive mode before restarting Codex App or opening a new session/thread. Only after that should the agent run `npm run doctor`.
+The script updates `~/.codex/config.toml`, writes a backup before modifying an existing config file, and writes a local `.env` template only when `.env` does not already exist. Existing `.env` files are preserved by default. Use `--overwrite-env` only when the user explicitly wants to replace `.env` after a timestamped backup.
+
+The user should fill or confirm `.env`, including `AGENTRELAY_TOKEN`, then choose a receive mode before restarting Codex App or opening a new session/thread. Only after that should the agent run `npm run doctor`.
 
 Receive modes:
 
 1. `manual`: use HTTP/MCP pending checks such as `agentrelay_pending_tasks`, or periodic polling.
-2. `automatic`: use the WebSocket listener. This requires a local inbox, and if the user wants messages to appear in a UI/session, a user-owned hook/thread adapter.
+2. `automatic listener`: use the WebSocket listener. It receives `task.pending` events and writes JSON files to the local inbox. It does not automatically post into the current Codex session.
+3. `automatic Codex App example`: install the optional `agentInbox` receiver so incoming events create or continue Codex App threads.
 
-For Codex App users, an example adapter project/template can be installed later after explicit user confirmation.
+For Codex App users, the example receiver can be installed later after explicit user confirmation. Ask which project/conversation folder should contain `agentInbox`.
 
 ## Manual config
 
@@ -83,7 +86,7 @@ If `doctor` passes, ask Codex:
 Use the AgentRelay MCP server. Call agentrelay_health and agentrelay_list_agents.
 ```
 
-If the user chose automatic mode, start the receive listener:
+If the user chose automatic listener-only mode, start the receive listener:
 
 ```bash
 npm run listener
@@ -102,5 +105,11 @@ npm run install:codex-app-inbox -- --project-path /path/to/project
 Then open `/path/to/project/agentInbox` in Codex App. See `docs/codex-app-inbox-receiver.md`.
 
 If the user chose manual mode, do not start the listener; use `agentrelay_pending_tasks` or another HTTP polling strategy.
+
+Final receive checks:
+
+- Manual: call `agentrelay_pending_tasks` for the configured agent id.
+- Automatic listener-only: inspect the configured `AGENTRELAY_INBOX_DIR` and confirm incoming JSON files appear there when a smoke or real task arrives.
+- Automatic Codex App example: ask the user to open `/path/to/project/agentInbox` in Codex App and confirm the smoke thread or a new incoming thread appears.
 
 For Codex CLI/TUI, `/mcp` can list configured MCP servers.
