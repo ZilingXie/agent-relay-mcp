@@ -89,6 +89,18 @@ AGENTRELAY_LISTENER_HOOK="/absolute/path/to/local-thread-adapter"
 
 The hook receives the inbox event JSON path as `argv[1]`.
 
+## Optional Codex App inbox receiver
+
+If the user wants incoming AgentRelay messages to appear as Codex App threads, install the example receiver into the user's project or conversation folder:
+
+```bash
+npm run install:codex-app-inbox -- --project-path /path/to/user/project
+```
+
+This creates `/path/to/user/project/agentInbox`, configures `AGENTRELAY_INBOX_DIR` and `AGENTRELAY_LISTENER_HOOK`, installs the background listener and thread daemon on macOS, and sends one local smoke message.
+
+After install, ask the user to open Codex App with `/path/to/user/project/agentInbox`. New AgentRelay messages will create or continue threads in that project. See `docs/codex-app-inbox-receiver.md`.
+
 ## Normal usage after install
 
 Zac can talk normally to Zac's Codex agent:

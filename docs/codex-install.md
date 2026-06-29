@@ -84,4 +84,12 @@ npm run listener
 
 The listener writes `task.pending` event JSON files to `.agentrelay/inbox/` and can call an optional hook configured as `AGENTRELAY_LISTENER_HOOK`.
 
+If you use Codex App and want incoming messages to appear as threads, install the optional receiver example:
+
+```bash
+npm run install:codex-app-inbox -- --project-path /path/to/project
+```
+
+Then open `/path/to/project/agentInbox` in Codex App. See `docs/codex-app-inbox-receiver.md`.
+
 For Codex CLI/TUI, `/mcp` can list configured MCP servers.

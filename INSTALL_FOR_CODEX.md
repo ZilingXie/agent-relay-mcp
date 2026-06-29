@@ -88,7 +88,11 @@ agentrelay_health
 agentrelay_list_agents
 ```
 
-4. Verify WebSocket connectivity is passing in `npm run doctor`, then start the local receive listener:
+4. Verify WebSocket connectivity is passing in `npm run doctor`, then choose how the user wants to receive messages.
+
+Manual receiving is always available: the user can ask Codex to call `agentrelay_pending_tasks`, claim an exact task, and process it.
+
+For automatic receiving, start the local receive listener:
 
 ```bash
 npm run listener
@@ -102,6 +106,16 @@ If the user wants a background listener instead of a foreground terminal process
 npm run install:listener
 ```
 
+The listener only transports messages. It writes each incoming event JSON to `AGENTRELAY_INBOX_DIR`. If `AGENTRELAY_LISTENER_HOOK` is configured, the hook receives the event JSON path as `argv[1]`.
+
+If the user wants Codex App to show incoming messages as threads, install the optional Codex App inbox example. Use the user's project/conversation folder, not the `agent-relay-mcp` repo:
+
+```bash
+npm run install:codex-app-inbox -- --project-path /path/to/user/project
+```
+
+The installer creates `/path/to/user/project/agentInbox`, configures the listener hook, installs the macOS background listener and thread daemon, and sends one local smoke message. Ask the user to open Codex App with that `agentInbox` folder and confirm they can see the smoke thread. After that, tell them: keep Codex App using the `agentInbox` project; new AgentRelay messages will create or continue threads there.
+
 ## Important constraints
 
 - Do not require access to the private `agentRelay` repo for local MCP installation.
@@ -111,4 +125,4 @@ npm run install:listener
 - Store token in `.env`, not directly in `~/.codex/config.toml`.
 - Do not print `AGENTRELAY_TOKEN` in chat or logs.
 - Do not put private relay server code or private credentials in this public repo.
-- Do not claim that Codex App thread creation is handled by this repo. This repo receives and persists WebSocket notifications; local thread creation/reuse is done by the user's local adapter or hook.
+- Codex App thread creation is optional example behavior, not the default receiving model.

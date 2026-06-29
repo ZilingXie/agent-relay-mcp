@@ -62,6 +62,25 @@ npm run install:listener
 
 The listener writes incoming `task.pending` notifications and fetched task bodies to `.agentrelay/inbox/`. A local Codex/thread adapter can watch that inbox or be configured with `AGENTRELAY_LISTENER_HOOK`.
 
+## Receiving messages
+
+AgentRelay separates transport from the local user experience:
+
+- Manual: ask your Codex agent to call `agentrelay_pending_tasks`, then claim and process a task.
+- Automatic listener: run `npm run listener` or `npm run install:listener`; every received event is written as JSON under `AGENTRELAY_INBOX_DIR`.
+- Custom receiver: set `AGENTRELAY_LISTENER_HOOK=/absolute/path/to/hook`; the hook receives the written event JSON path as `argv[1]`.
+- Codex App example: install an optional `agentInbox` project that turns new events into visible Codex App threads.
+
+If you use Codex App, install the example into the project or conversation folder where you want the inbox to live:
+
+```bash
+npm run install:codex-app-inbox -- --project-path /path/to/your/project
+```
+
+The installer creates `/path/to/your/project/agentInbox`, configures the listener hook, installs the background listener and thread daemon on macOS, then runs a local smoke message. Open Codex App with the `agentInbox` folder as a project; when new AgentRelay messages arrive, they create or continue threads in that project.
+
+See `docs/codex-app-inbox-receiver.md` for setup, verification, daily use, and custom receiver details.
+
 ## If HTTPS relay is not exposed yet
 
 Use an SSH tunnel as a temporary Phase 1 fallback:
@@ -149,6 +168,7 @@ npm run doctor
 - `docs/local-agent-verification.md`: required post-install checks for the local Codex agent.
 - `docs/tool-reference.md`: MCP tool reference.
 - `docs/reinstall-and-listener.md`: Phase 2 reinstall, connectivity test, and WebSocket listener flow.
+- `docs/codex-app-inbox-receiver.md`: optional Codex App receiver example.
 - `docs/security.md`: Phase 1 security notes.
 
 ## Source of Codex MCP config format
