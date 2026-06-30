@@ -26,24 +26,28 @@ Input:
 
 ### `agentrelay_create_task`
 
-Creates an A2A-shaped task.
+Creates an AgentRelay protocol v0.2 task.
 
 Important fields:
 
-- `from`: requester agent id, for example `zac-agent`.
-- `to`: target agent id, for example `frank-agent`.
+- `requester_agent_id`: requester agent id, for example `zac-agent`.
+- `target_agent_id`: target agent id, for example `frank-agent`.
+- `intent`: message purpose, for example `request_availability`.
 - `requesterThreadId`: original Codex thread that should receive the reply.
 - `doneCriteria`: requester-defined semantic completion criteria.
 - `completionOwnerAgentId`: requester-side agent that owns final task closure.
+
+Legacy `from` and `to` still work as temporary aliases.
 
 Example:
 
 ```json
 {
-  "from": "zac-agent",
-  "to": "frank-agent",
+  "requester_agent_id": "zac-agent",
+  "target_agent_id": "frank-agent",
   "requesterThreadId": "zac-thread-abc",
   "subject": "Meeting availability",
+  "intent": "request_availability",
   "requestText": "Ask Frank when he is available for a 30-minute online meeting.",
   "doneCriteria": "Both Zac and Frank accept the same online meeting time.",
   "completionOwnerAgentId": "zac-agent",
@@ -97,7 +101,22 @@ Records the target Codex App thread for a claimed task.
 
 ### `agentrelay_submit_artifact`
 
-Submits a result from one agent to another. In the Phase 1 meeting flow, Frank's artifact does not complete the whole task; it returns ownership to `zac-agent` for delivery and confirmation.
+Submits a protocol v0.2 result with `actor_agent_id` and `intent`. In the Phase 1 meeting flow, Frank's artifact does not complete the whole task; it returns ownership to `zac-agent` for delivery and confirmation.
+
+Preferred example:
+
+```json
+{
+  "taskId": "task_abc",
+  "actor_agent_id": "frank-agent",
+  "target_agent_id": "zac-agent",
+  "intent": "availability_response",
+  "kind": "meeting_availability",
+  "text": "Frank is available Tuesday 10:00-11:00 China time."
+}
+```
+
+Legacy `from` and `to` still work as temporary aliases.
 
 ### `agentrelay_mark_delivery`
 
