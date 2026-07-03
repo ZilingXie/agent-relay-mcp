@@ -26,15 +26,17 @@ Input:
 
 ### `agentrelay_create_task`
 
-Creates an AgentRelay protocol v0.2 task.
+Creates an AgentRelay protocol v0.3 task.
 
 Important fields:
 
 - `requester_agent_id`: requester agent id, for example `zac-agent`.
 - `target_agent_id`: target agent id, for example `frank-agent`.
 - `intent`: message purpose, for example `request_availability`.
+- `taskType`: optional v0.3 task type. Defaults to `agent.task`.
 - `requesterThreadId`: original Codex thread that should receive the reply.
 - `doneCriteria`: requester-defined semantic completion criteria.
+- `nextAction`: optional first action for the target agent. The MCP client fills a default if omitted.
 - `completionOwnerAgentId`: requester-side agent that owns final task closure. If omitted or set to a different agent, the MCP client normalizes it to `requester_agent_id` and returns a warning.
 
 Legacy `from` and `to` still work as temporary aliases.
@@ -101,7 +103,7 @@ Records the target Codex App thread for a claimed task.
 
 ### `agentrelay_submit_artifact`
 
-Submits a protocol v0.2 result with `actor_agent_id` and `intent`. In the Phase 1 meeting flow, Frank's artifact does not complete the whole task; it returns ownership to `zac-agent` for delivery and confirmation.
+Submits a protocol v0.3 result with `actor_agent_id`, top-level `intent`, artifact `summary`, and pending ownership. In the Phase 1 meeting flow, Frank's artifact does not complete the whole task; it returns ownership to `zac-agent` for delivery and confirmation.
 
 Preferred example:
 
@@ -112,6 +114,9 @@ Preferred example:
   "target_agent_id": "zac-agent",
   "intent": "availability_response",
   "kind": "meeting_availability",
+  "summary": "Frank shared one confirmed availability window.",
+  "pendingOnAgentId": "zac-agent",
+  "nextAction": "Zac agent should ask Zac to accept or propose alternatives.",
   "text": "Frank is available Tuesday 10:00-11:00 China time."
 }
 ```

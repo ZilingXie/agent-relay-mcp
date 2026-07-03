@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,6 +13,7 @@ const repoRoot = resolve(__dirname, "..");
 loadDotEnv(process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
+const PROTOCOL_VERSION = "agent-collab-v0.3";
 const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL);
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
@@ -64,20 +66,22 @@ function registerTools(mcpServer) {
     "agentrelay_create_task",
     {
       title: "Create AgentRelay task",
-      description: "Create an AgentRelay protocol v0.2 task and record requester-side completion ownership.",
+      description: "Create an AgentRelay protocol v0.3 task and record requester-side completion ownership.",
       inputSchema: {
-        requester_agent_id: z.string().min(1).optional().describe("Protocol v0.2 requester agent id"),
-        target_agent_id: z.string().min(1).optional().describe("Protocol v0.2 target agent id"),
+        requester_agent_id: z.string().min(1).optional().describe("Protocol v0.3 requester agent id"),
+        target_agent_id: z.string().min(1).optional().describe("Protocol v0.3 target agent id"),
         from: z.string().min(1).optional().describe("Legacy requester agent id alias"),
         to: z.string().min(1).optional().describe("Legacy target agent id alias"),
         requestText: z.string().min(1).describe("Human-readable request to send"),
         requesterThreadId: z.string().min(1).describe("Codex App thread id to deliver replies back to"),
-        intent: z.string().optional().describe("Protocol v0.2 message intent, for example request_availability"),
+        intent: z.string().optional().describe("Protocol v0.3 message intent, for example request_availability"),
+        taskType: z.string().optional().describe("Protocol v0.3 task_type, for example meeting.schedule"),
         subject: z.string().optional(),
         contextId: z.string().optional(),
         doneCriteria: z.string().optional(),
         completionOwnerAgentId: z.string().optional(),
         pendingOnAgentId: z.string().optional(),
+        nextAction: z.string().optional(),
         humanBoundaryReason: z.string().optional(),
         ttl: z.number().int().positive().optional(),
         maxTurns: z.number().int().positive().optional()
@@ -100,7 +104,9 @@ function registerTools(mcpServer) {
         });
       }
       const payload = {
-        protocol_version: "agent-collab-v0.2",
+        protocol_version: PROTOCOL_VERSION,
+        idempotency_key: `mcp-create-${randomUUID()}`,
+        task_type: args.taskType || "agent.task",
         contextId: args.contextId,
         requester_agent_id: requesterAgentId,
         target_agent_id: targetAgentId,
@@ -109,6 +115,7 @@ function registerTools(mcpServer) {
         done_criteria: args.doneCriteria || "",
         completion_owner_agent_id: requesterAgentId,
         pending_on_agent_id: args.pendingOnAgentId || targetAgentId,
+        next_action: args.nextAction || `${targetAgentId} should process the request and return an artifact.`,
         ttl: args.ttl,
         maxTurns: args.maxTurns,
         message: {
@@ -211,15 +218,16 @@ function registerTools(mcpServer) {
     "agentrelay_submit_artifact",
     {
       title: "Submit AgentRelay artifact",
-      description: "Submit a protocol v0.2 artifact. By default, this transfers ownership back to the completion owner instead of completing the task.",
+      description: "Submit a protocol v0.3 artifact. By default, this transfers ownership back to another agent instead of completing the task.",
       inputSchema: {
         taskId: z.string().min(1),
-        actor_agent_id: z.string().min(1).optional().describe("Protocol v0.2 agent that produced the artifact"),
+        actor_agent_id: z.string().min(1).optional().describe("Protocol v0.3 agent that produced the artifact"),
         target_agent_id: z.string().min(1).optional().describe("Optional target/receiving agent id"),
         from: z.string().min(1).optional().describe("Legacy actor agent id alias"),
         to: z.string().min(1).optional().describe("Legacy target agent id alias"),
-        intent: z.string().optional().describe("Protocol v0.2 artifact intent, for example availability_response"),
+        intent: z.string().optional().describe("Protocol v0.3 artifact intent, for example availability_response"),
         kind: z.string().optional(),
+        summary: z.string().optional(),
         text: z.string().min(1),
         pendingOnAgentId: z.string().optional(),
         pendingOnHumanId: z.string().optional(),
@@ -232,17 +240,24 @@ function registerTools(mcpServer) {
       if (!actorAgentId) {
         throw new Error("agentrelay_submit_artifact requires actor_agent_id or legacy from");
       }
+      const pendingOnAgentId = args.pendingOnAgentId || args.target_agent_id || args.to;
+      if (!pendingOnAgentId) {
+        throw new Error("agentrelay_submit_artifact requires pendingOnAgentId or target_agent_id for protocol v0.3");
+      }
       const payload = {
-        protocol_version: "agent-collab-v0.2",
+        protocol_version: PROTOCOL_VERSION,
+        idempotency_key: `mcp-artifact-${randomUUID()}`,
         actor_agent_id: actorAgentId,
+        intent: args.intent || "work_result",
         target_agent_id: args.target_agent_id || args.to,
-        pending_on_agent_id: args.pendingOnAgentId,
+        pending_on_agent_id: pendingOnAgentId,
         pendingOnHumanId: args.pendingOnHumanId,
-        nextStatus: args.nextStatus,
-        nextAction: args.nextAction,
+        next_status: args.nextStatus || "delivery_pending",
+        next_action: args.nextAction || `${pendingOnAgentId} should evaluate the artifact against the task done criteria.`,
         artifact: {
           intent: args.intent || "work_result",
           kind: args.kind || "text",
+          summary: args.summary || summarizeText(args.text),
           parts: [{ kind: "text", text: args.text }]
         }
       };
@@ -324,7 +339,19 @@ function registerTools(mcpServer) {
       }
     },
     async ({ taskId, closedByAgentId, terminalReason }) =>
-      jsonResult(await relayPost(`/tasks/${encodeURIComponent(taskId)}/close`, { closedByAgentId, terminalReason }))
+      jsonResult(
+        await relayPost(`/tasks/${encodeURIComponent(taskId)}/close`, {
+          protocol_version: PROTOCOL_VERSION,
+          idempotency_key: `mcp-close-${randomUUID()}`,
+          closed_by_agent_id: closedByAgentId,
+          completion_authority: {
+            type: "agent",
+            agent_id: closedByAgentId,
+            summary: "Completion recorded by the requester-side agent."
+          },
+          terminal_reason: terminalReason
+        })
+      )
   );
 
   mcpServer.registerTool(
@@ -432,6 +459,14 @@ function parseEnvValue(value) {
     return value.slice(1, -1);
   }
   return value;
+}
+
+function summarizeText(text) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 160) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 157)}...`;
 }
 
 function compact(value) {

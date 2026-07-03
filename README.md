@@ -4,10 +4,11 @@ Public Codex MCP client for AgentRelay.
 
 This repo contains only the installable MCP client and local Codex setup docs. The private AgentRelay server repo remains private. Local Codex agents install this repo, read relay credentials from a local `.env`, and connect to the cloud relay through `AGENTRELAY_BASE_URL`.
 
-The MCP tools now prefer AgentRelay Protocol v0.2:
+The MCP tools now prefer AgentRelay Protocol v0.3:
 
 - create tasks with `requester_agent_id`, `target_agent_id`, and message `intent`
 - submit artifacts with `actor_agent_id` and artifact `intent`
+- send v0.3 transport fields such as `idempotency_key`, `task_type`, `next_action`, and artifact `summary`
 - keep legacy `from`/`to` aliases working during migration
 
 ## Quick Install
