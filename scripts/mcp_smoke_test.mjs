@@ -152,7 +152,10 @@ function startFakeRelay() {
         return sendJson(response, { name: "Frank Agent", skills: [{ id: "meeting-coordination" }] });
       }
       if (request.method === "POST" && path === "/agentrelay/tasks") {
-        assert(payload.protocol_version === "agent-collab-v0.2", "MCP create payload missing protocol version");
+        assert(payload.protocol_version === "agent-collab-v0.3", "MCP create payload missing protocol version");
+        assert(payload.idempotency_key, "MCP create payload missing idempotency_key");
+        assert(payload.task_type === "agent.task", "MCP create payload missing task_type");
+        assert(payload.next_action, "MCP create payload missing next_action");
         assert(payload.requester_agent_id === "zac-agent", "MCP create payload missing requester_agent_id");
         assert(payload.target_agent_id === "frank-agent", "MCP create payload missing target_agent_id");
         assert(payload.completion_owner_agent_id === "zac-agent", "MCP create payload should use requester as completion owner");
@@ -192,10 +195,16 @@ function startFakeRelay() {
         return sendJson(response, { task: state.task });
       }
       if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke/artifacts") {
-        assert(payload.protocol_version === "agent-collab-v0.2", "MCP artifact payload missing protocol version");
+        assert(payload.protocol_version === "agent-collab-v0.3", "MCP artifact payload missing protocol version");
+        assert(payload.idempotency_key, "MCP artifact payload missing idempotency_key");
         assert(payload.actor_agent_id === "frank-agent", "MCP artifact payload missing actor_agent_id");
+        assert(payload.intent === "availability_response", "MCP artifact payload missing top-level intent");
         assert(payload.target_agent_id === "zac-agent", "MCP artifact payload missing target_agent_id");
+        assert(payload.pending_on_agent_id === "zac-agent", "MCP artifact payload missing pending_on_agent_id");
+        assert(payload.next_status === "delivery_pending", "MCP artifact payload missing next_status");
+        assert(payload.next_action, "MCP artifact payload missing next_action");
         assert(payload.artifact?.intent === "availability_response", "MCP artifact payload missing intent");
+        assert(payload.artifact?.summary, "MCP artifact payload missing summary");
         state.task.status = "delivery_pending";
         state.task.pending_on_agent_id = "zac-agent";
         state.events.push({ event_type: "artifact.submitted" });
@@ -208,8 +217,12 @@ function startFakeRelay() {
         return sendJson(response, { task: state.task });
       }
       if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke/close") {
+        assert(payload.protocol_version === "agent-collab-v0.3", "MCP close payload missing protocol version");
+        assert(payload.idempotency_key, "MCP close payload missing idempotency_key");
+        assert(payload.closed_by_agent_id === "zac-agent", "MCP close payload missing closed_by_agent_id");
+        assert(payload.completion_authority?.type === "agent", "MCP close payload missing completion_authority");
         state.task.status = "completed";
-        state.task.terminal_reason = payload.terminalReason;
+        state.task.terminal_reason = payload.terminal_reason;
         state.events.push({ event_type: "task.completed" });
         return sendJson(response, { task: state.task });
       }
