@@ -89,6 +89,16 @@ function registerTools(mcpServer) {
       if (!requesterAgentId || !targetAgentId) {
         throw new Error("agentrelay_create_task requires requester_agent_id/target_agent_id or legacy from/to");
       }
+      const requestedCompletionOwnerAgentId = args.completionOwnerAgentId;
+      const warnings = [];
+      if (requestedCompletionOwnerAgentId && requestedCompletionOwnerAgentId !== requesterAgentId) {
+        warnings.push({
+          code: "COMPLETION_OWNER_NORMALIZED",
+          message: "AgentRelay tasks are requester-completed; completionOwnerAgentId was normalized to requester_agent_id.",
+          requestedCompletionOwnerAgentId,
+          completionOwnerAgentId: requesterAgentId
+        });
+      }
       const payload = {
         protocol_version: "agent-collab-v0.2",
         contextId: args.contextId,
@@ -97,7 +107,7 @@ function registerTools(mcpServer) {
         requesterThreadId: args.requesterThreadId,
         subject: args.subject || "AgentRelay task",
         done_criteria: args.doneCriteria || "",
-        completion_owner_agent_id: args.completionOwnerAgentId || requesterAgentId,
+        completion_owner_agent_id: requesterAgentId,
         pending_on_agent_id: args.pendingOnAgentId || targetAgentId,
         ttl: args.ttl,
         maxTurns: args.maxTurns,
@@ -110,7 +120,8 @@ function registerTools(mcpServer) {
           ? { requiresHuman: true, reason: args.humanBoundaryReason }
           : undefined
       };
-      return jsonResult(await relayPost("/tasks", compact(payload)));
+      const result = await relayPost("/tasks", compact(payload));
+      return jsonResult(warnings.length ? { ...result, warnings } : result);
     }
   );
 
