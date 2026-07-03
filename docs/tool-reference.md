@@ -35,7 +35,7 @@ Important fields:
 - `intent`: message purpose, for example `request_availability`.
 - `requesterThreadId`: original Codex thread that should receive the reply.
 - `doneCriteria`: requester-defined semantic completion criteria.
-- `completionOwnerAgentId`: requester-side agent that owns final task closure.
+- `completionOwnerAgentId`: requester-side agent that owns final task closure. If omitted or set to a different agent, the MCP client normalizes it to `requester_agent_id` and returns a warning.
 
 Legacy `from` and `to` still work as temporary aliases.
 

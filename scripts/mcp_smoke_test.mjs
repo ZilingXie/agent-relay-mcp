@@ -39,9 +39,11 @@ try {
     requestText: "Ask Frank when he is available for an online meeting.",
     intent: "request_availability",
     doneCriteria: "Both Zac and Frank accept the same online meeting time.",
-    completionOwnerAgentId: "zac-agent",
+    completionOwnerAgentId: "frank-agent",
     humanBoundaryReason: "Frank must approve sharing availability."
   });
+  assert(created.task.completion_owner_agent_id === "zac-agent", "completion owner should normalize to requester");
+  assert(created.warnings?.[0]?.code === "COMPLETION_OWNER_NORMALIZED", "completion owner normalization warning missing");
   const taskId = created.task.task_id;
 
   const frankClaim = await callJson("agentrelay_claim_task", { agentId: "frank-agent" });
@@ -153,6 +155,7 @@ function startFakeRelay() {
         assert(payload.protocol_version === "agent-collab-v0.2", "MCP create payload missing protocol version");
         assert(payload.requester_agent_id === "zac-agent", "MCP create payload missing requester_agent_id");
         assert(payload.target_agent_id === "frank-agent", "MCP create payload missing target_agent_id");
+        assert(payload.completion_owner_agent_id === "zac-agent", "MCP create payload should use requester as completion owner");
         assert(payload.message?.actor_agent_id === "zac-agent", "MCP create message missing actor_agent_id");
         assert(payload.message?.intent === "request_availability", "MCP create message missing intent");
         state.task = {
