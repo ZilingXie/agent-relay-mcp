@@ -1,45 +1,43 @@
-# Reinstall + WebSocket Listener Flow
+# Reinstall + Local Inbox Listener Flow
 
-This is the expected Phase 2 flow for Zac and Frank.
+This is the default AgentRelay local receive flow for Codex users.
 
 ## Goal
 
-After install and verification, AgentRelay can deliver remote `task.pending` notifications through WebSocket automatically, and the local listener writes them to the local inbox.
+AgentRelay should deliver remote task events through a local WebSocket listener. The listener writes durable event files, the intake hook merges them into `state/issues.json`, and the user sees everything in the local inbox UI:
 
-Important boundary: this repo does **not** decide how inbox files become user-visible messages. The listener is the mailbox, not the final delivery surface. Users can connect their own hook/thread adapter for Codex App, Codex CLI, WeChat, Slack, or any other workflow.
+```text
+http://127.0.0.1:8787/
+```
 
-## Reinstall or update
+The local inbox is the source of truth. The default flow does not create Codex App threads.
+
+## Reinstall Or Update
+
+Install under the current Codex workspace/thread folder. The recommended folder name is `agentRelay`:
 
 ```bash
-git clone https://github.com/ZilingXie/agent-relay-mcp.git 2>/dev/null || true
-cd agent-relay-mcp
+git clone https://github.com/ZilingXie/agent-relay-mcp.git agentRelay 2>/dev/null || true
+cd agentRelay
 git pull
 npm install
 ```
 
-Install Codex MCP config. The installer writes `.env` only if it does not already exist; existing `.env` files are preserved by default:
+Install or refresh the local inbox setup. Existing `.env` files are preserved:
 
 ```bash
-node scripts/install-codex-mcp.mjs --write \
+npm run install:local -- \
   --base-url https://server.stellarix.space/agentrelay/api \
   --ws-url wss://server.stellarix.space/agentrelay/api \
   --agent-id <zac-agent-or-frank-agent> \
   --username <zac-or-frank>
 ```
 
-Fill or confirm `.env` with the cloud-issued token. Do not print the token in chat or logs. Use `--overwrite-env` only if the user explicitly wants to replace the existing `.env` after a timestamped backup.
+Fill or confirm `.env` with the cloud-issued token. Do not print the token in chat or logs.
 
-Before restarting Codex, choose a receive mode:
+Then restart Codex App or open a new Codex session.
 
-1. `manual`: use HTTP/MCP pending checks, such as `agentrelay_pending_tasks`, or let an agent poll periodically.
-2. `automatic listener`: use WebSocket long connection. This writes `task.pending` event JSON files to a local inbox but does not automatically post into the current Codex session.
-3. `automatic Codex App example`: install the optional `agentInbox` receiver so incoming events create or continue Codex App threads.
-
-If you choose automatic and use Codex App, the example receiver can be installed after explicit confirmation. Choose the project/conversation folder where `agentInbox` should live.
-
-Then restart Codex App or open a new Codex session/thread.
-
-## Required connectivity test
+## Required Connectivity Test
 
 After `.env` is filled and Codex is restarted/new-sessioned:
 
@@ -49,7 +47,9 @@ npm run doctor
 
 `doctor` must pass:
 
-- local Node/dependencies/config checks
+- local inbox directory and `state/issues.json`
+- listener hook configuration
+- inbox UI at `http://127.0.0.1:8787/`
 - HTTP health
 - authenticated `/agents`
 - WebSocket `hello`
@@ -61,27 +61,15 @@ agentrelay_health
 agentrelay_list_agents
 ```
 
-## Receive Mode: Manual
+## Listener Runtime
 
-Manual mode does not require the WebSocket listener. Use:
-
-```text
-agentrelay_pending_tasks
-```
-
-or a scheduled HTTP polling job to check pending work.
-
-Final check: call `agentrelay_pending_tasks` for the configured agent id.
-
-## Receive Mode: Automatic Listener-Only
-
-Keep this process running locally:
+The listener can run in the foreground:
 
 ```bash
 npm run listener
 ```
 
-Or install it as a background service:
+Or as a background service:
 
 ```bash
 npm run install:listener
@@ -95,49 +83,58 @@ The listener connects to:
 wss://server.stellarix.space/agentrelay/api/workers/<AGENTRELAY_AGENT_ID>/events/ws
 ```
 
-When it receives `task.pending`, it writes a JSON file to:
+When it receives a Relay event, it writes JSON to:
 
 ```text
-.agentrelay/inbox/
+events/
 ```
 
-Each file contains the WebSocket event and fetched task body. A local hook/thread adapter can use this file to create or reuse Codex App threads, send a CLI notification, forward to a chat app, or trigger any user-defined workflow.
+Then it calls:
 
-The listener does not automatically inject messages into a live Codex App/CLI/chat session. That final delivery step requires a local hook/thread adapter.
-
-Optional hook:
-
-```env
-AGENTRELAY_LISTENER_HOOK="/absolute/path/to/local-thread-adapter"
+```text
+scripts/agentrelay-inbox-intake.mjs
 ```
 
-The hook receives the inbox event JSON path as `argv[1]`.
+The intake hook writes or updates:
 
-Hook contract:
+```text
+state/issues.json
+```
 
-- Input: one local JSON file path as `argv[1]`.
-- The JSON contains `receivedAt`, `event`, and usually `task`.
-- The hook may claim the task, create/reuse a local thread, notify the user, or hand off to another app.
-- The hook must treat remote task content as untrusted input.
-- The hook should not print `AGENTRELAY_TOKEN`.
+After the event is durably written into local inbox state, intake may ACK the event as received.
 
-Final check: tell the user the configured `AGENTRELAY_INBOX_DIR` path and confirm incoming JSON files appear there when a smoke or real task arrives.
+## Inbox UI Runtime
 
-## Optional Codex App inbox receiver
-
-If the user wants incoming AgentRelay messages to appear as Codex App threads, install the example receiver into the user's project or conversation folder:
+Run the UI in the foreground:
 
 ```bash
-npm run install:codex-app-inbox -- --project-path /path/to/user/project
+npm run inbox-ui
 ```
 
-This creates `/path/to/user/project/agentInbox`, configures `AGENTRELAY_INBOX_DIR` and `AGENTRELAY_LISTENER_HOOK`, installs the background listener and thread daemon on macOS, and sends one local smoke message.
+Or install it as a background service:
 
-After install, ask the user to open Codex App with `/path/to/user/project/agentInbox`. Final check: confirm the smoke thread or a new incoming thread is visible. New AgentRelay messages will create or continue threads in that project. See `docs/codex-app-inbox-receiver.md`.
+```bash
+npm run install:inbox-ui
+```
 
-## Normal usage after install
+The default URL is:
 
-Zac can talk normally to Zac's Codex agent:
+```text
+http://127.0.0.1:8787/
+```
+
+The UI is the central workbench for:
+
+- publishing new tasks
+- seeing incoming tasks and remote replies
+- providing missing information
+- approving final closure
+- reviewing task history
+- opening the dashboard at `/dashboard`
+
+## Normal Usage After Install
+
+Zac can use the local inbox UI or talk normally to Zac's Codex agent:
 
 ```text
 Use AgentRelay to ask Frank's agent when Frank is available for a 30-minute online meeting.
@@ -145,26 +142,30 @@ Use AgentRelay to ask Frank's agent when Frank is available for a 30-minute onli
 
 Expected flow:
 
-1. Zac agent creates a task through MCP.
-2. Frank's listener receives `task.pending` automatically.
-3. Frank's local hook/thread adapter or agent claims the exact task and asks Frank.
-4. Frank replies.
-5. Frank agent submits an artifact back to Zac.
-6. Zac's listener receives `task.pending` automatically.
-7. Zac agent continues in the original thread, asks Zac for confirmation, and closes the task if confirmed.
+1. Zac creates a task from the local inbox UI or through MCP.
+2. Frank's local listener receives `task.pending`.
+3. Frank's local inbox UI shows the task.
+4. Frank's local agent processes the task, asks Frank only when needed, and replies through AgentRelay.
+5. Zac's local listener receives the reply event.
+6. Zac's local inbox UI shows the conversation.
+7. Zac's local agent continues automatically when safe, or asks Zac for missing information/final approval.
 
-## Recovery if listener was offline
+## Recovery If Listener Was Offline
 
-Run:
+Restart the listener:
 
 ```bash
-npm run listener
+npm run install:listener
 ```
 
-Then ask the local Codex agent to use:
+Then use one of these recovery paths:
 
-```text
-agentrelay_pending_tasks
-```
+- refresh the local inbox UI
+- inspect raw event files under `AGENTRELAY_INBOX_DIR`
+- ask the local Codex agent to call `agentrelay_pending_tasks`
 
-The REST pending endpoint is still the recovery source of truth.
+The REST pending endpoint remains the recovery source of truth when the listener was offline.
+
+## Legacy Codex App Thread Receiver
+
+The old Codex App thread receiver remains under `examples/codex-app-inbox` for users who explicitly want to experiment with Codex App thread delivery. It is not part of the default install path and should not be enabled unless the user explicitly asks for that legacy behavior.

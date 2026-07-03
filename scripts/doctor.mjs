@@ -17,6 +17,10 @@ const envPath = resolveHome(getArg("--env") || process.env.AGENTRELAY_ENV_PATH |
 loadDotEnv(envPath);
 const baseUrl = (process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
 const wsBaseUrl = (process.env.AGENTRELAY_WS_URL || deriveWsUrl(baseUrl)).replace(/\/+$/, "");
+const inboxDir = resolveHome(process.env.AGENTRELAY_INBOX_DIR || resolve(repoRoot, ".agentrelay", "inbox"));
+const stateDir = resolveHome(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));
+const inboxUiHost = process.env.AGENTRELAY_INBOX_UI_HOST || "127.0.0.1";
+const inboxUiPort = process.env.AGENTRELAY_INBOX_UI_PORT || "8787";
 let ok = true;
 
 check("Node.js >= 18", Number.parseInt(process.versions.node.split(".")[0], 10) >= 18, `found ${process.versions.node}`);
@@ -26,6 +30,9 @@ check("AgentRelay .env exists", existsSync(envPath), envPath);
 check("AGENTRELAY_AGENT_ID configured", Boolean(process.env.AGENTRELAY_AGENT_ID), process.env.AGENTRELAY_AGENT_ID || "missing");
 check("AGENTRELAY_USERNAME configured", Boolean(process.env.AGENTRELAY_USERNAME), process.env.AGENTRELAY_USERNAME || "missing");
 check("AGENTRELAY_TOKEN configured", Boolean(process.env.AGENTRELAY_TOKEN), process.env.AGENTRELAY_TOKEN ? "present" : "missing");
+check("Local inbox event directory exists", existsSync(inboxDir), inboxDir);
+check("Local inbox state exists", existsSync(resolve(stateDir, "issues.json")), resolve(stateDir, "issues.json"));
+check("Local inbox listener hook configured", Boolean(process.env.AGENTRELAY_LISTENER_HOOK), process.env.AGENTRELAY_LISTENER_HOOK ? "present" : "missing");
 
 if (existsSync(configPath)) {
   const config = await readFile(configPath, "utf8");
@@ -55,6 +62,13 @@ try {
   check("AgentRelay WebSocket hello", hello.type === "hello" && hello.agentId === process.env.AGENTRELAY_AGENT_ID, `${wsBaseUrl} as ${process.env.AGENTRELAY_AGENT_ID}`);
 } catch (error) {
   check("AgentRelay WebSocket hello", false, `${error.message} at ${wsBaseUrl}`);
+}
+
+try {
+  const response = await fetch(`http://${inboxUiHost}:${inboxUiPort}/`);
+  check("Local inbox UI", response.ok, `http://${inboxUiHost}:${inboxUiPort}/`);
+} catch (error) {
+  check("Local inbox UI", false, `${error.message} at http://${inboxUiHost}:${inboxUiPort}/`);
 }
 
 if (!ok) {

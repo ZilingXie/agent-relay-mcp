@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "processorStatus",
+    "summary",
+    "suggestedReply",
+    "needsHumanReason",
+    "requiresHumanConfirmation"
+  ],
+  "properties": {
+    "processorStatus": {
+      "type": "string",
+      "enum": ["waiting", "needs_human", "ready_to_reply", "failed"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "suggestedReply": {
+      "type": "string"
+    },
+    "needsHumanReason": {
+      "type": "string"
+    },
+    "requiresHumanConfirmation": {
+      "type": "boolean"
+    },
+    "actionIntent": {
+      "type": "string",
+      "enum": ["none", "submit_artifact", "close_task", "request_revision"],
+      "default": "none"
+    },
+    "actionReason": {
+      "type": "string",
+      "default": ""
+    },
+    "artifactKind": {
+      "type": "string",
+      "default": ""
+    },
+    "artifactText": {
+      "type": "string",
+      "default": ""
+    },
+    "terminalReason": {
+      "type": "string",
+      "default": ""
+    }
+  }
+}

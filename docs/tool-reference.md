@@ -84,9 +84,9 @@ Claims an exact task id after a WebSocket `task.pending` event.
 
 ### `agentrelay_ack_event`
 
-Acks a durable event after the local listener dispatched it. Optionally records a local thread binding.
+Acks a durable event after the local listener has durably written it into local inbox state. Optionally records a legacy local thread binding.
 
-Note: acking an event does not deliver it into any UI. UI/session delivery is the responsibility of the user's local hook/thread adapter.
+Note: acking an event does not deliver it into any UI by itself. The default local UI reads from `state/issues.json`, which is written by `scripts/agentrelay-inbox-intake.mjs`.
 
 ```json
 {
@@ -99,7 +99,7 @@ Note: acking an event does not deliver it into any UI. UI/session delivery is th
 
 ### `agentrelay_set_target_thread`
 
-Records the target Codex App thread for a claimed task.
+Legacy helper that records the target Codex App thread for a claimed task. New installs should use the local inbox UI instead of Codex App thread delivery.
 
 ### `agentrelay_submit_artifact`
 

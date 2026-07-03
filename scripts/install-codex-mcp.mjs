@@ -78,16 +78,10 @@ console.log("Next steps for the local agent:");
 console.log("1. Tell the user that Codex MCP config is installed.");
 console.log("2. Tell the user to fill or confirm AGENTRELAY_BASE_URL, AGENTRELAY_WS_URL, AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, and AGENTRELAY_TOKEN in the .env file.");
 console.log("3. Do not print AGENTRELAY_TOKEN in chat or logs.");
-console.log("4. Explain receive modes before restart:");
-console.log("   A) manual: use agentrelay_pending_tasks or periodic HTTP/MCP polling.");
-console.log("   B) automatic listener: receive WebSocket task.pending events into AGENTRELAY_INBOX_DIR.");
-console.log("   C) automatic Codex App example: install the optional agentInbox receiver so events become Codex App threads.");
-console.log("5. Ask whether the user wants the optional Codex App receiver example before installing it.");
-console.log("6. Install only the receive path the user chooses.");
-console.log("7. Tell the user to restart Codex App or open a new Codex session, then tell the agent when that is done.");
-console.log("8. Only after the user says .env is filled and Codex is restarted/new-sessioned, run `npm run doctor`.");
-console.log("9. If doctor passes, verify MCP by calling `agentrelay_health` and `agentrelay_list_agents` in the restarted/new Codex session.");
-console.log("10. Verify the chosen receive path: pending tasks for manual, inbox JSON for listener-only, or Codex App agentInbox smoke/new thread for the example receiver.");
+console.log("4. For the default local inbox UI, run `npm run install:local` instead of using manual polling or Codex App thread delivery.");
+console.log("5. Tell the user to restart Codex App or open a new Codex session, then tell the agent when that is done.");
+console.log("6. Only after the user says .env is filled and Codex is restarted/new-sessioned, run `npm run doctor`.");
+console.log("7. If doctor passes, verify MCP by calling `agentrelay_health` and `agentrelay_list_agents` in the restarted/new Codex session.");
 
 function buildBlock({ serverName, repoRoot, mcpServerPath, envPath }) {
   return `# BEGIN AgentRelay MCP managed block\n[mcp_servers.${serverName}]\ncommand = "node"\nargs = [${tomlString(mcpServerPath)}]\ncwd = ${tomlString(repoRoot)}\nstartup_timeout_sec = 10\ntool_timeout_sec = 60\n\n[mcp_servers.${serverName}.env]\nAGENTRELAY_ENV_PATH = ${tomlString(envPath)}\n# END AgentRelay MCP managed block\n`;

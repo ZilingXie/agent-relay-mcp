@@ -1,52 +1,50 @@
-# Codex MCP Install Guide
+# Codex MCP + Local Inbox Install Guide
 
-## Install from GitHub
+This is the default install path for Codex users. It installs AgentRelay MCP and the local inbox workbench at:
+
+```text
+http://127.0.0.1:8787/
+```
+
+Incoming Relay events are delivered to the local inbox source of truth first. The local agent does not need to poll the server for normal receive flow, and new installs should not create Codex App threads for every task.
+
+## Install From GitHub
+
+Install under the current Codex workspace/thread folder. The recommended folder name is `agentRelay`:
 
 ```bash
-git clone https://github.com/ZilingXie/agent-relay-mcp.git
-cd agent-relay-mcp
+git clone https://github.com/ZilingXie/agent-relay-mcp.git agentRelay
+cd agentRelay
 npm install
 ```
 
-## Configure Codex with cloud credentials
+## Install Local Inbox
+
+Run the local installer:
 
 ```bash
-node scripts/install-codex-mcp.mjs --write \
+npm run install:local -- \
   --base-url https://server.stellarix.space/agentrelay/api \
   --ws-url wss://server.stellarix.space/agentrelay/api \
   --agent-id zac-agent \
   --username zac
 ```
 
-The script updates `~/.codex/config.toml`, writes a backup before modifying an existing config file, and writes a local `.env` template only when `.env` does not already exist. Existing `.env` files are preserved by default. Use `--overwrite-env` only when the user explicitly wants to replace `.env` after a timestamped backup.
+The installer:
 
-The user should fill or confirm `.env`, including `AGENTRELAY_TOKEN`, then choose a receive mode before restarting Codex App or opening a new session/thread. Only after that should the agent run `npm run doctor`.
+- configures AgentRelay MCP in `~/.codex/config.toml`
+- preserves any existing `.env`
+- creates or updates only the local inbox managed block in `.env`
+- creates local inbox state directories
+- installs the inbox UI service
+- configures the listener hook to call `scripts/agentrelay-inbox-intake.mjs`
+- installs the listener service only when `.env` already contains a non-placeholder token
 
-Receive modes:
+Do not print `AGENTRELAY_TOKEN`.
 
-1. `manual`: use HTTP/MCP pending checks such as `agentrelay_pending_tasks`, or periodic polling.
-2. `automatic listener`: use the WebSocket listener. It receives `task.pending` events and writes JSON files to the local inbox. It does not automatically post into the current Codex session.
-3. `automatic Codex App example`: install the optional `agentInbox` receiver so incoming events create or continue Codex App threads.
+## Fill `.env`
 
-For Codex App users, the example receiver can be installed later after explicit user confirmation. Ask which project/conversation folder should contain `agentInbox`.
-
-## Manual config
-
-If you prefer to edit `~/.codex/config.toml` manually:
-
-```toml
-[mcp_servers.agentrelay]
-command = "node"
-args = ["/absolute/path/to/agent-relay-mcp/mcp/server.mjs"]
-cwd = "/absolute/path/to/agent-relay-mcp"
-startup_timeout_sec = 10
-tool_timeout_sec = 60
-
-[mcp_servers.agentrelay.env]
-AGENTRELAY_ENV_PATH = "/absolute/path/to/agent-relay-mcp/.env"
-```
-
-Then create `.env`:
+After install, ask the user to fill or confirm these values in `.env`:
 
 ```env
 AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api
@@ -56,60 +54,76 @@ AGENTRELAY_USERNAME=zac
 AGENTRELAY_TOKEN=replace-with-cloud-token
 ```
 
-## Remote relay through SSH tunnel
+The installer also writes local inbox settings such as:
 
-If the relay runs on a private port on `server.stellarix.space`, keep this tunnel open from the machine running Codex:
-
-```bash
-ssh -N -L 8787:127.0.0.1:8787 ubuntu@server.stellarix.space
+```env
+AGENTRELAY_INBOX_DIR=/absolute/path/to/agentRelay/events
+AGENTRELAY_ISSUES_PATH=/absolute/path/to/agentRelay/state/issues.json
+AGENTRELAY_LISTENER_HOOK=/absolute/path/to/agentRelay/scripts/agentrelay-inbox-intake.mjs
+AGENTRELAY_INBOX_UI_PORT=8787
 ```
 
-Then configure:
+## Restart And Verify
 
-```text
-AGENTRELAY_BASE_URL=http://127.0.0.1:8787/agentrelay
-```
-
-## Restart and verify
-
-After the user fills `.env` and restarts Codex App or opens a new session, run:
+After the user fills `.env`, ask them to restart Codex App or open a new Codex session. Then run:
 
 ```bash
 npm run doctor
 ```
 
-`doctor` checks HTTP health, authenticated `/agents`, and WebSocket `hello`.
+`doctor` checks:
 
-If `doctor` passes, ask Codex:
+- local inbox event directory
+- `state/issues.json`
+- listener hook configuration
+- local inbox UI at `http://127.0.0.1:8787/`
+- HTTP health
+- authenticated `/agents`
+- WebSocket `hello`
+
+Then verify MCP tools from the restarted Codex session:
 
 ```text
-Use the AgentRelay MCP server. Call agentrelay_health and agentrelay_list_agents.
+Use AgentRelay MCP. Call agentrelay_health and agentrelay_list_agents.
 ```
 
-If the user chose automatic listener-only mode, start the receive listener:
+If the listener was not started during install because `.env` still had placeholders, start it after the token is filled:
 
 ```bash
-npm run listener
+npm run install:listener
 ```
 
-The listener writes `task.pending` event JSON files to `.agentrelay/inbox/` and can call an optional hook configured as `AGENTRELAY_LISTENER_HOOK`.
+## Smoke Test
 
-The listener does not automatically post into Codex App, Codex CLI, or chat apps by itself. That final delivery step requires a user-owned hook/thread adapter. See `docs/reinstall-and-listener.md` for the hook contract.
+Ask the local agent to create a small test task for a known remote agent, for example `project-hermes`. The expected flow is:
 
-If you use Codex App and want incoming messages to appear as threads, install the optional receiver example:
+1. Zac creates the task from `http://127.0.0.1:8787/` or through AgentRelay MCP.
+2. The remote agent receives and replies through AgentRelay.
+3. The local listener receives the server event.
+4. `agentrelay-inbox-intake.mjs` writes the event into local inbox state.
+5. The local UI shows the task conversation.
+6. The local processor/executor handles safe next steps or asks Zac for approval.
 
-```bash
-npm run install:codex-app-inbox -- --project-path /path/to/project
+When the reply appears in the local UI, tell the user installation is complete and explain that the local inbox UI is now the central place to publish tasks, provide missing information, approve final work, and review history.
+
+## Manual Config
+
+If you prefer to edit `~/.codex/config.toml` manually:
+
+```toml
+[mcp_servers.agentrelay]
+command = "node"
+args = ["/absolute/path/to/agentRelay/mcp/server.mjs"]
+cwd = "/absolute/path/to/agentRelay"
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+
+[mcp_servers.agentrelay.env]
+AGENTRELAY_ENV_PATH = "/absolute/path/to/agentRelay/.env"
 ```
 
-Then open `/path/to/project/agentInbox` in Codex App. See `docs/codex-app-inbox-receiver.md`.
+Manual config is not enough for the default local inbox experience. You still need the `.env` local inbox block, UI service, listener service, and listener hook. Prefer `npm run install:local`.
 
-If the user chose manual mode, do not start the listener; use `agentrelay_pending_tasks` or another HTTP polling strategy.
+## Legacy Codex App Thread Receiver
 
-Final receive checks:
-
-- Manual: call `agentrelay_pending_tasks` for the configured agent id.
-- Automatic listener-only: inspect the configured `AGENTRELAY_INBOX_DIR` and confirm incoming JSON files appear there when a smoke or real task arrives.
-- Automatic Codex App example: ask the user to open `/path/to/project/agentInbox` in Codex App and confirm the smoke thread or a new incoming thread appears.
-
-For Codex CLI/TUI, `/mcp` can list configured MCP servers.
+The old Codex App thread receiver remains under `examples/codex-app-inbox` for reference only. It is not the default receive path. New installs should use the local inbox UI instead of creating Codex App threads per AgentRelay task.
