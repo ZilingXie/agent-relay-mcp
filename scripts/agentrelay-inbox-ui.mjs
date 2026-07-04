@@ -1424,6 +1424,8 @@ const INDEX_HTML = String.raw`<!doctype html>
       <div id="issues" class="issues"></div>
     </aside>
 
+    <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="Resize conversation list" aria-orientation="vertical" tabindex="0"></div>
+
     <main class="workspace">
       <button class="theme-toggle" id="theme-toggle" type="button" title="Toggle theme" aria-label="Toggle theme">◐</button>
       <section id="inbox-view" class="view active" aria-label="Task chat">
@@ -1500,6 +1502,7 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
 
 const STYLES_CSS = String.raw`:root {
   color-scheme: dark;
+  --sidebar-width: 390px;
   --bg: #151515;
   --pane: #242424;
   --surface: #1b1b1b;
@@ -1573,7 +1576,7 @@ p {
 
 .app-shell {
   display: grid;
-  grid-template-columns: minmax(310px, 390px) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) 6px minmax(0, 1fr);
   height: 100dvh;
   min-width: 0;
 }
@@ -1589,7 +1592,30 @@ p {
   min-width: 0;
   flex-direction: column;
   background: var(--pane);
+}
+
+.sidebar-resizer {
+  position: relative;
+  z-index: 5;
+  width: 6px;
+  background: var(--surface);
   border-right: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 -4px;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible,
+.sidebar-resizer.dragging {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  outline: none;
 }
 
 .pane-head {
@@ -2302,6 +2328,10 @@ button:disabled {
     min-height: 100dvh;
   }
 
+  .sidebar-resizer {
+    display: none;
+  }
+
   .conversation-pane {
     min-height: 340px;
     border-right: 0;
@@ -2336,6 +2366,9 @@ let activeView = "inbox";
 let showCompleted = false;
 let latestDraft = null;
 const pageMode = document.body.dataset.page || "inbox";
+const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width";
+const SIDEBAR_MIN_WIDTH = 280;
+const SIDEBAR_MAX_WIDTH = 720;
 
 const el = {
   freshness: document.querySelector("#freshness"),
@@ -2353,10 +2386,12 @@ const el = {
   draftForm: document.querySelector("#draft-form"),
   draftStatus: document.querySelector("#draft-status"),
   draftPreview: document.querySelector("#draft-preview"),
-  agentOptions: document.querySelector("#agent-options")
+  agentOptions: document.querySelector("#agent-options"),
+  sidebarResizer: document.querySelector("#sidebar-resizer")
 };
 
 applyTheme(localStorage.getItem("agentrelay-theme") || "dark");
+initSidebarResize();
 
 if (el.search) el.search.addEventListener("input", renderList);
 if (el.refresh) el.refresh.addEventListener("click", refresh);
@@ -2387,6 +2422,51 @@ if (el.draftForm) {
 
 await refresh();
 setInterval(refresh, 10000);
+
+function initSidebarResize() {
+  const storedWidth = Number.parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) || "", 10);
+  if (Number.isFinite(storedWidth)) setSidebarWidth(storedWidth, { persist: false });
+  if (!el.sidebarResizer) return;
+
+  el.sidebarResizer.addEventListener("pointerdown", (event) => {
+    if (window.matchMedia("(max-width: 980px)").matches) return;
+    event.preventDefault();
+    el.sidebarResizer.classList.add("dragging");
+    el.sidebarResizer.setPointerCapture?.(event.pointerId);
+
+    const onPointerMove = (moveEvent) => {
+      setSidebarWidth(moveEvent.clientX);
+    };
+    const stopDragging = () => {
+      el.sidebarResizer.classList.remove("dragging");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+  });
+
+  el.sidebarResizer.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const current = currentSidebarWidth();
+    setSidebarWidth(current + (event.key === "ArrowRight" ? 24 : -24));
+  });
+}
+
+function currentSidebarWidth() {
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width");
+  return Number.parseInt(value, 10) || 390;
+}
+
+function setSidebarWidth(width, { persist = true } = {}) {
+  const next = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(width)));
+  document.documentElement.style.setProperty("--sidebar-width", next + "px");
+  if (persist) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
+}
 
 async function refresh() {
   const response = await fetch("/api/issues", { cache: "no-store" });

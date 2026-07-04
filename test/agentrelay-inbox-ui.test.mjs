@@ -1072,6 +1072,9 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(html, /id="show-completed"/);
     assert.match(html, /Show Completed/);
     assert.match(html, /class="list-tools"/);
+    assert.match(html, /id="sidebar-resizer"/);
+    assert.match(html, /role="separator"/);
+    assert.match(html, /aria-label="Resize conversation list"/);
     assert.doesNotMatch(html, />Pending human<\/span>/);
     assert.doesNotMatch(html, />Pending remote<\/span>/);
     assert.doesNotMatch(html, /data-filter="pending_human"/);
@@ -1104,6 +1107,12 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     const jsResponse = await fetch(`http://127.0.0.1:${port}/app.js`);
     const js = await jsResponse.text();
     assert.match(js, /localStorage\.setItem\("agentrelay-theme"/);
+    assert.match(js, /const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width"/);
+    assert.match(js, /function initSidebarResize/);
+    assert.match(js, /localStorage\.setItem\(SIDEBAR_WIDTH_KEY/);
+    assert.match(js, /pointerdown/);
+    assert.match(js, /ArrowLeft/);
+    assert.match(js, /ArrowRight/);
     assert.match(js, /setInterval\(refresh, 10000\)/);
     assert.match(js, /\/api\/task-requests/);
     assert.match(js, /newTask/);
@@ -1155,6 +1164,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     const cssResponse = await fetch(`http://127.0.0.1:${port}/styles.css`);
     const css = await cssResponse.text();
     assert.match(css, /\.app-shell/);
+    assert.match(css, /--sidebar-width: 390px/);
+    assert.match(css, /grid-template-columns: var\(--sidebar-width\) 6px minmax\(0, 1fr\)/);
+    assert.match(css, /\.sidebar-resizer/);
+    assert.match(css, /cursor: col-resize/);
     assert.match(css, /\.theme-toggle/);
     assert.match(css, /\.icon-only svg/);
     assert.match(css, /\.list-tools/);
