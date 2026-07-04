@@ -1622,6 +1622,7 @@ p {
 .conversation-pane {
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex-direction: column;
   background: var(--pane);
 }
@@ -1762,9 +1763,11 @@ p {
 }
 
 .issues {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 .issue-folder {
@@ -1797,6 +1800,18 @@ p {
 .issue-row.needs-attention {
   background: color-mix(in srgb, var(--bad) 12%, var(--pane));
   box-shadow: inset 3px 0 0 var(--bad);
+}
+
+.issue-row.selected {
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 62%, var(--line));
+}
+
+.issue-row.needs-attention.selected {
+  background: color-mix(in srgb, var(--accent) 14%, color-mix(in srgb, var(--bad) 14%, var(--pane)));
+  box-shadow:
+    inset 3px 0 0 var(--bad),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 68%, var(--line));
 }
 
 .delete-issue {
@@ -2016,8 +2031,12 @@ p {
   justify-items: center;
 }
 
-.message:is(.speaker-zac, .speaker-agent) {
+.message.speaker-zac {
   justify-items: center;
+}
+
+.message.speaker-agent {
+  justify-items: end;
 }
 
 .message-line {
@@ -2031,8 +2050,12 @@ p {
   justify-content: flex-end;
 }
 
-.message:is(.speaker-zac, .speaker-agent) .message-line {
+.message.speaker-zac .message-line {
   justify-content: center;
+}
+
+.message.speaker-agent .message-line {
+  justify-content: flex-end;
 }
 
 .message-meta {
@@ -2730,7 +2753,8 @@ function issueRow(issue) {
     issue.taskId === selectedTaskId ? "selected" : "",
     issue.needsHuman ? "needs-attention" : ""
   ].filter(Boolean).join(" ");
-  return '<article class="' + classes + '" role="button" tabindex="0" data-task-id="' + escapeAttr(issue.taskId) + '">' +
+  const current = issue.taskId === selectedTaskId ? ' aria-current="true"' : "";
+  return '<article class="' + classes + '" role="button" tabindex="0" data-task-id="' + escapeAttr(issue.taskId) + '"' + current + '>' +
     '<div class="row-main"><span class="subject">' + escapeHtml(issue.subject || "(untitled)") + '</span><div class="row-actions"><span class="time">' + formatTime(issue.updatedAt) + '</span><button class="delete-issue" type="button" data-task-id="' + escapeAttr(issue.taskId) + '" title="Delete thread" aria-label="Delete thread">' + trashIcon() + '</button></div></div>' +
   '</article>';
 }
