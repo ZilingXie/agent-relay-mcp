@@ -1166,6 +1166,8 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(css, /--bubble-agent/);
     assert.match(css, /\.message\.speaker-zac \.bubble/);
     assert.match(css, /\.message\.speaker-agent \.bubble/);
+    assert.match(css, /\.message:is\(\.speaker-zac, \.speaker-agent\)/);
+    assert.match(css, /\.message:is\(\.speaker-zac, \.speaker-agent\) \.message-line/);
     assert.match(css, /\.delivery-indicator/);
     assert.match(css, /\.delivery-indicator\.failed/);
     assert.match(css, /\.delivery-indicator\.delivered/);

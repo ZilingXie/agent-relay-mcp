@@ -1958,6 +1958,10 @@ p {
   justify-items: center;
 }
 
+.message:is(.speaker-zac, .speaker-agent) {
+  justify-items: center;
+}
+
 .message-line {
   display: flex;
   align-items: center;
@@ -1967,6 +1971,10 @@ p {
 
 .message.local .message-line {
   justify-content: flex-end;
+}
+
+.message:is(.speaker-zac, .speaker-agent) .message-line {
+  justify-content: center;
 }
 
 .message-meta {
