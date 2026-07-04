@@ -2754,6 +2754,7 @@ function issueStatus(issue) {
 async function selectIssue(taskId, { keepView = false } = {}) {
   if (!el.issues || !el.detailEmpty || !el.detailBody) return;
   const scrollState = keepView ? captureMessageScrollState() : null;
+  const composerDraft = keepView ? captureComposerDraft(taskId) : null;
   selectedTaskId = taskId;
   for (const row of el.issues.querySelectorAll(".issue-row")) {
     row.classList.toggle("selected", row.dataset.taskId === taskId);
@@ -2771,6 +2772,7 @@ async function selectIssue(taskId, { keepView = false } = {}) {
   el.detailBody.hidden = false;
   el.detailBody.innerHTML = renderChat(selectedDetail);
   bindReplyForm(taskId);
+  restoreComposerDraft(composerDraft);
   restoreMessageScrollState(scrollState);
   renderDashboard();
   if (!keepView) setView("inbox");
@@ -2799,6 +2801,30 @@ function restoreMessageScrollState(state) {
     const maxScrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
     messages.scrollTop = Math.min(state.scrollTop, maxScrollTop);
   });
+}
+
+function captureComposerDraft(taskId) {
+  const textarea = el.detailBody?.querySelector("#reply-text");
+  if (!textarea) return null;
+  return {
+    taskId,
+    value: textarea.value,
+    selectionStart: textarea.selectionStart,
+    selectionEnd: textarea.selectionEnd,
+    focused: document.activeElement === textarea
+  };
+}
+
+function restoreComposerDraft(draft) {
+  if (!draft || draft.taskId !== selectedTaskId) return;
+  const textarea = el.detailBody?.querySelector("#reply-text");
+  if (!textarea) return;
+  textarea.value = draft.value || "";
+  if (!draft.focused) return;
+  textarea.focus();
+  const start = Number.isFinite(draft.selectionStart) ? draft.selectionStart : textarea.value.length;
+  const end = Number.isFinite(draft.selectionEnd) ? draft.selectionEnd : start;
+  textarea.setSelectionRange(start, end);
 }
 
 async function deleteIssueFromList(taskId) {

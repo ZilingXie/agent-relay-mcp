@@ -1254,8 +1254,13 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /formatTime\(at\) \+ " "/);
     assert.match(js, /function captureMessageScrollState/);
     assert.match(js, /function restoreMessageScrollState/);
+    assert.match(js, /function captureComposerDraft/);
+    assert.match(js, /function restoreComposerDraft/);
     assert.match(js, /const scrollState = keepView \? captureMessageScrollState\(\) : null/);
+    assert.match(js, /const composerDraft = keepView \? captureComposerDraft\(taskId\) : null/);
     assert.match(js, /restoreMessageScrollState\(scrollState\)/);
+    assert.match(js, /restoreComposerDraft\(composerDraft\)/);
+    assert.match(js, /document\.activeElement === textarea/);
     assert.match(js, /distanceFromBottom <= 48/);
     assert.match(js, /Pending zac-agent/);
     assert.match(js, /class="delivery-indicator failed"/);
