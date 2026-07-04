@@ -919,6 +919,110 @@ test("inbox UI server sends a confirmed task draft once and records an outgoing 
   }
 });
 
+test("inbox UI server accepts nested task ids in create task responses", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
+  const stateRoot = join(root, "state");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(stateRoot, { recursive: true }));
+  await writeFile(join(stateRoot, "task-drafts.json"), JSON.stringify({
+    version: 1,
+    drafts: {
+      draft_nested_id: {
+        draftId: "draft_nested_id",
+        status: "drafted",
+        to: "project-hermes",
+        from: "zac-agent",
+        subject: "Update dashboard title",
+        requestText: "Please update the dashboard title.",
+        doneCriteria: "The title is updated and verified.",
+        humanBoundaryReason: "Zac approved sending this task.",
+        completionOwnerAgentId: "zac-agent",
+        createdAt: "2026-07-02T08:03:00.000Z",
+        updatedAt: "2026-07-02T08:03:00.000Z"
+      }
+    }
+  }, null, 2));
+  const server = createInboxUiServer({
+    stateRoot,
+    now: () => "2026-07-02T08:04:00.000Z",
+    relayClient: {
+      listAgents: async () => ({ agents: [] }),
+      createTask: async (payload) => ({
+        data: {
+          task: {
+            id: "task_nested_id",
+            status: "submitted",
+            requester_agent_id: "zac-agent",
+            target_agent_id: "project-hermes",
+            pending_on_agent_id: "project-hermes",
+            completion_owner_agent_id: "zac-agent",
+            subject: payload.subject
+          }
+        }
+      })
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/task-drafts/draft_nested_id/send`, { method: "POST" });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(body.taskId, "task_nested_id");
+
+    const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+    assert.equal(inbox.issues.task_nested_id.localActions[1].type, "task_created_from_ui");
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("inbox UI server reports create task response shape when task id is missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
+  const stateRoot = join(root, "state");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(stateRoot, { recursive: true }));
+  await writeFile(join(stateRoot, "task-drafts.json"), JSON.stringify({
+    version: 1,
+    drafts: {
+      draft_missing_id: {
+        draftId: "draft_missing_id",
+        status: "drafted",
+        to: "project-hermes",
+        from: "zac-agent",
+        subject: "Update dashboard title",
+        requestText: "Please update the dashboard title.",
+        doneCriteria: "The title is updated and verified.",
+        humanBoundaryReason: "Zac approved sending this task.",
+        completionOwnerAgentId: "zac-agent",
+        createdAt: "2026-07-02T08:03:00.000Z",
+        updatedAt: "2026-07-02T08:03:00.000Z"
+      }
+    }
+  }, null, 2));
+  const server = createInboxUiServer({
+    stateRoot,
+    now: () => "2026-07-02T08:04:00.000Z",
+    relayClient: {
+      listAgents: async () => ({ agents: [] }),
+      createTask: async () => ({
+        ok: true,
+        data: { context_id: "ctx_missing_id" }
+      })
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/task-drafts/draft_missing_id/send`, { method: "POST" });
+    assert.equal(response.status, 500);
+    const body = await response.json();
+    assert.match(body.message, /missing task id/);
+    assert.match(body.message, /response keys: ok, data/);
+    assert.match(body.message, /data keys: context_id/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test("inbox UI server turns a local task request into a sent AgentRelay task", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
@@ -1148,6 +1252,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /Pending zac-agent/);
     assert.match(js, /class="delivery-indicator failed"/);
     assert.match(js, /class="delivery-indicator delivered"/);
+    assert.match(js, /class="message-error"/);
     assert.match(js, /Deliver failed/);
     assert.match(js, /Delivered/);
     assert.match(js, /renderNewTaskMessage/);
@@ -1184,6 +1289,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(css, /\.delivery-indicator/);
     assert.match(css, /\.delivery-indicator\.failed/);
     assert.match(css, /\.delivery-indicator\.delivered/);
+    assert.match(css, /\.message-error/);
     assert.match(css, /\.pending-marker/);
     assert.match(css, /\.message-line/);
     assert.doesNotMatch(css, /top: 12px/);

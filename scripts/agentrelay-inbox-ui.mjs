@@ -1031,9 +1031,10 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
       : undefined
   };
   const response = await relayClient.createTask(payload);
-  const task = response.task || response;
-  const taskId = task.task_id || task.taskId || response.taskId;
-  if (!taskId) throw new Error("AgentRelay create task response is missing task id");
+  const { task, taskId } = extractCreatedTask(response);
+  if (!taskId) {
+    throw new Error(`AgentRelay create task response is missing task id (${describeResponseShape(response)})`);
+  }
 
   const updatedAt = now();
   const sentDraft = {
@@ -1063,6 +1064,37 @@ function buildRelayMessage(text, actorAgentId) {
     intent: "request",
     parts: [{ kind: "text", text: String(text || "") }]
   };
+}
+
+function extractCreatedTask(response) {
+  const candidates = [
+    response?.task,
+    response?.data?.task,
+    response?.result?.task,
+    response?.createdTask,
+    response?.data?.createdTask,
+    response?.result?.createdTask,
+    response?.data,
+    response?.result,
+    response
+  ].filter((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate));
+  for (const candidate of candidates) {
+    const taskId = candidate.task_id || candidate.taskId || candidate.id;
+    if (taskId) return { task: candidate, taskId };
+  }
+  return { task: candidates[0] || {}, taskId: "" };
+}
+
+function describeResponseShape(response) {
+  if (!response || typeof response !== "object") return `response type: ${typeof response}`;
+  const segments = [`response keys: ${Object.keys(response).join(", ") || "(none)"}`];
+  for (const key of ["task", "data", "result", "createdTask"]) {
+    const value = response[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      segments.push(`${key} keys: ${Object.keys(value).join(", ") || "(none)"}`);
+    }
+  }
+  return segments.join("; ");
 }
 
 async function recordOutgoingTaskIssue({ stateRoot, draft, task, taskId, localAgentId, now }) {
@@ -2111,6 +2143,18 @@ p {
   font: 13px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+.message-error {
+  margin-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+  padding-top: 7px;
+  color: var(--bad);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .draft-preview pre,
 .dashboard-detail pre {
   margin: 8px 0 0;
@@ -2712,12 +2756,13 @@ function renderMessages(timeline) {
     const delivery = deliveryIndicator(item);
     return '<article class="message ' + escapeAttr(side) + ' ' + escapeAttr(speakerClass) + '">' +
       '<div class="message-meta">' + escapeHtml(item.speaker || item.title || item.type) + ' · ' + escapeHtml(formatTime(item.at)) + '</div>' +
-      '<div class="message-line">' +
-        delivery +
-        '<div class="bubble">' +
-          (item.text ? '<pre>' + escapeHtml(item.text) + '</pre>' : '<pre>' + escapeHtml(item.title || "") + '</pre>') +
+        '<div class="message-line">' +
+          delivery +
+          '<div class="bubble">' +
+            (item.text ? '<pre>' + escapeHtml(item.text) + '</pre>' : '<pre>' + escapeHtml(item.title || "") + '</pre>') +
+            messageError(item) +
+          '</div>' +
         '</div>' +
-      '</div>' +
     '</article>';
   }).join("");
 }
@@ -2737,6 +2782,11 @@ function deliveryIndicator(item) {
 function deliveryFailureTooltip(item) {
   const error = String(item.error || "").trim();
   return error ? "Deliver failed: " + error : "Deliver failed";
+}
+
+function messageError(item) {
+  if (!item?.failed) return "";
+  return '<div class="message-error">' + escapeHtml(deliveryFailureTooltip(item)) + '</div>';
 }
 
 function visibleChatItems(timeline) {
@@ -2876,7 +2926,9 @@ function renderNewTaskMessage({ text, status = "sending", error = "" }) {
     '<div class="message-meta">Zac · ' + escapeHtml(formatTime(now)) + '</div>' +
     '<div class="message-line">' +
       failed +
-      '<div class="bubble"><pre>' + escapeHtml(text) + '</pre></div>' +
+      '<div class="bubble"><pre>' + escapeHtml(text) + '</pre>' +
+        (status === "failed" ? '<div class="message-error">' + escapeHtml(error ? "Deliver failed: " + error : "Deliver failed") + '</div>' : "") +
+      '</div>' +
     '</div>' +
   '</article>' + pending;
 }
