@@ -1762,6 +1762,46 @@ p {
   border-bottom: 1px solid var(--line);
 }
 
+button.list-header {
+  width: 100%;
+  border-right: 0;
+  border-left: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+button.list-header:hover,
+button.list-header:focus-visible {
+  color: var(--text);
+  background: var(--surface-2);
+  outline: none;
+}
+
+.folder-title {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.folder-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+}
+
+.issue-folder.collapsed .folder-chevron {
+  transform: rotate(-45deg);
+}
+
+.folder-count {
+  font-variant-numeric: tabular-nums;
+}
+
 .issues {
   flex: 1 1 auto;
   min-height: 0;
@@ -2434,8 +2474,10 @@ let showCompleted = false;
 let latestDraft = null;
 const pageMode = document.body.dataset.page || "inbox";
 const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width";
+const FOLDER_COLLAPSE_KEY = "agentrelay-collapsed-folders";
 const SIDEBAR_MIN_WIDTH = 280;
 const SIDEBAR_MAX_WIDTH = 720;
+let collapsedFolders = loadCollapsedFolders();
 
 const el = {
   freshness: document.querySelector("#freshness"),
@@ -2627,10 +2669,13 @@ function renderList() {
       deleteIssueFromList(button.dataset.taskId);
     });
   }
+  for (const button of el.issues.querySelectorAll(".folder-toggle")) {
+    button.addEventListener("click", () => toggleIssueFolder(button.dataset.folderKey));
+  }
 }
 
 function issueFolders(issues) {
-  return [
+  const folders = [
     {
       key: "pending_human",
       title: "Need approval",
@@ -2647,13 +2692,47 @@ function issueFolders(issues) {
       issues: issues.filter((issue) => issueStatus(issue) === "complete")
     }
   ];
+  if (!showCompleted) return folders;
+  return [
+    folders.find((folder) => folder.key === "complete"),
+    folders.find((folder) => folder.key === "pending_human"),
+    folders.find((folder) => folder.key === "pending_remote")
+  ].filter(Boolean);
 }
 
 function issueFolder(folder) {
-  return '<section class="issue-folder" data-folder="' + escapeAttr(folder.key) + '">' +
-    '<div class="list-header"><span>' + escapeHtml(folder.title) + '</span><span>' + folder.issues.length + '</span></div>' +
-    folder.issues.map(issueRow).join("") +
+  const collapsed = collapsedFolders.has(folder.key);
+  return '<section class="issue-folder ' + (collapsed ? "collapsed" : "") + '" data-folder="' + escapeAttr(folder.key) + '">' +
+    '<button class="list-header folder-toggle" type="button" data-folder-key="' + escapeAttr(folder.key) + '" aria-expanded="' + String(!collapsed) + '">' +
+      '<span class="folder-title"><span class="folder-chevron" aria-hidden="true"></span><span>' + escapeHtml(folder.title) + '</span></span>' +
+      '<span class="folder-count">' + folder.issues.length + '</span>' +
+    '</button>' +
+    (collapsed ? "" : folder.issues.map(issueRow).join("")) +
   '</section>';
+}
+
+function toggleIssueFolder(folderKey) {
+  if (!folderKey) return;
+  if (collapsedFolders.has(folderKey)) {
+    collapsedFolders.delete(folderKey);
+  } else {
+    collapsedFolders.add(folderKey);
+  }
+  saveCollapsedFolders();
+  renderList();
+}
+
+function loadCollapsedFolders() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FOLDER_COLLAPSE_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedFolders() {
+  localStorage.setItem(FOLDER_COLLAPSE_KEY, JSON.stringify(Array.from(collapsedFolders)));
 }
 
 function classifyIssue(issue, filter) {

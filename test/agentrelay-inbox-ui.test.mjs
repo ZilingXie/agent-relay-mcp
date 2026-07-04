@@ -1226,6 +1226,13 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /trashIcon/);
     assert.match(js, /function issueFolders/);
     assert.match(js, /function issueFolder/);
+    assert.match(js, /FOLDER_COLLAPSE_KEY/);
+    assert.match(js, /let collapsedFolders = loadCollapsedFolders\(\)/);
+    assert.match(js, /function toggleIssueFolder/);
+    assert.match(js, /function loadCollapsedFolders/);
+    assert.match(js, /function saveCollapsedFolders/);
+    assert.match(js, /querySelectorAll\(['"]\.folder-toggle['"]\)/);
+    assert.match(js, /folders\.find\(\(folder\) => folder\.key === "complete"\)/);
     assert.match(js, /Need approval/);
     assert.match(js, /Pending/);
     assert.doesNotMatch(js, /Pending human/);
@@ -1279,6 +1286,11 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(css, /\.list-tools/);
     assert.match(css, /\.toggle-button/);
     assert.match(css, /\.issue-folder/);
+    assert.match(css, /button\.list-header/);
+    assert.match(css, /\.folder-title/);
+    assert.match(css, /\.folder-chevron/);
+    assert.match(css, /\.issue-folder\.collapsed \.folder-chevron/);
+    assert.match(css, /\.folder-count/);
     assert.match(css, /\.row-actions/);
     assert.match(css, /scrollbar-gutter: stable/);
     assert.match(css, /\.issue-row\.selected/);
