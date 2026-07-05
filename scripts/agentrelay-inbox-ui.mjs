@@ -187,7 +187,7 @@ export function createInboxUiServer({
           return;
         }
         const detail = await loadIssueDetail({ stateRoot, taskId, issue, relayClient, localAgentId, now });
-        if (detail.liveSynced && detail.issue?.pendingOnAgentId === localAgentId) {
+        if (detail.liveSynced && detail.issue?.pendingOnAgentId === localAgentId && detail.issue?.localStatus !== "archived") {
           scheduleInboxProcessing({ stateRoot, processInbox, executeInboxAgent, now });
         }
         sendJson(res, 200, detail);
@@ -249,11 +249,11 @@ async function loadIssueDetail({
 }) {
   const inboxPath = join(stateRoot, "issues.json");
   let parsed = JSON.parse(await readFile(inboxPath, "utf8"));
-  let currentIssue = issue;
+  let currentIssue = parsed.issues?.[taskId] || issue;
   let liveSynced = false;
   const liveRelayEvent = await fetchLiveRelayEvent({ taskId, relayClient, now });
   if (liveRelayEvent) {
-    const syncResult = await persistLiveRelayEvent({ stateRoot, inbox: parsed, issue, liveRelayEvent, now });
+    const syncResult = await persistLiveRelayEvent({ stateRoot, inbox: parsed, issue: currentIssue, liveRelayEvent, now });
     parsed = syncResult.inbox;
     currentIssue = syncResult.issue;
     liveSynced = syncResult.synced;
@@ -325,7 +325,7 @@ async function persistLiveRelayEvent({ stateRoot, inbox, issue, liveRelayEvent, 
     pendingOnAgentId: task.pending_on_agent_id || issue.pendingOnAgentId || "",
     pendingOnHumanId: task.pending_on_human_id || issue.pendingOnHumanId || null,
     relayStatus: task.status || issue.relayStatus || "",
-    localStatus: issue.localStatus === "closed" ? "closed" : "received",
+    localStatus: mergeRelayLocalStatus(issue.localStatus),
     direction: issue.direction || inferIssueDirectionFromIssue(task, issue),
     counterpartAgentId: issue.counterpartAgentId || inferCounterpartFromIssue(task, issue),
     lastEventId: eventId,
@@ -370,6 +370,13 @@ function inferIssueDirectionFromIssue(task, issue) {
   if (task.requester_agent_id === localAgentId) return "outgoing";
   if (task.target_agent_id === localAgentId || task.pending_on_agent_id === localAgentId) return "incoming";
   return "unknown";
+}
+
+function mergeRelayLocalStatus(localStatus) {
+  if (localStatus === "archived" || localStatus === "closed" || localStatus === "created_from_ui" || localStatus === "create_failed") {
+    return localStatus;
+  }
+  return "received";
 }
 
 async function recordHumanReply({ stateRoot, taskId, body, now, replyIdFactory, localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" }) {
@@ -2514,7 +2521,7 @@ if (el.showCompleted) {
     renderList();
   });
 }
-if (el.newTask) el.newTask.addEventListener("click", () => setView("new"));
+if (el.newTask) el.newTask.addEventListener("click", openNewTask);
 if (el.themeToggle) el.themeToggle.addEventListener("click", () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(next);
@@ -2609,6 +2616,25 @@ function setView(view) {
   const target = document.querySelector("#" + view + "-view");
   if (target) target.classList.add("active");
   if (view === "dashboard") renderDashboard();
+}
+
+function openNewTask() {
+  selectedTaskId = null;
+  latestDraft = null;
+  resetNewTaskView();
+  setView("new");
+}
+
+function resetNewTaskView() {
+  const textarea = el.draftForm?.querySelector("#draft-text");
+  if (textarea) textarea.value = "";
+  if (el.draftStatus) el.draftStatus.textContent = "";
+  if (el.draftPreview) el.draftPreview.innerHTML = "";
+  const messages = document.querySelector("#new-task-messages");
+  if (messages) {
+    messages.classList.add("new-task-empty");
+    messages.innerHTML = '<div class="empty-state"><h2>Start with a request</h2><p>Tell the local agent what you need. It will prepare and route the AgentRelay task.</p></div>';
+  }
 }
 
 function applyTheme(theme) {

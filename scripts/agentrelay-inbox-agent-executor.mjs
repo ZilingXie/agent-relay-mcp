@@ -138,6 +138,7 @@ export async function executeInboxAgent({
 
 function shouldAttemptAction({ issue, localAgentId }) {
   if (!new Set(["close_task", "submit_artifact", "request_revision"]).has(issue.processorActionIntent)) return false;
+  if (issue.localStatus === "archived") return false;
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
   if (issue.pendingOnAgentId && issue.pendingOnAgentId !== localAgentId) return false;
   if (issue.requiresHumanConfirmation === true) return false;

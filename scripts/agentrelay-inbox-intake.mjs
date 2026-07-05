@@ -148,7 +148,7 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
     pendingOnAgentId: task.pending_on_agent_id || previousIssue.pendingOnAgentId || "",
     pendingOnHumanId: task.pending_on_human_id || previousIssue.pendingOnHumanId || null,
     relayStatus: task.status || previousIssue.relayStatus || "",
-    localStatus: "received",
+    localStatus: mergeRelayLocalStatus(previousIssue.localStatus),
     direction: inferIssueDirection(task, event),
     counterpartAgentId: inferCounterpartAgentId(task, event),
     lastEventId: eventId,
@@ -195,6 +195,13 @@ function inferIssueDirection(task, event) {
   if (task.requester_agent_id === localAgentId) return "outgoing";
   if (task.target_agent_id === localAgentId || task.pending_on_agent_id === localAgentId) return "incoming";
   return "unknown";
+}
+
+function mergeRelayLocalStatus(localStatus) {
+  if (localStatus === "archived" || localStatus === "closed" || localStatus === "created_from_ui" || localStatus === "create_failed") {
+    return localStatus;
+  }
+  return "received";
 }
 
 class AgentRelayHttpClient {

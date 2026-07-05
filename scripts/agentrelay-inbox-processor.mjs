@@ -27,6 +27,7 @@ export async function processInbox({
   let processed = 0;
 
   for (const issue of issues) {
+    if (issue.localStatus === "archived") continue;
     if (issue.pendingOnAgentId !== localAgentId) continue;
     if (issue.relayStatus === "completed" || issue.localStatus === "closed") continue;
     const humanReplies = normalizeHumanReplies(issue.humanReplies);

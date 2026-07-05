@@ -379,6 +379,51 @@ test("processInbox skips issues that are not pending on the local agent", async 
   assert.equal(inbox.issues.task_remote_pending.processorStatus, undefined);
 });
 
+test("processInbox skips archived issues even when pending on the local agent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_archived_pending: {
+        taskId: "task_archived_pending",
+        subject: "Archived pending task",
+        pendingOnAgentId: "zac-agent",
+        localStatus: "archived",
+        relayStatus: "delivery_pending",
+        lastEventId: "evt_archived_pending",
+        eventIds: ["evt_archived_pending"],
+        updatedAt: "2026-07-03T03:00:00.000Z"
+      }
+    },
+    events: {
+      evt_archived_pending: {
+        eventId: "evt_archived_pending",
+        taskId: "task_archived_pending",
+        sourcePath: join(root, "missing-event.json")
+      }
+    }
+  });
+  let attempts = 0;
+
+  const result = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async () => {
+      attempts += 1;
+      throw new Error("should not run");
+    },
+    now: () => "2026-07-03T03:01:00.000Z"
+  });
+
+  assert.equal(result.scanned, 1);
+  assert.equal(result.processed, 0);
+  assert.equal(attempts, 0);
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  assert.equal(inbox.issues.task_archived_pending.processorStatus, undefined);
+  assert.equal(inbox.issues.task_archived_pending.localStatus, "archived");
+});
+
 function incomingTask({ taskId = "task_llm_submit" } = {}) {
   return {
     task_id: taskId,

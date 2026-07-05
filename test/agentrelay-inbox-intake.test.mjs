@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -92,6 +92,53 @@ test("processInboxEvent treats duplicate event ids as already handled", async ()
   assert.equal(executorCount, 1);
   const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
   assert.deepEqual(inbox.issues.task_duplicate.eventIds, ["evt_duplicate"]);
+});
+
+test("processInboxEvent preserves archived local status on new Relay events", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify(sampleEvent("evt_archived_new", "task_archived"), null, 2));
+  await mkdir(stateRoot, { recursive: true });
+  await writeFile(join(stateRoot, "issues.json"), JSON.stringify({
+    version: 1,
+    issues: {
+      task_archived: {
+        taskId: "task_archived",
+        subject: "Archived task",
+        pendingOnAgentId: "zac-agent",
+        localStatus: "archived",
+        relayStatus: "delivery_pending",
+        archivedAt: "2026-07-03T02:58:00.000Z",
+        eventIds: ["evt_old"],
+        updatedAt: "2026-07-03T02:58:00.000Z"
+      }
+    },
+    events: {
+      evt_old: {
+        eventId: "evt_old",
+        taskId: "task_archived",
+        type: "task.pending",
+        status: "received"
+      }
+    }
+  }, null, 2));
+
+  const result = await processInboxEvent({
+    eventPath,
+    stateRoot,
+    projectPath: root,
+    agentId: "zac-agent",
+    ackReceived: false,
+    processInboxAfterReceive: false,
+    now: () => "2026-07-03T03:02:00.000Z"
+  });
+
+  assert.equal(result.status, "received");
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  assert.equal(inbox.issues.task_archived.localStatus, "archived");
+  assert.equal(inbox.issues.task_archived.archivedAt, "2026-07-03T02:58:00.000Z");
+  assert.deepEqual(inbox.issues.task_archived.eventIds, ["evt_old", "evt_archived_new"]);
 });
 
 function sampleEvent(eventId, taskId) {

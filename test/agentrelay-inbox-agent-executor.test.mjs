@@ -418,6 +418,50 @@ test("executeInboxAgent refuses submit_artifact without artifact text", async ()
   assert.match(inbox.issues.task_missing_artifact.executorError, /artifact text/i);
 });
 
+test("executeInboxAgent skips archived issues", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_archived_action: {
+        taskId: "task_archived_action",
+        subject: "Archived action",
+        completionOwnerAgentId: "zac-agent",
+        pendingOnAgentId: "zac-agent",
+        relayStatus: "delivery_pending",
+        localStatus: "archived",
+        processorActionIntent: "request_revision",
+        processorArtifactKind: "revision_request",
+        processorArtifactText: "Please revise the result.",
+        processorLastEventId: "evt_archived_action"
+      }
+    },
+    events: {}
+  });
+  let calls = 0;
+
+  const result = await executeInboxAgent({
+    stateRoot,
+    localAgentId: "zac-agent",
+    relayClient: {
+      async getTask() {
+        calls += 1;
+        throw new Error("should not fetch archived task");
+      }
+    },
+    now: () => "2026-07-03T02:45:00.000Z"
+  });
+
+  assert.equal(result.scanned, 1);
+  assert.equal(result.executed, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(calls, 0);
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  assert.equal(inbox.issues.task_archived_action.executorStatus, undefined);
+  assert.equal(inbox.issues.task_archived_action.localStatus, "archived");
+});
+
 async function writeIssues(stateRoot, issues) {
   await import("node:fs/promises").then(({ mkdir }) => mkdir(stateRoot, { recursive: true }));
   await writeFile(join(stateRoot, "issues.json"), JSON.stringify(issues, null, 2));

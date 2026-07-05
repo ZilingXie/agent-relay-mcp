@@ -343,11 +343,87 @@ test("inbox UI detail falls back to a live Relay task snapshot for outgoing repl
     const issue = inbox.issues.task_live;
     assert.equal(issue.pendingOnAgentId, "zac-agent");
     assert.equal(issue.relayStatus, "delivery_pending");
-    assert.equal(issue.localStatus, "received");
+    assert.equal(issue.localStatus, "created_from_ui");
     assert.equal(issue.lastEventId, detail.events.at(-1).eventId);
     assert.equal(issue.eventIds.length, 1);
     assert.equal(inbox.events[issue.lastEventId].type, "relay.snapshot");
     assert.match(inbox.events[issue.lastEventId].sourcePath, /live-events/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("inbox UI live Relay sync does not unarchive a local thread", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_archived_live: {
+        taskId: "task_archived_live",
+        subject: "Archived outgoing task",
+        direction: "outgoing",
+        counterpartAgentId: "project-hermes",
+        pendingOnAgentId: "zac-agent",
+        localStatus: "archived",
+        relayStatus: "delivery_pending",
+        archivedAt: "2026-07-02T08:01:00.000Z",
+        eventIds: [],
+        updatedAt: "2026-07-02T08:01:00.000Z"
+      }
+    },
+    events: {}
+  });
+  const processorCalls = [];
+  const server = createInboxUiServer({
+    stateRoot,
+    now: () => "2026-07-02T08:07:00.000Z",
+    processInbox: async (params) => {
+      processorCalls.push(params);
+      return { scanned: 1, processed: 1, externalActions: [] };
+    },
+    executeInboxAgent: null,
+    relayClient: {
+      listAgents: async () => ({ agents: [] }),
+      getTask: async (taskId) => ({
+        task: {
+          task_id: taskId,
+          subject: "Archived outgoing task",
+          status: "delivery_pending",
+          requester_agent_id: "zac-agent",
+          target_agent_id: "project-hermes",
+          completion_owner_agent_id: "zac-agent",
+          pending_on_agent_id: "zac-agent",
+          messages: [],
+          artifacts: [{
+            artifact_id: "art_archived",
+            from_agent_id: "project-hermes",
+            to_agent_id: "zac-agent",
+            kind: "result",
+            created_at: 1782979400,
+            parts: [{ kind: "text", text: "Archived task received another result." }]
+          }]
+        }
+      }),
+      createTask: async () => {
+        throw new Error("not used");
+      }
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const detailResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_archived_live`);
+    assert.equal(detailResponse.status, 200);
+    const detail = await detailResponse.json();
+    assert.equal(detail.issue.localStatus, "archived");
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(processorCalls.length, 0);
+    const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+    assert.equal(inbox.issues.task_archived_live.localStatus, "archived");
+    assert.equal(inbox.issues.task_archived_live.archivedAt, "2026-07-02T08:01:00.000Z");
+    assert.match(inbox.issues.task_archived_live.lastEventId, /^relay-live-task_archived_live-/);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -1222,6 +1298,11 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /setInterval\(refresh, 10000\)/);
     assert.match(js, /\/api\/task-requests/);
     assert.match(js, /newTask/);
+    assert.match(js, /newTask\.addEventListener\("click", openNewTask\)/);
+    assert.match(js, /function openNewTask/);
+    assert.match(js, /function resetNewTaskView/);
+    assert.match(js, /latestDraft = null/);
+    assert.match(js, /messages\.classList\.add\("new-task-empty"\)/);
     assert.match(js, /draftTextarea/);
     assert.match(js, /deleteIssueFromList/);
     assert.match(js, /method: "DELETE"/);
