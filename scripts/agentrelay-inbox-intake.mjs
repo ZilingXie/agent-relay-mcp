@@ -137,6 +137,7 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
   const event = payload.event || {};
   const previousIssue = inbox.issues[taskId] || {};
   const eventIds = Array.from(new Set([...(previousIssue.eventIds || []), eventId]));
+  const recordedAt = now();
   inbox.version = 1;
   inbox.issues[taskId] = {
     ...previousIssue,
@@ -153,9 +154,17 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
     counterpartAgentId: inferCounterpartAgentId(task, event),
     lastEventId: eventId,
     eventIds,
+    localWorkflowBinding: buildLocalWorkflowBinding({
+      previousBinding: previousIssue.localWorkflowBinding,
+      stateDir,
+      taskId,
+      eventId,
+      projectPath,
+      recordedAt
+    }),
     projectPath,
-    createdAt: previousIssue.createdAt || now(),
-    updatedAt: now()
+    createdAt: previousIssue.createdAt || recordedAt,
+    updatedAt: recordedAt
   };
   inbox.events[eventId] = {
     ...(inbox.events[eventId] || {}),
@@ -164,11 +173,28 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
     type: event.type || event.eventType || event.event_type || "",
     status: "received",
     sourcePath: eventPath,
-    receivedAt: payload.receivedAt || now(),
-    recordedAt: inbox.events[eventId]?.recordedAt || now()
+    receivedAt: payload.receivedAt || recordedAt,
+    recordedAt: inbox.events[eventId]?.recordedAt || recordedAt
   };
   await writeJsonAtomic(inboxPath, inbox);
   return inbox;
+}
+
+function buildLocalWorkflowBinding({ previousBinding, stateDir, taskId, eventId, projectPath, recordedAt }) {
+  return {
+    ...(previousBinding || {}),
+    type: "local_inbox",
+    workflow: "agentrelay_local_inbox",
+    bindingId: previousBinding?.bindingId || `local-inbox:${taskId}`,
+    issueId: taskId,
+    taskId,
+    statePath: resolve(stateDir, "issues.json"),
+    projectPath: resolve(projectPath),
+    lastEventId: eventId,
+    userOwnedAdapter: true,
+    createdAt: previousBinding?.createdAt || recordedAt,
+    updatedAt: recordedAt
+  };
 }
 
 async function markIssueEventAcked({ stateDir, eventId, status, now }) {

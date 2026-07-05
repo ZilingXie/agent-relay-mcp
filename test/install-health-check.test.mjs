@@ -169,7 +169,18 @@ function startFakeRelay({ stateRoot, ackText, writeInbox = true, closeStatus = 2
                 subject: "AgentRelay install loopback health check",
                 requesterAgentId: "zac-agent",
                 targetAgentId: "agentrelay-healthcheck",
-                pendingOnAgentId: "zac-agent"
+                pendingOnAgentId: "zac-agent",
+                localWorkflowBinding: {
+                  type: "local_inbox",
+                  workflow: "agentrelay_local_inbox",
+                  bindingId: `local-inbox:${taskId}`,
+                  issueId: taskId,
+                  taskId,
+                  statePath: join(stateRoot, "issues.json"),
+                  projectPath: stateRoot,
+                  lastEventId: "aevt_install_health_fake",
+                  userOwnedAdapter: true
+                }
               }
             },
             events: {}

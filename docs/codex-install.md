@@ -107,7 +107,7 @@ The expected flow is:
 2. AgentRelay creates a synthetic `agentrelay-healthcheck` task and ACK artifact.
 3. AgentRelay emits `task.pending` back to the requester agent.
 4. The local listener receives the event.
-5. `agentrelay-inbox-intake.mjs` writes the event into local inbox state.
+5. `agentrelay-inbox-intake.mjs` writes the event into local inbox state with a `localWorkflowBinding`.
 6. The script sees the task in `state/issues.json` and closes the health check task.
 
 When `npm run health:install` passes, tell the user installation is complete and explain that the local inbox UI is now the central place to publish tasks, provide missing information, approve final work, and review history.

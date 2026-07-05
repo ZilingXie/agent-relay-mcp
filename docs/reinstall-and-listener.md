@@ -102,6 +102,9 @@ state/issues.json
 ```
 
 After the event is durably written into local inbox state, intake may ACK the event as received.
+Each issue also records a `localWorkflowBinding` for the local inbox. Custom
+adapters can use that binding to attach the task to Codex App, Codex CLI, chat
+apps, or another user-owned workflow without changing Relay server state.
 
 ## Inbox UI Runtime
 

@@ -154,11 +154,11 @@ async function waitForInboxIssue({ stateDir, taskId, timeoutMs, pollMs, sleepImp
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     const issue = await readIssue(issuesPath, taskId);
-    if (issue) return issue;
+    if (issue?.localWorkflowBinding?.type === "local_inbox") return issue;
     await sleepImpl(pollMs);
   }
   throw new Error(
-    `Timed out waiting for ${taskId} in ${issuesPath}. ` +
+    `Timed out waiting for ${taskId} with localWorkflowBinding in ${issuesPath}. ` +
     "Make sure the AgentRelay listener is running and AGENTRELAY_LISTENER_HOOK points to scripts/agentrelay-inbox-intake.mjs."
   );
 }
