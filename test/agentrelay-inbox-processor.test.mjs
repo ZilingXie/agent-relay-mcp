@@ -247,8 +247,8 @@ test("processInbox records Codex failure without local fallback analysis", async
   assert.equal(retriedIssue.humanReplies[0].processedAt, "2026-07-03T03:11:30.000Z");
 });
 
-test("processInbox keeps transient Codex provider failures pending for automatic retry", async () => {
-  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-retry-"));
+test("processInbox records transient Codex provider failures as visible failures", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-fail-"));
   const stateRoot = join(root, "state");
   const eventPath = join(root, "event.json");
   await writeFile(eventPath, JSON.stringify({
@@ -282,59 +282,18 @@ test("processInbox keeps transient Codex provider failures pending for automatic
   });
 
   assert.equal(first.processed, 1);
-  assert.equal(first.retryAfterMs, 30000);
   assert.equal(attempts, 1);
-  let inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
-  let issue = inbox.issues.task_codex_502;
-  assert.equal(issue.processorSource, "codex_retry_pending");
-  assert.equal(issue.processorStatus, "retry_pending");
-  assert.equal(issue.requiresHumanConfirmation, false);
-  assert.equal(issue.processorRetryCount, 1);
-  assert.equal(issue.processorRetryAfterAt, "2026-07-03T03:10:30.000Z");
-  assert.equal(issue.processorLastEventId, "");
-
-  const skipped = await processInbox({
-    stateRoot,
-    localAgentId: "zac-agent",
-    codexRunner: async () => {
-      attempts += 1;
-      throw new Error("should not retry before processorRetryAfterAt");
-    },
-    now: () => "2026-07-03T03:10:10.000Z"
-  });
-  assert.equal(skipped.processed, 0);
-  assert.equal(skipped.retryAfterMs, 20000);
-  assert.equal(attempts, 1);
-
-  const recovered = await processInbox({
-    stateRoot,
-    localAgentId: "zac-agent",
-    codexRunner: async () => {
-      attempts += 1;
-      return JSON.stringify({
-        processorStatus: "needs_human",
-        summary: "Remote agent reports the title was changed and verified.",
-        suggestedReply: "",
-        needsHumanReason: "请 Zac 验收是否可以关闭任务。",
-        requiresHumanConfirmation: true,
-        actionIntent: "none",
-        actionReason: "",
-        terminalReason: "",
-        artifactKind: "",
-        artifactText: ""
-      });
-    },
-    now: () => "2026-07-03T03:10:31.000Z"
-  });
-  assert.equal(recovered.processed, 1);
-  assert.equal(attempts, 2);
-  inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
-  issue = inbox.issues.task_codex_502;
-  assert.equal(issue.processorSource, "codex");
-  assert.equal(issue.processorStatus, "needs_human");
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = inbox.issues.task_codex_502;
+  assert.equal(issue.processorSource, "codex_failed");
+  assert.equal(issue.processorStatus, "failed");
+  assert.equal(issue.requiresHumanConfirmation, true);
   assert.equal(issue.processorRetryCount, 0);
   assert.equal(issue.processorRetryAfterAt, "");
-  assert.equal(issue.processorLastEventId, "evt_codex_502");
+  assert.equal(issue.processorRetryEventId, "");
+  assert.equal(issue.processorLastEventId, "");
+  assert.match(issue.processorError, /502 Bad Gateway/);
+  assert.match(issue.processorSummary, /没有成功完成判断/);
 });
 
 test("runCodexExec inherits the user's Codex home by default", async () => {
