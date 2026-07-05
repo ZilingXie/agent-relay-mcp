@@ -422,17 +422,15 @@ async function deleteIssue({ stateRoot, taskId, now }) {
   const inbox = await readInboxFile(inboxPath);
   const issue = inbox.issues?.[taskId];
   if (!issue) throw statusError(`issue not found: ${taskId}`, 404);
-  delete inbox.issues[taskId];
-  inbox.deletedIssues = {
-    ...(inbox.deletedIssues || {}),
-    [taskId]: {
-      taskId,
-      subject: issue.subject || "",
-      deletedAt: now()
-    }
+  const archivedAt = now();
+  inbox.issues[taskId] = {
+    ...issue,
+    localStatus: "archived",
+    archivedAt,
+    updatedAt: archivedAt
   };
   await writeJsonAtomic(inboxPath, inbox);
-  return { status: "deleted", taskId };
+  return { status: "archived", taskId };
 }
 
 function scheduleInboxProcessing({ stateRoot, processInbox, executeInboxAgent, now }) {
@@ -550,6 +548,7 @@ function normalizeLocalActions(localActions) {
 }
 
 function needsHumanAttention(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
+  if (issue.localStatus === "archived") return false;
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
   if (issue.pendingOnHumanId) return true;
   if (issue.humanReplyStatus === "pending_processor") return true;
@@ -599,6 +598,7 @@ export function classifyIssueFilter(issue, filter, { localAgentId = process.env.
 }
 
 export function issueWorkflowStatus(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
+  if (issue.localStatus === "archived") return "archived";
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "complete";
   if (issue.needsHuman) return "need approval";
   return "pending";
@@ -2475,6 +2475,8 @@ let latestDraft = null;
 const pageMode = document.body.dataset.page || "inbox";
 const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width";
 const FOLDER_COLLAPSE_KEY = "agentrelay-collapsed-folders";
+const FOLDER_COLLAPSE_MIGRATION_KEY = "agentrelay-collapsed-folders-migration";
+const ARCHIVE_FOLDER_KEY = "archive";
 const SIDEBAR_MIN_WIDTH = 280;
 const SIDEBAR_MAX_WIDTH = 720;
 let collapsedFolders = loadCollapsedFolders();
@@ -2687,6 +2689,11 @@ function issueFolders(issues) {
       issues: issues.filter((issue) => issueStatus(issue) === "pending")
     },
     {
+      key: ARCHIVE_FOLDER_KEY,
+      title: "Archive",
+      issues: issues.filter((issue) => issueStatus(issue) === "archived")
+    },
+    {
       key: "complete",
       title: "Complete",
       issues: issues.filter((issue) => issueStatus(issue) === "complete")
@@ -2696,7 +2703,8 @@ function issueFolders(issues) {
   return [
     folders.find((folder) => folder.key === "complete"),
     folders.find((folder) => folder.key === "pending_human"),
-    folders.find((folder) => folder.key === "pending_remote")
+    folders.find((folder) => folder.key === "pending_remote"),
+    folders.find((folder) => folder.key === ARCHIVE_FOLDER_KEY)
   ].filter(Boolean);
 }
 
@@ -2725,9 +2733,15 @@ function toggleIssueFolder(folderKey) {
 function loadCollapsedFolders() {
   try {
     const parsed = JSON.parse(localStorage.getItem(FOLDER_COLLAPSE_KEY) || "[]");
-    return new Set(Array.isArray(parsed) ? parsed : []);
+    const folders = new Set(Array.isArray(parsed) ? parsed : []);
+    if (localStorage.getItem(FOLDER_COLLAPSE_MIGRATION_KEY) !== "archive-v1") {
+      folders.add(ARCHIVE_FOLDER_KEY);
+      localStorage.setItem(FOLDER_COLLAPSE_MIGRATION_KEY, "archive-v1");
+      localStorage.setItem(FOLDER_COLLAPSE_KEY, JSON.stringify(Array.from(folders)));
+    }
+    return folders;
   } catch {
-    return new Set();
+    return new Set([ARCHIVE_FOLDER_KEY]);
   }
 }
 
@@ -2746,6 +2760,7 @@ function classifyIssue(issue, filter) {
 }
 
 function issueStatus(issue) {
+  if (issue.localStatus === "archived") return "archived";
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "complete";
   if (issue.needsHuman) return "need approval";
   return "pending";
@@ -2829,12 +2844,10 @@ function restoreComposerDraft(draft) {
 
 async function deleteIssueFromList(taskId) {
   if (!taskId) return;
-  const confirmed = window.confirm("Delete this local thread?");
-  if (!confirmed) return;
   const response = await fetch("/api/issues/" + encodeURIComponent(taskId), { method: "DELETE" });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    window.alert(body.message || body.error || "Delete failed");
+    window.alert(body.message || body.error || "Archive failed");
     return;
   }
   if (selectedTaskId === taskId) {
@@ -2860,7 +2873,7 @@ function issueRow(issue) {
   ].filter(Boolean).join(" ");
   const current = issue.taskId === selectedTaskId ? ' aria-current="true"' : "";
   return '<article class="' + classes + '" role="button" tabindex="0" data-task-id="' + escapeAttr(issue.taskId) + '"' + current + '>' +
-    '<div class="row-main"><span class="subject">' + escapeHtml(issue.subject || "(untitled)") + '</span><div class="row-actions"><span class="time">' + formatTime(issue.updatedAt) + '</span><button class="delete-issue" type="button" data-task-id="' + escapeAttr(issue.taskId) + '" title="Delete thread" aria-label="Delete thread">' + trashIcon() + '</button></div></div>' +
+    '<div class="row-main"><span class="subject">' + escapeHtml(issue.subject || "(untitled)") + '</span><div class="row-actions"><span class="time">' + formatTime(issue.updatedAt) + '</span><button class="delete-issue" type="button" data-task-id="' + escapeAttr(issue.taskId) + '" title="Archive thread" aria-label="Archive thread">' + trashIcon() + '</button></div></div>' +
   '</article>';
 }
 

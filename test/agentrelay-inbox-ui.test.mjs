@@ -353,7 +353,7 @@ test("inbox UI detail falls back to a live Relay task snapshot for outgoing repl
   }
 });
 
-test("inbox UI server deletes a local issue without deleting raw events", async () => {
+test("inbox UI server archives a local issue without deleting raw events", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
   await writeIssues(stateRoot, {
@@ -389,12 +389,14 @@ test("inbox UI server deletes a local issue without deleting raw events", async 
     const response = await fetch(`http://127.0.0.1:${port}/api/issues/task_delete`, { method: "DELETE" });
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.status, "deleted");
+    assert.equal(body.status, "archived");
 
     const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
-    assert.equal(Object.hasOwn(inbox.issues, "task_delete"), false);
+    assert.equal(inbox.issues.task_delete.localStatus, "archived");
+    assert.equal(inbox.issues.task_delete.archivedAt, "2026-07-02T08:06:00.000Z");
+    assert.equal(inbox.issues.task_delete.updatedAt, "2026-07-02T08:06:00.000Z");
     assert.equal(inbox.events.evt_delete.taskId, "task_delete");
-    assert.equal(inbox.deletedIssues.task_delete.deletedAt, "2026-07-02T08:06:00.000Z");
+    assert.equal(Object.hasOwn(inbox, "deletedIssues"), false);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -1227,24 +1229,33 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /function issueFolders/);
     assert.match(js, /function issueFolder/);
     assert.match(js, /FOLDER_COLLAPSE_KEY/);
+    assert.match(js, /FOLDER_COLLAPSE_MIGRATION_KEY/);
+    assert.match(js, /const ARCHIVE_FOLDER_KEY = "archive"/);
     assert.match(js, /let collapsedFolders = loadCollapsedFolders\(\)/);
     assert.match(js, /function toggleIssueFolder/);
     assert.match(js, /function loadCollapsedFolders/);
     assert.match(js, /function saveCollapsedFolders/);
     assert.match(js, /querySelectorAll\(['"]\.folder-toggle['"]\)/);
     assert.match(js, /folders\.find\(\(folder\) => folder\.key === "complete"\)/);
+    assert.match(js, /folders\.find\(\(folder\) => folder\.key === ARCHIVE_FOLDER_KEY\)/);
     assert.match(js, /Need approval/);
     assert.match(js, /Pending/);
+    assert.match(js, /Archive/);
     assert.doesNotMatch(js, /Pending human/);
     assert.doesNotMatch(js, /Pending remote/);
     assert.match(js, /speaker-zac/);
     assert.match(js, /speaker-agent/);
     assert.match(js, /class="row-actions"/);
     assert.match(js, /aria-current="true"/);
+    assert.match(js, /title="Archive thread"/);
     assert.match(js, /let showCompleted = false/);
     assert.match(js, /showCompleted = !showCompleted/);
     assert.match(js, /issueStatus\(issue\) === "complete"/);
+    assert.match(js, /issueStatus\(issue\) === "archived"/);
     assert.match(js, /function issueStatus/);
+    assert.match(js, /issue\.localStatus === "archived"/);
+    assert.doesNotMatch(js, /Delete this local thread/);
+    assert.doesNotMatch(js, /window\.confirm/);
     assert.match(js, /pad\(date\.getMonth\(\) \+ 1\)/);
     assert.doesNotMatch(js, /rowFact\("from"/);
     assert.doesNotMatch(js, /rowFact\("pending"/);
