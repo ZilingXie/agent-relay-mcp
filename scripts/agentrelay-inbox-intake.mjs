@@ -138,6 +138,11 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
   const previousIssue = inbox.issues[taskId] || {};
   const eventIds = Array.from(new Set([...(previousIssue.eventIds || []), eventId]));
   const recordedAt = now();
+  const pendingOnAgentId = task.pending_on_agent_id
+    || event.pendingOnAgentId
+    || event.pending_on_agent_id
+    || previousIssue.pendingOnAgentId
+    || "";
   inbox.version = 1;
   inbox.issues[taskId] = {
     ...previousIssue,
@@ -146,7 +151,7 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
     requesterAgentId: task.requester_agent_id || previousIssue.requesterAgentId || "",
     targetAgentId: task.target_agent_id || previousIssue.targetAgentId || "",
     completionOwnerAgentId: task.completion_owner_agent_id || previousIssue.completionOwnerAgentId || "",
-    pendingOnAgentId: task.pending_on_agent_id || previousIssue.pendingOnAgentId || "",
+    pendingOnAgentId,
     pendingOnHumanId: task.pending_on_human_id || previousIssue.pendingOnHumanId || null,
     relayStatus: task.status || previousIssue.relayStatus || "",
     localStatus: mergeRelayLocalStatus(previousIssue.localStatus),
@@ -219,7 +224,8 @@ function inferCounterpartAgentId(task, event) {
 function inferIssueDirection(task, event) {
   const localAgentId = event.agentId || event.agent_id || "";
   if (task.requester_agent_id === localAgentId) return "outgoing";
-  if (task.target_agent_id === localAgentId || task.pending_on_agent_id === localAgentId) return "incoming";
+  const pendingOnAgentId = task.pending_on_agent_id || event.pendingOnAgentId || event.pending_on_agent_id || "";
+  if (task.target_agent_id === localAgentId || pendingOnAgentId === localAgentId) return "incoming";
   return "unknown";
 }
 

@@ -158,6 +158,31 @@ test("processInboxEvent preserves archived local status on new Relay events", as
   assert.equal(inbox.issues.task_archived.localWorkflowBinding.lastEventId, "evt_archived_new");
 });
 
+test("processInboxEvent routes expired terminal task notifications to the requester from event payload", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify(expiredEvent("evt_expired", "task_expired"), null, 2));
+
+  const result = await processInboxEvent({
+    eventPath,
+    stateRoot,
+    projectPath: root,
+    agentId: "zac-agent",
+    ackReceived: false,
+    processInboxAfterReceive: false,
+    now: () => "2026-07-03T04:00:00.000Z"
+  });
+
+  assert.equal(result.status, "received");
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = inbox.issues.task_expired;
+  assert.equal(issue.relayStatus, "expired");
+  assert.equal(issue.pendingOnAgentId, "zac-agent");
+  assert.equal(issue.direction, "outgoing");
+  assert.equal(inbox.events.evt_expired.type, "task.pending");
+});
+
 function sampleEvent(eventId, taskId) {
   return {
     receivedAt: "2026-07-03T02:59:59.000Z",
@@ -183,6 +208,38 @@ function sampleEvent(eventId, taskId) {
         to_agent_id: "zac-agent",
         role: "user",
         parts: [{ kind: "text", text: "Please handle this in the local inbox." }]
+      }]
+    }
+  };
+}
+
+function expiredEvent(eventId, taskId) {
+  return {
+    receivedAt: "2026-07-03T03:59:59.000Z",
+    event: {
+      eventId,
+      type: "task.pending",
+      eventType: "task.pending",
+      agentId: "zac-agent",
+      taskId,
+      pendingOnAgentId: "zac-agent",
+      reason: "task.ttl_expired"
+    },
+    task: {
+      task_id: taskId,
+      subject: "Expired outgoing request",
+      requester_agent_id: "zac-agent",
+      target_agent_id: "frank-agent",
+      completion_owner_agent_id: "zac-agent",
+      pending_on_agent_id: null,
+      pending_on_human_id: null,
+      status: "expired",
+      terminal_reason: "Task expired before frank-agent replied within the configured TTL.",
+      messages: [{
+        from_agent_id: "zac-agent",
+        to_agent_id: "frank-agent",
+        role: "user",
+        parts: [{ kind: "text", text: "Please reply before the TTL." }]
       }]
     }
   };
