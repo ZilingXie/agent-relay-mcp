@@ -167,6 +167,58 @@ test("loadInboxSnapshot marks processor confirmation tasks as needing Zac", asyn
   assert.equal(snapshot.issues.find((issue) => issue.taskId === "task_remote_revision").needsHuman, false);
 });
 
+test("loadInboxSnapshot does not ask Zac to close remote-owned completed handoffs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_remote_owner_close: {
+        taskId: "task_remote_owner_close",
+        subject: "Hermes-origin receive test",
+        direction: "incoming",
+        counterpartAgentId: "project-hermes",
+        requesterAgentId: "project-hermes",
+        targetAgentId: "zac-agent",
+        completionOwnerAgentId: "project-hermes",
+        pendingOnAgentId: "zac-agent",
+        pendingOnHumanId: null,
+        localStatus: "received",
+        relayStatus: "delivery_pending",
+        processorStatus: "needs_human",
+        processorSummary: "Hermes reports done criteria met, but the task is not closed.",
+        processorSuggestedReply: "Confirm whether to close.",
+        processorNeedsHumanReason: "Closing requires confirmation.",
+        requiresHumanConfirmation: true,
+        executorStatus: "completed",
+        executorActionIntent: "submit_artifact",
+        executorLastHumanReplyId: "hr_ack",
+        latestHumanReplyId: "hr_ack",
+        humanReplyStatus: "processed",
+        humanReplies: [{
+          replyId: "hr_ack",
+          taskId: "task_remote_owner_close",
+          text: "确认收到",
+          createdAt: "2026-07-05T09:15:40.000Z",
+          processedAt: "2026-07-05T09:15:51.000Z"
+        }],
+        updatedAt: "2026-07-05T09:19:59.000Z"
+      }
+    },
+    events: {}
+  });
+
+  const snapshot = await loadInboxSnapshot({
+    stateRoot,
+    localAgentId: "zac-agent",
+    now: () => "2026-07-05T09:20:00.000Z"
+  });
+
+  assert.equal(snapshot.counts.needsHuman, 0);
+  assert.equal(snapshot.issues[0].needsHuman, false);
+  assert.equal(issueWorkflowStatus(snapshot.issues[0], { localAgentId: "zac-agent" }), "pending");
+});
+
 test("inbox UI server exposes issue list and per-task details", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
@@ -353,6 +405,83 @@ test("inbox UI detail falls back to a live Relay task snapshot for outgoing repl
     assert.equal(issue.eventIds.length, 1);
     assert.equal(inbox.events[issue.lastEventId].type, "relay.snapshot");
     assert.match(inbox.events[issue.lastEventId].sourcePath, /live-events/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("inbox UI live Relay sync clears pending owner when the task is completed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_completed_live: {
+        taskId: "task_completed_live",
+        subject: "Completed remote-owned task",
+        direction: "incoming",
+        counterpartAgentId: "project-hermes",
+        requesterAgentId: "project-hermes",
+        targetAgentId: "zac-agent",
+        completionOwnerAgentId: "project-hermes",
+        pendingOnAgentId: "zac-agent",
+        pendingOnHumanId: null,
+        localStatus: "received",
+        relayStatus: "delivery_pending",
+        updatedAt: "2026-07-05T09:19:59.000Z"
+      }
+    },
+    events: {}
+  });
+  const server = createInboxUiServer({
+    stateRoot,
+    now: () => "2026-07-05T10:06:26.000Z",
+    processInbox: null,
+    executeInboxAgent: null,
+    relayClient: {
+      listAgents: async () => ({ agents: [] }),
+      getTask: async (taskId) => ({
+        task: {
+          task_id: taskId,
+          subject: "Completed remote-owned task",
+          status: "completed",
+          requester_agent_id: "project-hermes",
+          target_agent_id: "zac-agent",
+          completion_owner_agent_id: "project-hermes",
+          pending_on_agent_id: null,
+          pending_on_human_id: null,
+          terminal_reason: "Zac acknowledged receipt.",
+          messages: [],
+          artifacts: []
+        }
+      }),
+      createTask: async () => {
+        throw new Error("not used");
+      }
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const detailResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_completed_live`);
+    assert.equal(detailResponse.status, 200);
+    const detail = await detailResponse.json();
+    assert.equal(detail.issue.relayStatus, "completed");
+    assert.equal(detail.issue.pendingOnAgentId, "");
+    assert.equal(detail.issue.pendingOnHumanId, null);
+    assert.equal(detail.issue.needsHuman, false);
+
+    const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+    assert.equal(inbox.issues.task_completed_live.relayStatus, "completed");
+    assert.equal(inbox.issues.task_completed_live.pendingOnAgentId, "");
+    assert.equal(inbox.issues.task_completed_live.pendingOnHumanId, null);
+
+    inbox.issues.task_completed_live.pendingOnAgentId = "zac-agent";
+    await writeFile(join(stateRoot, "issues.json"), JSON.stringify(inbox, null, 2));
+    const repeatResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_completed_live`);
+    assert.equal(repeatResponse.status, 200);
+    const repeated = await repeatResponse.json();
+    assert.equal(repeated.issue.pendingOnAgentId, "");
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -1610,6 +1739,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /document\.activeElement === textarea/);
     assert.match(js, /distanceFromBottom <= 48/);
     assert.match(js, /Pending zac-agent/);
+    assert.match(js, /Pending completion owner: /);
     assert.match(js, /issue\.requiresHumanConfirmation \|\| issue\.processorStatus === "needs_human" \|\| issue\.processorStatus === "ready_to_reply"/);
     assert.match(js, /class="delivery-indicator failed"/);
     assert.match(js, /class="delivery-indicator delivered"/);
@@ -1622,6 +1752,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /class="send-button"/);
     assert.match(js, /if \(!issue\.needsHuman\) return ""/);
     assert.match(js, /if \(issue\.pendingOnAgentId\) return "Pending " \+ issue\.pendingOnAgentId/);
+    assert.match(js, /function isWaitingForRemoteCompletionOwnerClient/);
     assert.ok(
       js.indexOf('issue.requiresHumanConfirmation || issue.processorStatus === "needs_human"') <
         js.indexOf('if (issue.pendingOnAgentId === "zac-agent") return "Pending zac-agent"')
