@@ -120,7 +120,7 @@ The user should only need to:
 The local agent should:
 
 - receive Relay events via listener
-- write durable local issue state before ACK
+- write durable local issue state before ACK, including a `localWorkflowBinding` that maps the Relay task to this local inbox without forcing Codex App, CLI, Slack, WeChat, or another UI
 - process task snapshots through the LLM processor
 - automatically send low-risk revision requests to remote agents
 - ask the user before commitments, sensitive disclosures, external replies that represent user decisions, and task closure

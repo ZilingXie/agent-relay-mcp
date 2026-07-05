@@ -26,6 +26,19 @@ test("processInboxEvent records a durable issue before ACK and does not create C
       async ackEvent({ eventId, taskId, status, projectPath }) {
         const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
         assert.equal(inbox.issues.task_inbox_only.localStatus, "received");
+        assert.deepEqual(inbox.issues.task_inbox_only.localWorkflowBinding, {
+          type: "local_inbox",
+          workflow: "agentrelay_local_inbox",
+          bindingId: "local-inbox:task_inbox_only",
+          issueId: "task_inbox_only",
+          taskId: "task_inbox_only",
+          statePath: join(stateRoot, "issues.json"),
+          projectPath: root,
+          lastEventId: "evt_inbox_only",
+          userOwnedAdapter: true,
+          createdAt: "2026-07-03T03:00:00.000Z",
+          updatedAt: "2026-07-03T03:00:00.000Z"
+        });
         assert.equal(inbox.events.evt_inbox_only.status, "received");
         calls.push({ method: "ackEvent", eventId, taskId, status, projectPath });
       }
@@ -92,6 +105,8 @@ test("processInboxEvent treats duplicate event ids as already handled", async ()
   assert.equal(executorCount, 1);
   const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
   assert.deepEqual(inbox.issues.task_duplicate.eventIds, ["evt_duplicate"]);
+  assert.equal(inbox.issues.task_duplicate.localWorkflowBinding.bindingId, "local-inbox:task_duplicate");
+  assert.equal(inbox.issues.task_duplicate.localWorkflowBinding.lastEventId, "evt_duplicate");
 });
 
 test("processInboxEvent preserves archived local status on new Relay events", async () => {
@@ -139,6 +154,8 @@ test("processInboxEvent preserves archived local status on new Relay events", as
   assert.equal(inbox.issues.task_archived.localStatus, "archived");
   assert.equal(inbox.issues.task_archived.archivedAt, "2026-07-03T02:58:00.000Z");
   assert.deepEqual(inbox.issues.task_archived.eventIds, ["evt_old", "evt_archived_new"]);
+  assert.equal(inbox.issues.task_archived.localWorkflowBinding.bindingId, "local-inbox:task_archived");
+  assert.equal(inbox.issues.task_archived.localWorkflowBinding.lastEventId, "evt_archived_new");
 });
 
 function sampleEvent(eventId, taskId) {
