@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -128,9 +129,13 @@ export async function runCodexAnalysis({
   return validateCodexAnalysis(parseCodexJson(rawOutput));
 }
 
-async function runDefaultLlmRunner(options) {
-  if (process.env.AGENTRELAY_PROCESSOR_RUNNER === "codex") return runCodexExec(options);
-  return runResponsesApi(options);
+export async function runDefaultLlmRunner(options) {
+  const runner = resolveLocalAgentRunner({
+    componentRunner: process.env.AGENTRELAY_PROCESSOR_RUNNER,
+    codexCli: options.codexCli || process.env.CODEX_CLI || DEFAULT_CODEX_CLI
+  });
+  if (runner === "codex") return (options.codexRunner || runCodexExec)(options);
+  return (options.responsesRunner || runResponsesApi)(options);
 }
 
 export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event, humanReplies = [] }) {

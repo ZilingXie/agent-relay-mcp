@@ -11,7 +11,7 @@ test("buildInboxUiLaunchdPlist creates a launchd service for the inbox UI", () =
     projectRoot: "/Users/zac/agentInbox",
     stateRoot: "/Users/zac/agentInbox/state",
     envPath: "/Users/zac/agentInbox/.env",
-    processorMode: "codex",
+    localAgentRunner: "codex",
     host: "127.0.0.1",
     port: 8787,
     outLogPath: "/Users/zac/agentInbox/state/logs/inbox-ui.out.log",
@@ -25,7 +25,8 @@ test("buildInboxUiLaunchdPlist creates a launchd service for the inbox UI", () =
   assert.match(plist, /<key>KeepAlive<\/key><true\/>/);
   assert.match(plist, /<key>AGENTRELAY_STATE_DIR<\/key><string>\/Users\/zac\/agentInbox\/state<\/string>/);
   assert.match(plist, /<key>AGENTRELAY_ENV_PATH<\/key><string>\/Users\/zac\/agentInbox\/\.env<\/string>/);
-  assert.match(plist, /<key>AGENTRELAY_PROCESSOR_MODE<\/key><string>codex<\/string>/);
+  assert.match(plist, /<key>AGENTRELAY_LOCAL_AGENT_RUNNER<\/key><string>codex<\/string>/);
+  assert.doesNotMatch(plist, /AGENTRELAY_PROCESSOR_MODE/);
   assert.match(plist, /<key>HOST<\/key><string>127\.0\.0\.1<\/string>/);
   assert.match(plist, /<key>PORT<\/key><string>8787<\/string>/);
   assert.match(plist, /inbox-ui\.out\.log/);

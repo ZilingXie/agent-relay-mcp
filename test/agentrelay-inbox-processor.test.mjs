@@ -9,8 +9,76 @@ import {
   processInbox,
   ensureProcessorCodexHome,
   runCodexAnalysis,
+  runDefaultLlmRunner,
   runResponsesApi
 } from "../scripts/agentrelay-inbox-processor.mjs";
+
+test("processor runner inherits the local agent runner and defaults to Codex CLI", async () => {
+  const previousRunner = process.env.AGENTRELAY_PROCESSOR_RUNNER;
+  const previousLocalRunner = process.env.AGENTRELAY_LOCAL_AGENT_RUNNER;
+  delete process.env.AGENTRELAY_PROCESSOR_RUNNER;
+  delete process.env.AGENTRELAY_LOCAL_AGENT_RUNNER;
+  const calls = [];
+  try {
+    const defaultOutput = await runDefaultLlmRunner({
+      prompt: "processor prompt",
+      schemaPath: "/tmp/schema.json",
+      codexRunner: async () => {
+        calls.push("codex");
+        return "codex-output";
+      },
+      responsesRunner: async () => {
+        calls.push("responses");
+        throw new Error("responses runner should not be used by default");
+      }
+    });
+    assert.equal(defaultOutput, "codex-output");
+    assert.deepEqual(calls, ["codex"]);
+
+    process.env.AGENTRELAY_LOCAL_AGENT_RUNNER = "responses";
+    const responsesOutput = await runDefaultLlmRunner({
+      prompt: "processor prompt",
+      schemaPath: "/tmp/schema.json",
+      codexRunner: async () => {
+        calls.push("codex-after-responses");
+        throw new Error("codex runner should not be used when responses is requested");
+      },
+      responsesRunner: async () => {
+        calls.push("responses");
+        return "responses-output";
+      }
+    });
+    assert.equal(responsesOutput, "responses-output");
+    assert.deepEqual(calls, ["codex", "responses"]);
+
+    process.env.AGENTRELAY_PROCESSOR_RUNNER = "codex";
+    const overrideOutput = await runDefaultLlmRunner({
+      prompt: "processor prompt",
+      schemaPath: "/tmp/schema.json",
+      codexRunner: async () => {
+        calls.push("codex-override");
+        return "codex-override-output";
+      },
+      responsesRunner: async () => {
+        calls.push("responses-after-override");
+        throw new Error("responses runner should not be used when processor override requests codex");
+      }
+    });
+    assert.equal(overrideOutput, "codex-override-output");
+    assert.deepEqual(calls, ["codex", "responses", "codex-override"]);
+  } finally {
+    if (previousRunner === undefined) {
+      delete process.env.AGENTRELAY_PROCESSOR_RUNNER;
+    } else {
+      process.env.AGENTRELAY_PROCESSOR_RUNNER = previousRunner;
+    }
+    if (previousLocalRunner === undefined) {
+      delete process.env.AGENTRELAY_LOCAL_AGENT_RUNNER;
+    } else {
+      process.env.AGENTRELAY_LOCAL_AGENT_RUNNER = previousLocalRunner;
+    }
+  }
+});
 
 test("processInbox passes task snapshots and Zac replies to the LLM processor", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-"));

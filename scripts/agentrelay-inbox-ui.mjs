@@ -8,6 +8,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -238,7 +239,11 @@ async function runDefaultExecuteInboxAgent(options) {
 }
 
 export async function runDefaultTaskDraftGenerator(options) {
-  if (process.env.AGENTRELAY_TASK_DRAFT_RUNNER === "codex") return generateTaskDraftWithCodex(options);
+  const runner = resolveLocalAgentRunner({
+    componentRunner: process.env.AGENTRELAY_TASK_DRAFT_RUNNER,
+    codexCli: options.codexCli || process.env.CODEX_CLI || DEFAULT_CODEX_CLI
+  });
+  if (runner === "codex") return generateTaskDraftWithCodex(options);
   return generateTaskDraftWithResponses(options);
 }
 

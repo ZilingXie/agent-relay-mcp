@@ -1230,12 +1230,39 @@ test("inbox UI server records a failed local task request as a visible local thr
   }
 });
 
-test("task draft generator defaults to Responses API and only uses Codex CLI when requested", async () => {
+test("task draft generator inherits the local agent runner and defaults to Codex CLI", async () => {
   const previousRunner = process.env.AGENTRELAY_TASK_DRAFT_RUNNER;
+  const previousLocalRunner = process.env.AGENTRELAY_LOCAL_AGENT_RUNNER;
   delete process.env.AGENTRELAY_TASK_DRAFT_RUNNER;
+  delete process.env.AGENTRELAY_LOCAL_AGENT_RUNNER;
   const calls = [];
   try {
     const defaultDraft = await runDefaultTaskDraftGenerator({
+      text: "让 project-hermes 修改 dashboard title",
+      localAgentId: "zac-agent",
+      responsesRunner: async ({ prompt, schemaPath }) => {
+        calls.push({ runner: "responses", prompt, schemaPath });
+        throw new Error("responses runner should not be used by default");
+      },
+      codexRunner: async () => {
+        calls.push({ runner: "codex" });
+        return JSON.stringify({
+          subject: "Update dashboard title",
+          requestText: "Ask project-hermes to update dashboard title.",
+          doneCriteria: "Dashboard title is updated.",
+          humanBoundaryReason: "Ask Zac before closing.",
+          to: "project-hermes",
+          from: "zac-agent",
+          completionOwnerAgentId: "zac-agent"
+        });
+      }
+    });
+    assert.equal(defaultDraft.to, "project-hermes");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].runner, "codex");
+
+    process.env.AGENTRELAY_LOCAL_AGENT_RUNNER = "responses";
+    const responsesDraft = await runDefaultTaskDraftGenerator({
       text: "让 project-hermes 修改 dashboard title",
       localAgentId: "zac-agent",
       responsesRunner: async ({ prompt, schemaPath }) => {
@@ -1251,25 +1278,24 @@ test("task draft generator defaults to Responses API and only uses Codex CLI whe
         });
       },
       codexRunner: async () => {
-        calls.push({ runner: "codex" });
-        throw new Error("codex runner should not be used by default");
+        calls.push({ runner: "codex-after-responses" });
+        throw new Error("codex runner should not be used when responses is requested");
       }
     });
-    assert.equal(defaultDraft.to, "project-hermes");
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].runner, "responses");
-    assert.match(calls[0].prompt, /Zac's local request/);
+    assert.equal(responsesDraft.subject, "Update dashboard title");
+    assert.equal(calls.at(-1).runner, "responses");
+    assert.match(calls.at(-1).prompt, /Zac's local request/);
 
     process.env.AGENTRELAY_TASK_DRAFT_RUNNER = "codex";
-    const codexDraft = await runDefaultTaskDraftGenerator({
+    const overrideDraft = await runDefaultTaskDraftGenerator({
       text: "让 project-hermes 修改 dashboard title",
       localAgentId: "zac-agent",
       responsesRunner: async () => {
-        calls.push({ runner: "responses-after-codex" });
-        throw new Error("responses runner should not be used when codex is requested");
+        calls.push({ runner: "responses-after-override" });
+        throw new Error("responses runner should not be used when task draft override requests codex");
       },
       codexRunner: async () => {
-        calls.push({ runner: "codex" });
+        calls.push({ runner: "codex-override" });
         return JSON.stringify({
           subject: "Update dashboard title",
           requestText: "Ask project-hermes to update dashboard title.",
@@ -1281,13 +1307,18 @@ test("task draft generator defaults to Responses API and only uses Codex CLI whe
         });
       }
     });
-    assert.equal(codexDraft.subject, "Update dashboard title");
-    assert.equal(calls.at(-1).runner, "codex");
+    assert.equal(overrideDraft.subject, "Update dashboard title");
+    assert.equal(calls.at(-1).runner, "codex-override");
   } finally {
     if (previousRunner === undefined) {
       delete process.env.AGENTRELAY_TASK_DRAFT_RUNNER;
     } else {
       process.env.AGENTRELAY_TASK_DRAFT_RUNNER = previousRunner;
+    }
+    if (previousLocalRunner === undefined) {
+      delete process.env.AGENTRELAY_LOCAL_AGENT_RUNNER;
+    } else {
+      process.env.AGENTRELAY_LOCAL_AGENT_RUNNER = previousLocalRunner;
     }
   }
 });

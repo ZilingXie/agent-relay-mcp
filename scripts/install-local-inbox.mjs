@@ -16,6 +16,7 @@ export function buildLocalInboxEnvBlock({
   inboxDir = resolve(repoRoot, ".agentrelay", "inbox"),
   stateDir = resolve(repoRoot, "state"),
   hookCommand = `${process.execPath} ${resolve(repoRoot, "scripts/agentrelay-inbox-intake.mjs")}`,
+  localAgentRunner = "codex",
   host = "127.0.0.1",
   port = 8787
 }) {
@@ -27,6 +28,7 @@ export function buildLocalInboxEnvBlock({
     "AGENTRELAY_ACK_ON_INBOX_RECEIVED=1",
     "AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=1",
     "AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=1",
+    `AGENTRELAY_LOCAL_AGENT_RUNNER=${envValue(localAgentRunner)}`,
     `AGENTRELAY_INBOX_UI_HOST=${envValue(host)}`,
     `AGENTRELAY_INBOX_UI_PORT=${envValue(String(port))}`,
     "# END AgentRelay Local Inbox managed block",

@@ -20,7 +20,7 @@ export function buildInboxUiLaunchdPlist({
   projectRoot,
   stateRoot,
   envPath,
-  processorMode,
+  localAgentRunner,
   host,
   port,
   outLogPath,
@@ -45,7 +45,7 @@ export function buildInboxUiLaunchdPlist({
   <dict>
     <key>AGENTRELAY_STATE_DIR</key><string>${escapeXml(stateRoot)}</string>
     <key>AGENTRELAY_ENV_PATH</key><string>${escapeXml(envPath)}</string>
-    <key>AGENTRELAY_PROCESSOR_MODE</key><string>${escapeXml(processorMode)}</string>
+    <key>AGENTRELAY_LOCAL_AGENT_RUNNER</key><string>${escapeXml(localAgentRunner)}</string>
     <key>HOST</key><string>${escapeXml(host)}</string>
     <key>PORT</key><string>${escapeXml(port)}</string>
   </dict>
@@ -59,7 +59,7 @@ async function installInboxUiService({
   logDir = resolve(projectRoot, "state/logs"),
   stateRoot = process.env.AGENTRELAY_STATE_DIR || resolve(projectRoot, "state"),
   envPath = process.env.AGENTRELAY_ENV_PATH || resolve(projectRoot, ".env"),
-  processorMode = process.env.AGENTRELAY_PROCESSOR_MODE || "codex",
+  localAgentRunner = process.env.AGENTRELAY_LOCAL_AGENT_RUNNER || "codex",
   host = process.env.AGENTRELAY_INBOX_UI_HOST || "127.0.0.1",
   port = Number.parseInt(process.env.AGENTRELAY_INBOX_UI_PORT || "8787", 10)
 } = {}) {
@@ -80,7 +80,7 @@ async function installInboxUiService({
     projectRoot,
     stateRoot,
     envPath,
-    processorMode,
+    localAgentRunner,
     host,
     port,
     outLogPath: resolve(logDir, "inbox-ui.out.log"),

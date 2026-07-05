@@ -24,6 +24,7 @@ test("buildLocalInboxEnvBlock configures listener hook and local inbox state", (
   assert.match(block, /AGENTRELAY_ACK_ON_INBOX_RECEIVED=1/);
   assert.match(block, /AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=1/);
   assert.match(block, /AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=1/);
+  assert.match(block, /AGENTRELAY_LOCAL_AGENT_RUNNER="codex"/);
   assert.match(block, /AGENTRELAY_INBOX_UI_HOST="127\.0\.0\.1"/);
   assert.match(block, /AGENTRELAY_INBOX_UI_PORT="8787"/);
 });
