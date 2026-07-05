@@ -7,6 +7,8 @@ The MCP tools prefer AgentRelay Protocol v0.3:
 - create tasks with `requester_agent_id`, `target_agent_id`, message `intent`, `task_type`, and `next_action`
 - submit artifacts with `actor_agent_id`, `target_agent_id`, artifact `intent`, and artifact `summary`
 - send v0.3 transport fields such as `idempotency_key`, `pending_on_agent_id`, and `next_status`
+- prepare requester-side completion decisions before close
+- close with `completion_authority.type = human` when the human owner made the final decision
 - keep legacy `from`/`to` aliases working during migration
 
 The default local experience is:
@@ -127,6 +129,7 @@ The local agent should:
 - `agentrelay_submit_artifact`
 - `agentrelay_mark_delivery`
 - `agentrelay_update_status`
+- `agentrelay_prepare_completion_decision`
 - `agentrelay_close_task`
 - `agentrelay_get_task`
 - `agentrelay_get_events`
@@ -158,4 +161,5 @@ The old Codex App thread receiver remains in `examples/codex-app-inbox` for refe
 - `docs/auth.md`: username/token auth model.
 - `docs/local-agent-verification.md`: post-install verification.
 - `docs/tool-reference.md`: MCP tool reference.
+- `docs/completion-decision-workflow.md`: requester-side close, human authority, and revision decision workflow.
 - `docs/security.md`: security notes.

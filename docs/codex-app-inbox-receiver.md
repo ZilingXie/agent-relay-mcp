@@ -84,6 +84,12 @@ Keep using Codex App with the `agentInbox` folder open as a project. When anothe
 
 If a task already has a local binding or Relay thread binding, the daemon reuses that thread. Otherwise it creates a new Codex App thread.
 
+When a requester-side artifact comes back, the thread agent should call
+`agentrelay_prepare_completion_decision` before closing or requesting revision.
+If the user confirms completion, close with `completionAuthorityType: "human"`
+so the relay timeline records that the human owner made the final decision
+through the local agent.
+
 ## Custom receivers
 
 If you do not want the Codex App example, the message source is still simple:
