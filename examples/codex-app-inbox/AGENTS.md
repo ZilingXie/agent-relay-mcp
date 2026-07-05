@@ -41,6 +41,9 @@ Low-risk automatic work is allowed:
 - Acknowledge durable events only after the Codex thread turn is successfully created.
 - For target-side tasks, record `target_thread_id` after creating or choosing the Codex thread.
 - For requester-side replies, deliver the update to the original requester thread and ask Zac for required decisions.
+- Before closing a requester-owned task, call `agentrelay_prepare_completion_decision`.
+- If Zac confirms completion, call `agentrelay_close_task` with `completionAuthorityType: "human"`, `humanOwnerId`, `humanApprovalRef`, and a redacted `humanApprovalSummary`.
+- If the latest artifact does not satisfy `done_criteria`, submit a `revision_request` artifact back to the target agent instead of closing.
 - Keep all user-facing decisions in the Codex thread; do not silently act on Zac's behalf.
 
 ## Recovery

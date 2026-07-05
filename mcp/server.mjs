@@ -331,27 +331,56 @@ function registerTools(mcpServer) {
     "agentrelay_close_task",
     {
       title: "Close AgentRelay task",
-      description: "Close a task. Only completion_owner_agent_id should call this.",
+      description: "Close a task. Only completion_owner_agent_id should call this. Use human completion authority when a human owner made the final decision.",
       inputSchema: {
         taskId: z.string().min(1),
         closedByAgentId: z.string().min(1),
-        terminalReason: z.string().min(1)
+        terminalReason: z.string().min(1),
+        completionAuthorityType: z.enum(["agent", "human"]).optional(),
+        humanOwnerId: z.string().min(1).optional(),
+        humanApprovalRef: z.string().min(1).optional(),
+        humanApprovalSummary: z.string().min(1).optional(),
+        humanApprovalVisibility: z.enum(["public", "redacted", "private"]).optional(),
+        completionAuthorityJson: z.string().optional().describe("Advanced override: JSON object for completion_authority."),
+        finalArtifactJson: z.string().optional().describe("Optional JSON object for final_artifact.")
       }
     },
-    async ({ taskId, closedByAgentId, terminalReason }) =>
-      jsonResult(
-        await relayPost(`/tasks/${encodeURIComponent(taskId)}/close`, {
+    async (args) => {
+      const completionAuthority = buildCompletionAuthority(args);
+      const finalArtifact = parseOptionalJsonObject(args.finalArtifactJson, "finalArtifactJson");
+      return jsonResult(
+        await relayPost(`/tasks/${encodeURIComponent(args.taskId)}/close`, compact({
           protocol_version: PROTOCOL_VERSION,
           idempotency_key: `mcp-close-${randomUUID()}`,
-          closed_by_agent_id: closedByAgentId,
-          completion_authority: {
-            type: "agent",
-            agent_id: closedByAgentId,
-            summary: "Completion recorded by the requester-side agent."
-          },
-          terminal_reason: terminalReason
-        })
-      )
+          closed_by_agent_id: args.closedByAgentId,
+          completion_authority: completionAuthority,
+          final_artifact: finalArtifact,
+          terminal_reason: args.terminalReason
+        }))
+      );
+    }
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_prepare_completion_decision",
+    {
+      title: "Prepare AgentRelay completion decision",
+      description: "Fetch a task and prepare a requester-side decision packet for close, human confirmation, revision request, or follow-up. This helper does not mutate relay state.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        evaluatorAgentId: z.string().min(1).optional(),
+        observedResult: z.string().optional().describe("Optional local observation or verification summary."),
+        humanOwnerId: z.string().optional().describe("Human owner id/name to use in human completion authority templates."),
+        humanApprovalRef: z.string().optional().describe("Local private approval reference if the human has already confirmed."),
+        humanApprovalSummary: z.string().optional().describe("Redacted summary of the human decision."),
+        revisionRequest: z.string().optional().describe("If done criteria is not satisfied, describe what the target agent must fix."),
+        decision: z.enum(["ask_human", "close_human_confirmed", "close_agent_verified", "request_revision", "create_followup"]).optional()
+      }
+    },
+    async (args) => {
+      const taskPayload = await relayGet(`/tasks/${encodeURIComponent(args.taskId)}`);
+      return jsonResult(prepareCompletionDecision(taskPayload.task || taskPayload, args));
+    }
   );
 
   mcpServer.registerTool(
@@ -459,6 +488,251 @@ function parseEnvValue(value) {
     return value.slice(1, -1);
   }
   return value;
+}
+
+function buildCompletionAuthority(args) {
+  const override = parseOptionalJsonObject(args.completionAuthorityJson, "completionAuthorityJson");
+  if (override) return override;
+
+  const type = args.completionAuthorityType || "agent";
+  if (type === "human") {
+    if (!args.humanOwnerId) {
+      throw new Error("agentrelay_close_task with completionAuthorityType=human requires humanOwnerId");
+    }
+    if (!args.humanApprovalRef) {
+      throw new Error("agentrelay_close_task with completionAuthorityType=human requires humanApprovalRef");
+    }
+    return compact({
+      type: "human",
+      owner_id: args.humanOwnerId,
+      via_agent_id: args.closedByAgentId,
+      approval_ref: args.humanApprovalRef,
+      summary: args.humanApprovalSummary || "Human owner confirmed the task satisfies done criteria.",
+      visibility: args.humanApprovalVisibility || "redacted"
+    });
+  }
+
+  return {
+    type: "agent",
+    agent_id: args.closedByAgentId,
+    summary: "Completion recorded by the requester-side agent.",
+    visibility: "redacted"
+  };
+}
+
+function parseOptionalJsonObject(value, fieldName) {
+  if (!value) return undefined;
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${fieldName} must be valid JSON: ${error.message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${fieldName} must be a JSON object`);
+  }
+  return parsed;
+}
+
+function prepareCompletionDecision(task, args) {
+  if (!task || typeof task !== "object") {
+    throw new Error("AgentRelay task response did not include a task object");
+  }
+  const evaluatorAgentId = args.evaluatorAgentId || agentId || task.pending_on_agent_id || "";
+  const completionOwnerAgentId = task.completion_owner_agent_id || task.requester_agent_id;
+  const targetAgentId = task.target_agent_id;
+  const requesterAgentId = task.requester_agent_id;
+  const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
+  const latestArtifact = artifacts.at(-1) || null;
+  const doneCriteria = task.done_criteria || "";
+  const observedResult = args.observedResult || latestArtifactSummary(latestArtifact);
+  const isCompletionOwner = evaluatorAgentId === completionOwnerAgentId;
+  const isTerminal = ["completed", "failed", "cancelled", "expired", "rejected"].includes(task.status);
+  const decision = args.decision || defaultCompletionDecision({ task, isCompletionOwner, latestArtifact });
+  const humanOwnerId = args.humanOwnerId || ownerIdFromAgent(completionOwnerAgentId);
+  const approvalRef = args.humanApprovalRef || `local-approval-${task.task_id}`;
+  const approvalSummary = args.humanApprovalSummary || "Human owner confirmed the artifact satisfies the task done criteria.";
+  const revisionText = args.revisionRequest || revisionPrompt(doneCriteria, observedResult);
+
+  return {
+    task_id: task.task_id,
+    status: task.status,
+    protocol_version: PROTOCOL_VERSION,
+    evaluator_agent_id: evaluatorAgentId,
+    requester_agent_id: requesterAgentId,
+    target_agent_id: targetAgentId,
+    completion_owner_agent_id: completionOwnerAgentId,
+    pending_on_agent_id: task.pending_on_agent_id || null,
+    is_completion_owner: isCompletionOwner,
+    is_terminal: isTerminal,
+    done_criteria: doneCriteria,
+    latest_artifact: latestArtifact
+      ? {
+          artifact_id: latestArtifact.artifact_id,
+          from_agent_id: latestArtifact.from_agent_id,
+          kind: latestArtifact.kind,
+          summary: latestArtifactSummary(latestArtifact)
+        }
+      : null,
+    observed_result: observedResult || null,
+    recommended_decision: decision,
+    decision_guidance: decisionGuidance(decision, isCompletionOwner, isTerminal),
+    human_question:
+      `Does this satisfy the task done criteria?\n\nDone criteria: ${doneCriteria || "(not provided)"}\n\nLatest result: ${observedResult || "(no artifact/result found)"}`,
+    next_tool_args: nextToolArgsForDecision({
+      task,
+      evaluatorAgentId,
+      completionOwnerAgentId,
+      targetAgentId,
+      decision,
+      humanOwnerId,
+      approvalRef,
+      approvalSummary,
+      revisionText,
+      observedResult
+    })
+  };
+}
+
+function defaultCompletionDecision({ task, isCompletionOwner, latestArtifact }) {
+  if (["completed", "failed", "cancelled", "expired", "rejected"].includes(task.status)) {
+    return "create_followup";
+  }
+  if (!isCompletionOwner) {
+    return "request_revision";
+  }
+  if (!latestArtifact) {
+    return "ask_human";
+  }
+  return "ask_human";
+}
+
+function decisionGuidance(decision, isCompletionOwner, isTerminal) {
+  if (isTerminal) {
+    return "The task is terminal. Do not reopen it; create a follow-up/child task for new work.";
+  }
+  if (!isCompletionOwner) {
+    return "This agent is not the completion owner. Do not close; submit an artifact or request revision from the appropriate agent.";
+  }
+  if (decision === "ask_human") {
+    return "Ask the local human owner to confirm whether the latest artifact satisfies done_criteria before closing.";
+  }
+  if (decision === "close_human_confirmed") {
+    return "Close with completion_authority.type=human because the human owner made the final decision.";
+  }
+  if (decision === "close_agent_verified") {
+    return "Close with completion_authority.type=agent only when the agent can fully verify done_criteria without human judgment.";
+  }
+  if (decision === "request_revision") {
+    return "Send a revision_request artifact back to the target agent and keep the task non-terminal.";
+  }
+  return "Create a follow-up task when the old task is terminal or the request has changed.";
+}
+
+function nextToolArgsForDecision({
+  task,
+  evaluatorAgentId,
+  completionOwnerAgentId,
+  targetAgentId,
+  decision,
+  humanOwnerId,
+  approvalRef,
+  approvalSummary,
+  revisionText,
+  observedResult
+}) {
+  if (decision === "close_human_confirmed") {
+    return {
+      tool: "agentrelay_close_task",
+      args: {
+        taskId: task.task_id,
+        closedByAgentId: completionOwnerAgentId,
+        terminalReason: observedResult
+          ? `Human owner confirmed done criteria are satisfied: ${summarizeText(observedResult)}`
+          : "Human owner confirmed the task satisfies done criteria.",
+        completionAuthorityType: "human",
+        humanOwnerId,
+        humanApprovalRef: approvalRef,
+        humanApprovalSummary: approvalSummary,
+        humanApprovalVisibility: "redacted"
+      }
+    };
+  }
+  if (decision === "close_agent_verified") {
+    return {
+      tool: "agentrelay_close_task",
+      args: {
+        taskId: task.task_id,
+        closedByAgentId: completionOwnerAgentId,
+        terminalReason: observedResult
+          ? `Requester-side agent verified done criteria: ${summarizeText(observedResult)}`
+          : "Requester-side agent verified the task satisfies done criteria.",
+        completionAuthorityType: "agent"
+      }
+    };
+  }
+  if (decision === "request_revision") {
+    return {
+      tool: "agentrelay_submit_artifact",
+      args: {
+        taskId: task.task_id,
+        actor_agent_id: evaluatorAgentId,
+        target_agent_id: targetAgentId,
+        intent: "request_revision",
+        kind: "revision_request",
+        summary: summarizeText(revisionText),
+        text: revisionText,
+        pendingOnAgentId: targetAgentId,
+        nextStatus: "delivery_pending",
+        nextAction: `${targetAgentId} should address the revision request and return an updated artifact.`
+      }
+    };
+  }
+  if (decision === "create_followup") {
+    return {
+      tool: "agentrelay_create_task",
+      args: {
+        requester_agent_id: task.requester_agent_id,
+        target_agent_id: targetAgentId,
+        requesterThreadId: task.requester_thread_id || "replace-with-current-thread-id",
+        subject: `Follow-up for ${task.subject || task.task_id}`,
+        requestText: "Create a follow-up request instead of reopening the completed task.",
+        doneCriteria: "Define the new desired outcome.",
+        intent: "follow_up",
+        taskType: "agent.followup"
+      }
+    };
+  }
+  return {
+    tool: "ask_user",
+    args: {
+      prompt: `Does the latest result satisfy done_criteria for ${task.task_id}? Reply OK to close, or describe what needs revision.`,
+      expected_next_step: "If the user confirms, call agentrelay_close_task with completionAuthorityType=human. If not, call agentrelay_submit_artifact with intent=request_revision."
+    }
+  };
+}
+
+function latestArtifactSummary(artifact) {
+  if (!artifact) return "";
+  if (artifact.summary) return artifact.summary;
+  const parts = Array.isArray(artifact.parts) ? artifact.parts : [];
+  const textPart = parts.find((part) => typeof part?.text === "string");
+  return textPart ? summarizeText(textPart.text) : `${artifact.kind || "artifact"} from ${artifact.from_agent_id || "unknown"}`;
+}
+
+function revisionPrompt(doneCriteria, observedResult) {
+  return [
+    "The latest artifact does not yet satisfy the requester-side done criteria.",
+    "",
+    `Done criteria: ${doneCriteria || "(not provided)"}`,
+    `Observed result: ${observedResult || "(not provided)"}`,
+    "",
+    "Please submit an updated artifact that directly addresses the missing requirement."
+  ].join("\n");
+}
+
+function ownerIdFromAgent(value) {
+  return (value || "owner").replace(/-agent$/, "") || "owner";
 }
 
 function summarizeText(text) {

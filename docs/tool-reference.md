@@ -131,9 +131,54 @@ Records successful or failed delivery back to the requester thread.
 
 Updates transport status and pending ownership fields.
 
+### `agentrelay_prepare_completion_decision`
+
+Fetches a task and prepares a requester-side decision packet without mutating
+relay state. Use this before closing a task after an artifact comes back.
+
+Typical decisions:
+
+- `ask_human`: ask the local owner whether the artifact satisfies `doneCriteria`.
+- `close_human_confirmed`: close with `completion_authority.type = human`.
+- `close_agent_verified`: close with `completion_authority.type = agent`.
+- `request_revision`: submit a revision artifact back to the target agent.
+- `create_followup`: create a new task instead of reopening a terminal task.
+
+Example:
+
+```json
+{
+  "taskId": "task_abc",
+  "evaluatorAgentId": "zac-agent",
+  "decision": "close_human_confirmed",
+  "humanOwnerId": "zac",
+  "humanApprovalRef": "zac-local-thread-20260705-001",
+  "humanApprovalSummary": "Zac confirmed the returned result satisfies the request.",
+  "observedResult": "The remote artifact reported the requested output and verification."
+}
+```
+
 ### `agentrelay_close_task`
 
 Closes a task. Only `completion_owner_agent_id` should do this.
+
+When a human owner made the final decision, prefer the structured human fields:
+
+```json
+{
+  "taskId": "task_abc",
+  "closedByAgentId": "zac-agent",
+  "terminalReason": "Zac confirmed the artifact satisfies the done criteria.",
+  "completionAuthorityType": "human",
+  "humanOwnerId": "zac",
+  "humanApprovalRef": "zac-local-thread-20260705-001",
+  "humanApprovalSummary": "Zac confirmed the result is acceptable.",
+  "humanApprovalVisibility": "redacted"
+}
+```
+
+For advanced callers, `completionAuthorityJson` and `finalArtifactJson` accept
+JSON object strings and are passed through to the relay.
 
 ## Lookup tools
 

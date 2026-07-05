@@ -26,6 +26,10 @@ try {
 
   const tools = await client.listTools();
   assert(tools.tools.some((tool) => tool.name === "agentrelay_create_task"), "agentrelay_create_task not found");
+  assert(
+    tools.tools.some((tool) => tool.name === "agentrelay_prepare_completion_decision"),
+    "agentrelay_prepare_completion_decision not found"
+  );
 
   await callJson("agentrelay_health", {});
   await callJson("agentrelay_list_agents", {});
@@ -83,10 +87,30 @@ try {
     nextAction: "Ask Zac whether Tuesday 10:00 works."
   });
 
+  const decision = await callJson("agentrelay_prepare_completion_decision", {
+    taskId,
+    evaluatorAgentId: "zac-agent",
+    decision: "close_human_confirmed",
+    humanOwnerId: "zac",
+    humanApprovalRef: "zac-local-smoke-approval",
+    humanApprovalSummary: "Zac accepted the proposed meeting time.",
+    observedResult: "Frank is available Tuesday 10:00-11:00 China time and Zac accepted it."
+  });
+  assert(decision.recommended_decision === "close_human_confirmed", "decision helper returned wrong decision");
+  assert(decision.next_tool_args.tool === "agentrelay_close_task", "decision helper should recommend close tool");
+  assert(
+    decision.next_tool_args.args.completionAuthorityType === "human",
+    "decision helper should recommend human completion authority"
+  );
+
   const closed = await callJson("agentrelay_close_task", {
     taskId,
     closedByAgentId: "zac-agent",
-    terminalReason: "Requester confirmed the proposed meeting time."
+    terminalReason: "Requester confirmed the proposed meeting time.",
+    completionAuthorityType: "human",
+    humanOwnerId: "zac",
+    humanApprovalRef: "zac-local-smoke-approval",
+    humanApprovalSummary: "Zac accepted the proposed meeting time."
   });
   assert(closed.task.status === "completed", "task did not close");
 
@@ -207,6 +231,15 @@ function startFakeRelay() {
         assert(payload.artifact?.summary, "MCP artifact payload missing summary");
         state.task.status = "delivery_pending";
         state.task.pending_on_agent_id = "zac-agent";
+        state.task.artifacts = [
+          {
+            artifact_id: "art_smoke",
+            from_agent_id: "frank-agent",
+            kind: payload.artifact?.kind,
+            summary: payload.artifact?.summary,
+            parts: payload.artifact?.parts || []
+          }
+        ];
         state.events.push({ event_type: "artifact.submitted" });
         return sendJson(response, { task: state.task }, 201);
       }
@@ -220,7 +253,10 @@ function startFakeRelay() {
         assert(payload.protocol_version === "agent-collab-v0.3", "MCP close payload missing protocol version");
         assert(payload.idempotency_key, "MCP close payload missing idempotency_key");
         assert(payload.closed_by_agent_id === "zac-agent", "MCP close payload missing closed_by_agent_id");
-        assert(payload.completion_authority?.type === "agent", "MCP close payload missing completion_authority");
+        assert(payload.completion_authority?.type === "human", "MCP close payload missing human completion_authority");
+        assert(payload.completion_authority?.owner_id === "zac", "MCP close payload missing human owner_id");
+        assert(payload.completion_authority?.via_agent_id === "zac-agent", "MCP close payload missing via_agent_id");
+        assert(payload.completion_authority?.approval_ref === "zac-local-smoke-approval", "MCP close payload missing approval_ref");
         state.task.status = "completed";
         state.task.terminal_reason = payload.terminal_reason;
         state.events.push({ event_type: "task.completed" });
