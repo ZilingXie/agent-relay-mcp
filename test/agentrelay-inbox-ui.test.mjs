@@ -9,9 +9,12 @@ import {
   buildChatTimeline,
   classifyIssueFilter,
   createInboxUiServer,
+  generateTaskDraftWithResponses,
   issueWorkflowStatus,
   isMainModulePath,
-  loadInboxSnapshot
+  loadInboxSnapshot,
+  runDefaultTaskDraftGenerator,
+  runTaskDraftResponsesApi
 } from "../scripts/agentrelay-inbox-ui.mjs";
 
 test("loadInboxSnapshot returns an empty inbox when issues.json is missing", async () => {
@@ -1225,6 +1228,157 @@ test("inbox UI server records a failed local task request as a visible local thr
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
+});
+
+test("task draft generator defaults to Responses API and only uses Codex CLI when requested", async () => {
+  const previousRunner = process.env.AGENTRELAY_TASK_DRAFT_RUNNER;
+  delete process.env.AGENTRELAY_TASK_DRAFT_RUNNER;
+  const calls = [];
+  try {
+    const defaultDraft = await runDefaultTaskDraftGenerator({
+      text: "让 project-hermes 修改 dashboard title",
+      localAgentId: "zac-agent",
+      responsesRunner: async ({ prompt, schemaPath }) => {
+        calls.push({ runner: "responses", prompt, schemaPath });
+        return JSON.stringify({
+          subject: "Update dashboard title",
+          requestText: "Ask project-hermes to update dashboard title.",
+          doneCriteria: "Dashboard title is updated.",
+          humanBoundaryReason: "Ask Zac before closing.",
+          to: "project-hermes",
+          from: "zac-agent",
+          completionOwnerAgentId: "zac-agent"
+        });
+      },
+      codexRunner: async () => {
+        calls.push({ runner: "codex" });
+        throw new Error("codex runner should not be used by default");
+      }
+    });
+    assert.equal(defaultDraft.to, "project-hermes");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].runner, "responses");
+    assert.match(calls[0].prompt, /Zac's local request/);
+
+    process.env.AGENTRELAY_TASK_DRAFT_RUNNER = "codex";
+    const codexDraft = await runDefaultTaskDraftGenerator({
+      text: "让 project-hermes 修改 dashboard title",
+      localAgentId: "zac-agent",
+      responsesRunner: async () => {
+        calls.push({ runner: "responses-after-codex" });
+        throw new Error("responses runner should not be used when codex is requested");
+      },
+      codexRunner: async () => {
+        calls.push({ runner: "codex" });
+        return JSON.stringify({
+          subject: "Update dashboard title",
+          requestText: "Ask project-hermes to update dashboard title.",
+          doneCriteria: "Dashboard title is updated.",
+          humanBoundaryReason: "Ask Zac before closing.",
+          to: "project-hermes",
+          from: "zac-agent",
+          completionOwnerAgentId: "zac-agent"
+        });
+      }
+    });
+    assert.equal(codexDraft.subject, "Update dashboard title");
+    assert.equal(calls.at(-1).runner, "codex");
+  } finally {
+    if (previousRunner === undefined) {
+      delete process.env.AGENTRELAY_TASK_DRAFT_RUNNER;
+    } else {
+      process.env.AGENTRELAY_TASK_DRAFT_RUNNER = previousRunner;
+    }
+  }
+});
+
+test("runTaskDraftResponsesApi sends the draft prompt with a JSON schema and extracts output text", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-draft-responses-"));
+  const authPath = join(root, "auth.json");
+  const schemaPath = join(root, "schema.json");
+  await writeFile(authPath, JSON.stringify({ OPENAI_API_KEY: "draft-test-key" }));
+  await writeFile(schemaPath, JSON.stringify({
+    type: "object",
+    additionalProperties: false,
+    required: ["subject", "requestText", "doneCriteria", "humanBoundaryReason", "to", "from", "completionOwnerAgentId"],
+    properties: {
+      subject: { type: "string" },
+      requestText: { type: "string" },
+      doneCriteria: { type: "string" },
+      humanBoundaryReason: { type: "string" },
+      to: { type: "string" },
+      from: { type: "string" },
+      completionOwnerAgentId: { type: "string" },
+      ignoredDefault: { type: "string", default: "drop me" }
+    }
+  }));
+  const requests = [];
+
+  const output = await runTaskDraftResponsesApi({
+    prompt: "draft prompt",
+    schemaPath,
+    authPath,
+    model: "draft-model",
+    baseUrl: "https://example.test/v1",
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options, body: JSON.parse(options.body) });
+      return new Response(JSON.stringify({
+        output: [{
+          content: [{
+            type: "output_text",
+            text: "{\"subject\":\"Draft\",\"requestText\":\"Do task\",\"doneCriteria\":\"Done\",\"humanBoundaryReason\":\"Ask Zac\",\"to\":\"project-hermes\",\"from\":\"zac-agent\",\"completionOwnerAgentId\":\"zac-agent\"}"
+          }]
+        }]
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+  });
+
+  assert.equal(output, "{\"subject\":\"Draft\",\"requestText\":\"Do task\",\"doneCriteria\":\"Done\",\"humanBoundaryReason\":\"Ask Zac\",\"to\":\"project-hermes\",\"from\":\"zac-agent\",\"completionOwnerAgentId\":\"zac-agent\"}");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://example.test/v1/responses");
+  assert.equal(requests[0].options.headers.authorization, "Bearer draft-test-key");
+  assert.equal(requests[0].body.model, "draft-model");
+  assert.equal(requests[0].body.input, "draft prompt");
+  assert.equal(requests[0].body.text.format.type, "json_schema");
+  assert.equal(requests[0].body.text.format.name, "agentrelay_task_draft");
+  assert.equal(requests[0].body.text.format.strict, true);
+  assert.equal(requests[0].body.text.format.schema.additionalProperties, false);
+  assert.deepEqual(requests[0].body.text.format.schema.required, [
+    "subject",
+    "requestText",
+    "doneCriteria",
+    "humanBoundaryReason",
+    "to",
+    "from",
+    "completionOwnerAgentId",
+    "ignoredDefault"
+  ]);
+  assert.equal(requests[0].body.text.format.schema.properties.ignoredDefault.default, undefined);
+});
+
+test("generateTaskDraftWithResponses validates the Responses API draft output", async () => {
+  const draft = await generateTaskDraftWithResponses({
+    text: "让 project-hermes 修改 dashboard title",
+    localAgentId: "zac-agent",
+    responsesRunner: async ({ prompt, schemaPath }) => {
+      assert.match(prompt, /Follow this workspace AGENTS\.md exactly/);
+      assert.match(prompt, /让 project-hermes 修改 dashboard title/);
+      assert.match(schemaPath, /task-draft\.schema\.json/);
+      return JSON.stringify({
+        subject: "A".repeat(60),
+        requestText: "Ask project-hermes to update dashboard title.",
+        doneCriteria: "Dashboard title is updated.",
+        humanBoundaryReason: "Ask Zac before closing.",
+        to: "project-hermes",
+        from: "zac-agent",
+        completionOwnerAgentId: "zac-agent"
+      });
+    }
+  });
+
+  assert.equal(draft.subject.length, 32);
+  assert.equal(draft.to, "project-hermes");
+  assert.equal(draft.from, "zac-agent");
 });
 
 test("inbox UI serves a two-pane chat workspace and dashboard as a separate page", async () => {

@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +14,7 @@ const PROJECT_ROOT = resolve(__dirname, "..");
 const DEFAULT_HOST = process.env.AGENTRELAY_INBOX_UI_HOST || "127.0.0.1";
 const DEFAULT_PORT = Number.parseInt(process.env.AGENTRELAY_INBOX_UI_PORT || "8787", 10);
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
+const DEFAULT_RESPONSES_BASE_URL = "https://sub2api.la3.agoralab.co";
 const DEFAULT_CODEX_CLI = "/Applications/Codex.app/Contents/Resources/codex";
 const PROTOCOL_VERSION = "agent-collab-v0.3";
 const TASK_DRAFT_SCHEMA_PATH = resolve(PROJECT_ROOT, "schemas/task-draft.schema.json");
@@ -235,8 +237,9 @@ async function runDefaultExecuteInboxAgent(options) {
   return executeInboxAgent(options);
 }
 
-async function runDefaultTaskDraftGenerator(options) {
-  return generateTaskDraftWithCodex(options);
+export async function runDefaultTaskDraftGenerator(options) {
+  if (process.env.AGENTRELAY_TASK_DRAFT_RUNNER === "codex") return generateTaskDraftWithCodex(options);
+  return generateTaskDraftWithResponses(options);
 }
 
 async function loadIssueDetail({
@@ -1231,7 +1234,22 @@ function validateTaskDraft(value) {
   return draft;
 }
 
-async function generateTaskDraftWithCodex({
+export async function generateTaskDraftWithResponses({
+  to,
+  text,
+  subject = "",
+  localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent",
+  agentsMdPath = resolve(PROJECT_ROOT, "AGENTS.md"),
+  schemaPath = TASK_DRAFT_SCHEMA_PATH,
+  responsesRunner = runTaskDraftResponsesApi
+}) {
+  const agentsMd = await readFile(agentsMdPath, "utf8").catch(() => "");
+  const prompt = buildTaskDraftPrompt({ agentsMd, to, text, subject, localAgentId });
+  const rawOutput = await responsesRunner({ prompt, schemaPath });
+  return validateTaskDraft(parseJsonObject(rawOutput));
+}
+
+export async function generateTaskDraftWithCodex({
   to,
   text,
   subject = "",
@@ -1333,6 +1351,113 @@ async function runCodexDraftExec({ prompt, schemaPath, codexCli, cwd, timeoutMs 
     });
     child.stdin.end(prompt);
   });
+}
+
+export async function runTaskDraftResponsesApi({
+  prompt,
+  schemaPath,
+  model = process.env.AGENTRELAY_TASK_DRAFT_MODEL || process.env.AGENTRELAY_PROCESSOR_MODEL || "gpt-5.5",
+  baseUrl = process.env.AGENTRELAY_TASK_DRAFT_BASE_URL || process.env.AGENTRELAY_PROCESSOR_BASE_URL || DEFAULT_RESPONSES_BASE_URL,
+  authPath,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = Number(process.env.AGENTRELAY_TASK_DRAFT_TIMEOUT_MS || process.env.AGENTRELAY_TASK_DRAFT_CODEX_TIMEOUT_MS || 120000)
+}) {
+  if (!fetchImpl) throw new Error("fetch is not available for task draft Responses API runner");
+  const schema = normalizeResponsesJsonSchema(JSON.parse(await readFile(schemaPath, "utf8")));
+  const apiKey = process.env.OPENAI_API_KEY || await readTaskDraftApiKey({ authPath });
+  if (!apiKey) throw new Error("OPENAI_API_KEY is unavailable for task draft Responses API runner");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/responses`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        input: prompt,
+        text: {
+          format: {
+            type: "json_schema",
+            name: "agentrelay_task_draft",
+            strict: true,
+            schema
+          }
+        }
+      }),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Task draft Responses API failed (${response.status}): ${text.slice(0, 1000)}`);
+    }
+    const data = JSON.parse(text);
+    if (data.error) {
+      throw new Error(`Task draft Responses API returned error: ${JSON.stringify(data.error)}`);
+    }
+    const outputText = extractResponsesOutputText(data);
+    if (!outputText) throw new Error("Task draft Responses API returned no output text");
+    return outputText;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`Task draft Responses API timed out after ${timeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizeResponsesJsonSchema(schema) {
+  const clone = JSON.parse(JSON.stringify(schema || {}));
+  stripJsonSchemaDefaults(clone);
+  if (clone && clone.type === "object" && clone.properties && typeof clone.properties === "object") {
+    clone.required = Object.keys(clone.properties);
+  }
+  return clone;
+}
+
+function stripJsonSchemaDefaults(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) stripJsonSchemaDefaults(item);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  delete value.default;
+  for (const child of Object.values(value)) stripJsonSchemaDefaults(child);
+}
+
+async function readTaskDraftApiKey({ authPath } = {}) {
+  for (const candidate of taskDraftAuthPathCandidates(authPath)) {
+    if (!candidate) continue;
+    try {
+      const auth = JSON.parse(await readFile(candidate, "utf8"));
+      if (auth.OPENAI_API_KEY) return String(auth.OPENAI_API_KEY);
+    } catch {
+      // Try the next configured auth location.
+    }
+  }
+  return "";
+}
+
+function taskDraftAuthPathCandidates(authPath) {
+  return [
+    authPath,
+    process.env.AGENTRELAY_TASK_DRAFT_AUTH_PATH,
+    join(process.env.AGENTRELAY_PROCESSOR_CODEX_HOME || join(PROJECT_ROOT, "state", "processor-codex-home"), "auth.json"),
+    join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json")
+  ];
+}
+
+function extractResponsesOutputText(data) {
+  if (typeof data?.output_text === "string") return data.output_text;
+  for (const item of data?.output || []) {
+    for (const content of item?.content || []) {
+      if (typeof content?.text === "string") return content.text;
+      if (typeof content?.output_text === "string") return content.output_text;
+    }
+  }
+  return "";
 }
 
 function parseJsonObject(output) {
