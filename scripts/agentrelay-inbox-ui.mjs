@@ -2254,6 +2254,7 @@ button.list-header:focus-visible {
 
 .message.speaker-agent {
   justify-items: end;
+  padding-right: clamp(18px, 3vw, 56px);
 }
 
 .message-line {
@@ -2273,6 +2274,7 @@ button.list-header:focus-visible {
 
 .message.speaker-agent .message-line {
   justify-content: flex-end;
+  max-width: min(760px, 78%);
 }
 
 .message-meta {
