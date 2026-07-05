@@ -308,7 +308,16 @@ async function fetchLiveRelayEvent({ taskId, relayClient, now }) {
 async function persistLiveRelayEvent({ stateRoot, inbox, issue, liveRelayEvent, now }) {
   const eventId = liveRelayEvent.eventId;
   if (inbox.events?.[eventId]) {
-    return { inbox, issue: inbox.issues?.[issue.taskId] || issue, synced: false };
+    const task = liveRelayEvent.raw?.task || {};
+    const updatedIssue = mergeLiveTaskIntoIssue({
+      issue: inbox.issues?.[issue.taskId] || issue,
+      task,
+      eventId,
+      receivedAt: liveRelayEvent.receivedAt || now()
+    });
+    inbox.issues = { ...(inbox.issues || {}), [issue.taskId]: updatedIssue };
+    await writeJsonAtomic(join(stateRoot, "issues.json"), inbox);
+    return { inbox, issue: updatedIssue, synced: true };
   }
   const task = liveRelayEvent.raw?.task || {};
   const eventPath = join(stateRoot, "live-events", `${eventId}.json`);
@@ -324,23 +333,13 @@ async function persistLiveRelayEvent({ stateRoot, inbox, issue, liveRelayEvent, 
   });
 
   const eventIds = Array.from(new Set([...(issue.eventIds || []), eventId]));
-  const updatedIssue = {
-    ...issue,
-    taskId: issue.taskId,
-    subject: task.subject || issue.subject || "",
-    requesterAgentId: task.requester_agent_id || issue.requesterAgentId || "",
-    targetAgentId: task.target_agent_id || issue.targetAgentId || "",
-    completionOwnerAgentId: task.completion_owner_agent_id || issue.completionOwnerAgentId || "",
-    pendingOnAgentId: task.pending_on_agent_id || issue.pendingOnAgentId || "",
-    pendingOnHumanId: task.pending_on_human_id || issue.pendingOnHumanId || null,
-    relayStatus: task.status || issue.relayStatus || "",
-    localStatus: mergeRelayLocalStatus(issue.localStatus),
-    direction: issue.direction || inferIssueDirectionFromIssue(task, issue),
-    counterpartAgentId: issue.counterpartAgentId || inferCounterpartFromIssue(task, issue),
-    lastEventId: eventId,
+  const updatedIssue = mergeLiveTaskIntoIssue({
+    issue,
+    task,
+    eventId,
     eventIds,
-    updatedAt: liveRelayEvent.receivedAt || now()
-  };
+    receivedAt: liveRelayEvent.receivedAt || now()
+  });
   inbox.version = 1;
   inbox.issues = { ...(inbox.issues || {}), [issue.taskId]: updatedIssue };
   inbox.events = {
@@ -358,6 +357,30 @@ async function persistLiveRelayEvent({ stateRoot, inbox, issue, liveRelayEvent, 
   };
   await writeJsonAtomic(join(stateRoot, "issues.json"), inbox);
   return { inbox, issue: updatedIssue, synced: true };
+}
+
+function mergeLiveTaskIntoIssue({ issue, task, eventId, eventIds = issue.eventIds || [], receivedAt }) {
+  return {
+    ...issue,
+    taskId: issue.taskId,
+    subject: task.subject || issue.subject || "",
+    requesterAgentId: task.requester_agent_id || issue.requesterAgentId || "",
+    targetAgentId: task.target_agent_id || issue.targetAgentId || "",
+    completionOwnerAgentId: task.completion_owner_agent_id || issue.completionOwnerAgentId || "",
+    pendingOnAgentId: relayTaskField(task, "pending_on_agent_id", issue.pendingOnAgentId || "") || "",
+    pendingOnHumanId: relayTaskField(task, "pending_on_human_id", issue.pendingOnHumanId || null),
+    relayStatus: task.status || issue.relayStatus || "",
+    localStatus: mergeRelayLocalStatus(issue.localStatus),
+    direction: issue.direction || inferIssueDirectionFromIssue(task, issue),
+    counterpartAgentId: issue.counterpartAgentId || inferCounterpartFromIssue(task, issue),
+    lastEventId: eventId,
+    eventIds,
+    updatedAt: receivedAt
+  };
+}
+
+function relayTaskField(task, field, fallback) {
+  return Object.hasOwn(task || {}, field) ? task[field] : fallback;
 }
 
 function hashRelayTask(task) {
@@ -569,9 +592,22 @@ function needsHumanAttention(issue, { localAgentId = process.env.AGENTRELAY_AGEN
   if (issue.pendingOnHumanId) return true;
   if (issue.humanReplyStatus === "pending_processor") return true;
   if (issue.executorStatus === "failed") return true;
+  if (isWaitingForRemoteCompletionOwner(issue, { localAgentId })) return false;
   if (issue.pendingOnAgentId && issue.pendingOnAgentId !== localAgentId) return false;
   if (issue.requiresHumanConfirmation) return true;
   return issue.processorStatus === "needs_human" || issue.processorStatus === "ready_to_reply";
+}
+
+function isWaitingForRemoteCompletionOwner(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
+  const owner = issue.completionOwnerAgentId || "";
+  if (!owner || owner === localAgentId) return false;
+  if (issue.localStatus === "archived") return false;
+  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
+  if (issue.pendingOnHumanId) return false;
+  if (issue.executorStatus !== "completed") return false;
+  if (!new Set(["submit_artifact", "request_revision"]).has(issue.executorActionIntent || "")) return false;
+  if (issue.executorError) return false;
+  return true;
 }
 
 function chooseLatestEvent(issue, eventList) {
@@ -3116,10 +3152,21 @@ function pendingOwnerLabel(issue) {
   if (issue.pendingOnHumanId) return "Need approval";
   if (issue.humanReplyStatus === "pending_processor") return "Pending zac-agent";
   if (issue.localStatus === "create_failed" || issue.relayStatus === "failed") return "Need approval";
+  if (isWaitingForRemoteCompletionOwnerClient(issue)) return "Pending completion owner: " + issue.completionOwnerAgentId;
   if (issue.requiresHumanConfirmation || issue.processorStatus === "needs_human" || issue.processorStatus === "ready_to_reply") return "Need approval";
   if (issue.pendingOnAgentId === "zac-agent") return "Pending zac-agent";
   if (issue.pendingOnAgentId) return "Pending " + issue.pendingOnAgentId;
   return "";
+}
+
+function isWaitingForRemoteCompletionOwnerClient(issue) {
+  const owner = issue.completionOwnerAgentId || "";
+  if (!owner || owner === "zac-agent") return false;
+  if (issue.localStatus === "archived") return false;
+  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
+  if (issue.pendingOnHumanId) return false;
+  if (issue.executorStatus !== "completed") return false;
+  return issue.executorActionIntent === "submit_artifact" || issue.executorActionIntent === "request_revision";
 }
 
 function renderComposer(issue) {

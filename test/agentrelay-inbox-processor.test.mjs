@@ -611,6 +611,8 @@ test("buildCodexProcessorPrompt keeps intent interpretation inside the LLM agent
   assert.match(prompt, /request_revision/);
   assert.match(prompt, /ask the remote agent to continue/);
   assert.match(prompt, /visible heading or user-facing title is still different/);
+  assert.match(prompt, /completion_owner_agent_id equals the local agent id/);
+  assert.match(prompt, /waiting for the completion owner to call close_task/);
 });
 
 test("processInbox skips issues that are not pending on the local agent", async () => {
