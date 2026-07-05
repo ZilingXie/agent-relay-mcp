@@ -15,6 +15,8 @@ loadDotEnv(envPath);
 
 const DEFAULT_CODEX_CLI = "/Applications/Codex.app/Contents/Resources/codex";
 const PROCESSOR_SCHEMA_PATH = resolve(PROJECT_ROOT, "schemas/processor-output.schema.json");
+const PROCESSOR_RETRY_BASE_MS = 30000;
+const PROCESSOR_RETRY_MAX_MS = 300000;
 
 export async function processInbox({
   stateRoot = process.env.AGENTRELAY_STATE_DIR || join(PROJECT_ROOT, "state"),
@@ -26,6 +28,7 @@ export async function processInbox({
   const inbox = await readInbox(inboxPath);
   const issues = Object.values(inbox.issues || {});
   let processed = 0;
+  let retryAfterMs = 0;
 
   for (const issue of issues) {
     if (issue.localStatus === "archived") continue;
@@ -39,6 +42,11 @@ export async function processInbox({
       issue.processorLastEventId === issue.lastEventId &&
       !hasNewHumanReply
     ) continue;
+    const pendingRetryMs = retryDelayRemainingMs(issue, now());
+    if (pendingRetryMs > 0 && !hasNewHumanReply && issue.processorRetryEventId === issue.lastEventId) {
+      retryAfterMs = minPositiveRetryAfter(retryAfterMs, pendingRetryMs);
+      continue;
+    }
     const task = await readTaskSnapshotForIssue({ inbox, issue });
     if (!task) continue;
     const event = getIssueEvent({ inbox, issue });
@@ -51,14 +59,21 @@ export async function processInbox({
     });
     const updatedAt = now();
     const processorSucceeded = source === "codex";
+    const processorRetryPending = source === "codex_retry_pending";
     const processorAttemptedEventId = issue.lastEventId || "";
     const processorAttemptedHumanReplyId = latestHumanReplyId || "";
+    const nextRetryCount = processorRetryPending ? Number(issue.processorRetryCount || 0) + 1 : 0;
+    const nextRetryDelayMs = processorRetryPending ? retryDelayMs(nextRetryCount) : 0;
+    const processorRetryAfterAt = processorRetryPending
+      ? new Date(Date.parse(updatedAt) + nextRetryDelayMs).toISOString()
+      : "";
+    if (processorRetryPending) retryAfterMs = minPositiveRetryAfter(retryAfterMs, nextRetryDelayMs);
     inbox.issues[issue.taskId] = {
       ...issue,
       humanReplies: processorSucceeded ? markHumanRepliesProcessed(humanReplies, updatedAt) : humanReplies,
       latestHumanReplyId,
       humanReplyStatus: latestHumanReplyId
-        ? (processorSucceeded ? "processed" : "processor_failed")
+        ? (processorSucceeded ? "processed" : (processorRetryPending ? (issue.humanReplyStatus || "pending_processor") : "processor_failed"))
         : (issue.humanReplyStatus || ""),
       processorStatus: analysis.processorStatus,
       processorSummary: analysis.summary,
@@ -74,6 +89,9 @@ export async function processInbox({
       processorError: error || null,
       processorLastEventId: processorSucceeded ? processorAttemptedEventId : (issue.processorLastEventId || ""),
       processorLastHumanReplyId: processorSucceeded ? processorAttemptedHumanReplyId : (issue.processorLastHumanReplyId || ""),
+      processorRetryCount: nextRetryCount,
+      processorRetryAfterAt,
+      processorRetryEventId: processorRetryPending ? processorAttemptedEventId : "",
       processorLastRunAt: updatedAt,
       updatedAt
     };
@@ -92,7 +110,7 @@ export async function processInbox({
   }
 
   if (processed > 0) await writeJsonAtomic(inboxPath, inbox);
-  return { scanned: issues.length, processed, externalActions: [] };
+  return { scanned: issues.length, processed, externalActions: [], retryAfterMs };
 }
 
 async function analyzeWithCodex({ localAgentId, task, event, humanReplies = [], codexRunner }) {
@@ -103,6 +121,13 @@ async function analyzeWithCodex({ localAgentId, task, event, humanReplies = [], 
       error: null
     };
   } catch (error) {
+    if (isTransientProcessorError(error)) {
+      return {
+        analysis: buildCodexRetryAnalysis(),
+        source: "codex_retry_pending",
+        error: error.message
+      };
+    }
     return {
       analysis: buildCodexFailureAnalysis(),
       source: "codex_failed",
@@ -187,25 +212,27 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
   ].join("\n");
 }
 
-async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutMs }) {
-  const codexHome = await ensureProcessorCodexHome();
+export async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutMs }) {
+  const env = { ...process.env };
+  if (shouldUseIsolatedProcessorCodexHome()) {
+    env.CODEX_HOME = await ensureProcessorCodexHome();
+  }
+  const args = [
+    "exec",
+    ...processorReasoningEffortArgs(),
+    "--skip-git-repo-check",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    "--output-schema",
+    schemaPath,
+    "-C",
+    cwd,
+    "-"
+  ];
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(codexCli, [
-      "exec",
-      "--skip-git-repo-check",
-      "--ephemeral",
-      "--sandbox",
-      "read-only",
-      "--output-schema",
-      schemaPath,
-      "-C",
-      cwd,
-      "-"
-    ], {
-      env: {
-        ...process.env,
-        CODEX_HOME: codexHome
-      },
+    const child = spawn(codexCli, args, {
+      env,
       stdio: ["pipe", "pipe", "pipe"]
     });
     let stdout = "";
@@ -234,6 +261,20 @@ async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutMs }) {
     });
     child.stdin.end(prompt);
   });
+}
+
+function processorReasoningEffortArgs() {
+  const effort = String(process.env.AGENTRELAY_PROCESSOR_REASONING_EFFORT || "low").trim();
+  if (!effort || effort === "inherit") return [];
+  return ["--config", `model_reasoning_effort=${JSON.stringify(effort)}`];
+}
+
+function shouldUseIsolatedProcessorCodexHome() {
+  const mode = String(process.env.AGENTRELAY_PROCESSOR_CODEX_HOME_MODE || "").trim().toLowerCase();
+  if (mode && mode !== "inherit" && mode !== "isolated") {
+    throw new Error(`Unsupported AGENTRELAY_PROCESSOR_CODEX_HOME_MODE: ${mode}`);
+  }
+  return mode === "isolated" || Boolean(process.env.AGENTRELAY_PROCESSOR_CODEX_HOME);
 }
 
 export async function runResponsesApi({
@@ -428,6 +469,45 @@ function buildCodexFailureAnalysis() {
     artifactKind: "",
     artifactText: ""
   };
+}
+
+function buildCodexRetryAnalysis() {
+  return {
+    processorStatus: "retry_pending",
+    requiresHumanConfirmation: false,
+    summary: "本地 LLM provider 暂时不可用，本地 Agent 会自动重试处理这个 AgentRelay 回复。",
+    suggestedReply: "",
+    needsHumanReason: "",
+    actionIntent: "none",
+    actionReason: "",
+    terminalReason: "",
+    artifactKind: "",
+    artifactText: ""
+  };
+}
+
+function isTransientProcessorError(error) {
+  const message = String(error?.message || error || "");
+  return /(?:502|503|504)\b|Bad Gateway|Service Unavailable|Gateway Timeout|Upstream request failed|ECONNRESET|ETIMEDOUT|timed out after|Responses API timed out|fetch failed/i.test(message);
+}
+
+function retryDelayRemainingMs(issue, nowIso) {
+  if (issue.processorStatus !== "retry_pending") return 0;
+  const retryAt = Date.parse(issue.processorRetryAfterAt || "");
+  const nowMs = Date.parse(nowIso || "");
+  if (!Number.isFinite(retryAt) || !Number.isFinite(nowMs)) return 0;
+  return Math.max(0, retryAt - nowMs);
+}
+
+function retryDelayMs(retryCount) {
+  const count = Math.max(1, Number(retryCount || 1));
+  return Math.min(PROCESSOR_RETRY_MAX_MS, PROCESSOR_RETRY_BASE_MS * 2 ** (count - 1));
+}
+
+function minPositiveRetryAfter(current, next) {
+  if (!next || next <= 0) return current || 0;
+  if (!current || current <= 0) return next;
+  return Math.min(current, next);
 }
 
 async function readTaskSnapshotForIssue({ inbox, issue }) {

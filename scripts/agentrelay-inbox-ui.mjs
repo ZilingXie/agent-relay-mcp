@@ -448,17 +448,25 @@ async function deleteIssue({ stateRoot, taskId, now }) {
   return { status: "archived", taskId };
 }
 
-function scheduleInboxProcessing({ stateRoot, processInbox, executeInboxAgent, now }) {
+export function scheduleInboxProcessing({ stateRoot, processInbox, executeInboxAgent, now }) {
   if (!processInbox && !executeInboxAgent) return;
   setImmediate(async () => {
     const startedAt = now();
     try {
-      if (processInbox) await processInbox({ stateRoot });
+      const processorResult = processInbox ? await processInbox({ stateRoot }) : null;
       if (executeInboxAgent) await executeInboxAgent({ stateRoot });
       await appendJsonl(join(stateRoot, "ui-background-runs.jsonl"), {
         at: startedAt,
-        status: "completed"
+        status: "completed",
+        retryAfterMs: Number(processorResult?.retryAfterMs || 0)
       });
+      const retryAfterMs = Number(processorResult?.retryAfterMs || 0);
+      if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+        const timer = setTimeout(() => {
+          scheduleInboxProcessing({ stateRoot, processInbox, executeInboxAgent, now });
+        }, retryAfterMs);
+        timer.unref?.();
+      }
     } catch (error) {
       await appendJsonl(join(stateRoot, "ui-background-errors.jsonl"), {
         at: startedAt,
@@ -467,6 +475,25 @@ function scheduleInboxProcessing({ stateRoot, processInbox, executeInboxAgent, n
       });
     }
   });
+}
+
+export async function schedulePendingProcessorRetriesOnStartup({
+  stateRoot = process.env.AGENTRELAY_STATE_DIR || join(PROJECT_ROOT, "state"),
+  localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent",
+  processInbox = runDefaultProcessInbox,
+  executeInboxAgent = runDefaultExecuteInboxAgent,
+  now = () => new Date().toISOString(),
+  scheduler = scheduleInboxProcessing
+} = {}) {
+  const inbox = await readInboxFile(join(stateRoot, "issues.json"));
+  const hasRetryPendingIssue = Object.values(inbox.issues || {}).some((issue) =>
+    issue?.localStatus !== "archived" &&
+    issue?.processorStatus === "retry_pending" &&
+    issue?.pendingOnAgentId === localAgentId
+  );
+  if (!hasRetryPendingIssue) return { scheduled: false };
+  scheduler({ stateRoot, processInbox, executeInboxAgent, now });
+  return { scheduled: true };
 }
 
 async function readEventRaw(sourcePath) {
@@ -3357,5 +3384,8 @@ if (isMainModulePath(import.meta.url)) {
   server.listen(port, host, () => {
     console.log(`AgentRelay Inbox UI listening on http://${host}:${port}`);
     console.log(`Reading local state from ${stateRoot}`);
+    schedulePendingProcessorRetriesOnStartup({ stateRoot }).catch((error) => {
+      console.error(`Failed to schedule retry-pending processor work: ${error.message}`);
+    });
   });
 }

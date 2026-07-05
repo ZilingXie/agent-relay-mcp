@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   processInbox,
   ensureProcessorCodexHome,
   runCodexAnalysis,
+  runCodexExec,
   runDefaultLlmRunner,
   runResponsesApi
 } from "../scripts/agentrelay-inbox-processor.mjs";
@@ -244,6 +245,187 @@ test("processInbox records Codex failure without local fallback analysis", async
   assert.equal(retriedIssue.processorLastHumanReplyId, "hr_failed");
   assert.equal(retriedIssue.humanReplyStatus, "processed");
   assert.equal(retriedIssue.humanReplies[0].processedAt, "2026-07-03T03:11:30.000Z");
+});
+
+test("processInbox keeps transient Codex provider failures pending for automatic retry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-retry-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify({
+    event: { eventId: "evt_codex_502", type: "task.pending", agentId: "zac-agent", taskId: "task_codex_502" },
+    task: incomingTask({ taskId: "task_codex_502" })
+  }, null, 2));
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_codex_502: {
+        taskId: "task_codex_502",
+        pendingOnAgentId: "zac-agent",
+        lastEventId: "evt_codex_502",
+        eventIds: ["evt_codex_502"]
+      }
+    },
+    events: {
+      evt_codex_502: { eventId: "evt_codex_502", taskId: "task_codex_502", sourcePath: eventPath }
+    }
+  });
+
+  let attempts = 0;
+  const first = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async () => {
+      attempts += 1;
+      throw new Error("codex exec exited with 1: ERROR: unexpected status 502 Bad Gateway: Upstream request failed");
+    },
+    now: () => "2026-07-03T03:10:00.000Z"
+  });
+
+  assert.equal(first.processed, 1);
+  assert.equal(first.retryAfterMs, 30000);
+  assert.equal(attempts, 1);
+  let inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  let issue = inbox.issues.task_codex_502;
+  assert.equal(issue.processorSource, "codex_retry_pending");
+  assert.equal(issue.processorStatus, "retry_pending");
+  assert.equal(issue.requiresHumanConfirmation, false);
+  assert.equal(issue.processorRetryCount, 1);
+  assert.equal(issue.processorRetryAfterAt, "2026-07-03T03:10:30.000Z");
+  assert.equal(issue.processorLastEventId, "");
+
+  const skipped = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async () => {
+      attempts += 1;
+      throw new Error("should not retry before processorRetryAfterAt");
+    },
+    now: () => "2026-07-03T03:10:10.000Z"
+  });
+  assert.equal(skipped.processed, 0);
+  assert.equal(skipped.retryAfterMs, 20000);
+  assert.equal(attempts, 1);
+
+  const recovered = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async () => {
+      attempts += 1;
+      return JSON.stringify({
+        processorStatus: "needs_human",
+        summary: "Remote agent reports the title was changed and verified.",
+        suggestedReply: "",
+        needsHumanReason: "请 Zac 验收是否可以关闭任务。",
+        requiresHumanConfirmation: true,
+        actionIntent: "none",
+        actionReason: "",
+        terminalReason: "",
+        artifactKind: "",
+        artifactText: ""
+      });
+    },
+    now: () => "2026-07-03T03:10:31.000Z"
+  });
+  assert.equal(recovered.processed, 1);
+  assert.equal(attempts, 2);
+  inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  issue = inbox.issues.task_codex_502;
+  assert.equal(issue.processorSource, "codex");
+  assert.equal(issue.processorStatus, "needs_human");
+  assert.equal(issue.processorRetryCount, 0);
+  assert.equal(issue.processorRetryAfterAt, "");
+  assert.equal(issue.processorLastEventId, "evt_codex_502");
+});
+
+test("runCodexExec inherits the user's Codex home by default", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-codex-exec-"));
+  const fakeCodex = join(root, "fake-codex.mjs");
+  await writeFile(fakeCodex, [
+    "#!/usr/bin/env node",
+    "const output = {",
+    "  processorStatus: 'needs_human',",
+    "  summary: process.env.CODEX_HOME || '',",
+    "  suggestedReply: '',",
+    "  needsHumanReason: 'confirm',",
+    "  requiresHumanConfirmation: true,",
+    "  actionIntent: 'none',",
+    "  actionReason: '',",
+    "  terminalReason: '',",
+    "  artifactKind: '',",
+    "  artifactText: ''",
+    "};",
+    "process.stdout.write(JSON.stringify(output));",
+    ""
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+  const previousCodexHome = process.env.CODEX_HOME;
+  const previousMode = process.env.AGENTRELAY_PROCESSOR_CODEX_HOME_MODE;
+  const userCodexHome = join(root, "user-codex-home");
+  process.env.CODEX_HOME = userCodexHome;
+  delete process.env.AGENTRELAY_PROCESSOR_CODEX_HOME_MODE;
+  try {
+    const output = await runCodexExec({
+      prompt: "hello",
+      schemaPath: join(root, "schema.json"),
+      codexCli: fakeCodex,
+      cwd: root,
+      timeoutMs: 5000
+    });
+    const parsed = JSON.parse(output);
+    assert.equal(parsed.summary, userCodexHome);
+  } finally {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
+    if (previousMode === undefined) {
+      delete process.env.AGENTRELAY_PROCESSOR_CODEX_HOME_MODE;
+    } else {
+      process.env.AGENTRELAY_PROCESSOR_CODEX_HOME_MODE = previousMode;
+    }
+  }
+});
+
+test("runCodexExec applies processor reasoning effort as a per-run override", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-codex-effort-"));
+  const fakeCodex = join(root, "fake-codex.mjs");
+  await writeFile(fakeCodex, [
+    "#!/usr/bin/env node",
+    "process.stdout.write(JSON.stringify({",
+    "  processorStatus: 'needs_human',",
+    "  summary: process.argv.slice(2).join(' '),",
+    "  suggestedReply: '',",
+    "  needsHumanReason: 'confirm',",
+    "  requiresHumanConfirmation: true,",
+    "  actionIntent: 'none',",
+    "  actionReason: '',",
+    "  terminalReason: '',",
+    "  artifactKind: '',",
+    "  artifactText: ''",
+    "}));",
+    ""
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+  const previousEffort = process.env.AGENTRELAY_PROCESSOR_REASONING_EFFORT;
+  process.env.AGENTRELAY_PROCESSOR_REASONING_EFFORT = "low";
+  try {
+    const output = await runCodexExec({
+      prompt: "hello",
+      schemaPath: join(root, "schema.json"),
+      codexCli: fakeCodex,
+      cwd: root,
+      timeoutMs: 5000
+    });
+    const parsed = JSON.parse(output);
+    assert.match(parsed.summary, /--config model_reasoning_effort="low"/);
+  } finally {
+    if (previousEffort === undefined) {
+      delete process.env.AGENTRELAY_PROCESSOR_REASONING_EFFORT;
+    } else {
+      process.env.AGENTRELAY_PROCESSOR_REASONING_EFFORT = previousEffort;
+    }
+  }
 });
 
 test("ensureProcessorCodexHome creates an isolated minimal Codex home", async () => {

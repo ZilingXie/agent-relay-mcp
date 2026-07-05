@@ -14,6 +14,8 @@ import {
   isMainModulePath,
   loadInboxSnapshot,
   runDefaultTaskDraftGenerator,
+  scheduleInboxProcessing,
+  schedulePendingProcessorRetriesOnStartup,
   runTaskDraftResponsesApi
 } from "../scripts/agentrelay-inbox-ui.mjs";
 
@@ -855,6 +857,61 @@ test("inbox UI server records Zac replies and schedules processing without waiti
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
+});
+
+test("scheduleInboxProcessing reschedules transient processor retries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-retry-"));
+  const stateRoot = join(root, "state");
+  const calls = [];
+  let secondCallResolve;
+  const secondCall = new Promise((resolve) => {
+    secondCallResolve = resolve;
+  });
+
+  scheduleInboxProcessing({
+    stateRoot,
+    now: () => "2026-07-03T03:10:00.000Z",
+    processInbox: async (options) => {
+      calls.push(options);
+      if (calls.length === 2) secondCallResolve();
+      return { scanned: 1, processed: calls.length === 1 ? 1 : 0, externalActions: [], retryAfterMs: calls.length === 1 ? 5 : 0 };
+    },
+    executeInboxAgent: async () => ({ scanned: 0, executed: 0, failed: 0, actions: [] })
+  });
+
+  await withTimeout(secondCall, 1000, "processor retry was not rescheduled");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].stateRoot, stateRoot);
+  assert.equal(calls[1].stateRoot, stateRoot);
+});
+
+test("schedulePendingProcessorRetriesOnStartup resumes retry-pending issues", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-startup-retry-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_retry: {
+        taskId: "task_retry",
+        pendingOnAgentId: "zac-agent",
+        processorStatus: "retry_pending",
+        processorRetryAfterAt: "2026-07-03T03:10:30.000Z"
+      }
+    },
+    events: {}
+  });
+  const scheduled = [];
+  const result = await schedulePendingProcessorRetriesOnStartup({
+    stateRoot,
+    localAgentId: "zac-agent",
+    processInbox: async () => ({ scanned: 1, processed: 0, externalActions: [], retryAfterMs: 0 }),
+    executeInboxAgent: async () => ({ scanned: 0, executed: 0, failed: 0, actions: [] }),
+    now: () => "2026-07-03T03:10:00.000Z",
+    scheduler: (options) => scheduled.push(options)
+  });
+  assert.equal(result.scheduled, true);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].stateRoot, stateRoot);
 });
 
 test("inbox UI server creates task drafts without sending relay tasks", async () => {
