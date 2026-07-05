@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import {
   buildChatTimeline,
   classifyIssueFilter,
   createInboxUiServer,
+  generateTaskDraftWithCodex,
   generateTaskDraftWithResponses,
   issueWorkflowStatus,
   isMainModulePath,
@@ -1408,6 +1409,54 @@ test("runTaskDraftResponsesApi sends the draft prompt with a JSON schema and ext
   assert.equal(requests[0].body.text.format.schema.properties.ignoredDefault.default, undefined);
 });
 
+test("generateTaskDraftWithCodex embeds schema in stdin instead of using Codex CLI output-schema", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-draft-codex-json-prompt-"));
+  const fakeCodex = join(root, "fake-codex.mjs");
+  const schemaPath = join(root, "task-draft.schema.json");
+  await writeFile(schemaPath, JSON.stringify({
+    type: "object",
+    properties: {
+      subject: { type: "string" },
+      requestText: { type: "string" }
+    }
+  }));
+  await writeFile(fakeCodex, [
+    "#!/usr/bin/env node",
+    "let stdin = '';",
+    "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+    "process.stdin.on('end', () => {",
+    "  process.stdout.write(JSON.stringify({",
+    "    subject: 'Draft',",
+    "    requestText: JSON.stringify({ args: process.argv.slice(2), stdin }),",
+    "    doneCriteria: 'Done',",
+    "    humanBoundaryReason: 'Ask Zac',",
+    "    to: 'project-hermes',",
+    "    from: 'zac-agent',",
+    "    completionOwnerAgentId: 'zac-agent'",
+    "  }));",
+    "});",
+    ""
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  const draft = await generateTaskDraftWithCodex({
+    text: "请 project-hermes 修改 dashboard title",
+    localAgentId: "zac-agent",
+    schemaPath,
+    codexCli: fakeCodex,
+    cwd: root,
+    timeoutMs: 5000
+  });
+
+  const captured = JSON.parse(draft.requestText);
+  assert.equal(captured.args.includes("--output-schema"), false);
+  assert.equal(captured.args.includes(schemaPath), false);
+  assert.match(captured.stdin, /请 project-hermes 修改 dashboard title/);
+  assert.match(captured.stdin, /Codex CLI JSON output instructions/);
+  assert.match(captured.stdin, /agentrelay_task_draft/);
+  assert.match(captured.stdin, /"requestText"/);
+});
+
 test("generateTaskDraftWithResponses validates the Responses API draft output", async () => {
   const draft = await generateTaskDraftWithResponses({
     text: "让 project-hermes 修改 dashboard title",
@@ -1561,6 +1610,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /document\.activeElement === textarea/);
     assert.match(js, /distanceFromBottom <= 48/);
     assert.match(js, /Pending zac-agent/);
+    assert.match(js, /issue\.requiresHumanConfirmation \|\| issue\.processorStatus === "needs_human" \|\| issue\.processorStatus === "ready_to_reply"/);
     assert.match(js, /class="delivery-indicator failed"/);
     assert.match(js, /class="delivery-indicator delivered"/);
     assert.match(js, /class="message-error"/);
@@ -1572,6 +1622,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /class="send-button"/);
     assert.match(js, /if \(!issue\.needsHuman\) return ""/);
     assert.match(js, /if \(issue\.pendingOnAgentId\) return "Pending " \+ issue\.pendingOnAgentId/);
+    assert.ok(
+      js.indexOf('issue.requiresHumanConfirmation || issue.processorStatus === "needs_human"') <
+        js.indexOf('if (issue.pendingOnAgentId === "zac-agent") return "Pending zac-agent"')
+    );
     assert.doesNotMatch(js, /Task is closed\./);
     assert.doesNotMatch(js, /Saved locally first; the LLM processor decides the next action/);
     assert.doesNotMatch(js, /Local agent is preparing and sending the AgentRelay task/);

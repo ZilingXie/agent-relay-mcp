@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -195,6 +196,11 @@ export async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutM
   if (shouldUseIsolatedProcessorCodexHome()) {
     env.CODEX_HOME = await ensureProcessorCodexHome();
   }
+  const codexPrompt = await buildCodexCliJsonPrompt({
+    prompt,
+    schemaPath,
+    schemaName: "agentrelay_processor_output"
+  });
   const args = [
     "exec",
     ...processorReasoningEffortArgs(),
@@ -202,8 +208,6 @@ export async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutM
     "--ephemeral",
     "--sandbox",
     "read-only",
-    "--output-schema",
-    schemaPath,
     "-C",
     cwd,
     "-"
@@ -237,7 +241,7 @@ export async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutM
       }
       resolveRun(stdout);
     });
-    child.stdin.end(prompt);
+    child.stdin.end(codexPrompt);
   });
 }
 

@@ -8,6 +8,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1315,6 +1316,11 @@ function limitTitle(value, maxLength = TASK_DRAFT_SUBJECT_MAX_LENGTH) {
 }
 
 async function runCodexDraftExec({ prompt, schemaPath, codexCli, cwd, timeoutMs }) {
+  const codexPrompt = await buildCodexCliJsonPrompt({
+    prompt,
+    schemaPath,
+    schemaName: "agentrelay_task_draft"
+  });
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(codexCli, [
       "exec",
@@ -1322,8 +1328,6 @@ async function runCodexDraftExec({ prompt, schemaPath, codexCli, cwd, timeoutMs 
       "--ephemeral",
       "--sandbox",
       "read-only",
-      "--output-schema",
-      schemaPath,
       "-C",
       cwd,
       "-"
@@ -1354,7 +1358,7 @@ async function runCodexDraftExec({ prompt, schemaPath, codexCli, cwd, timeoutMs 
       }
       resolveRun(stdout);
     });
-    child.stdin.end(prompt);
+    child.stdin.end(codexPrompt);
   });
 }
 
@@ -3111,10 +3115,10 @@ function pendingOwnerLabel(issue) {
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "Complete";
   if (issue.pendingOnHumanId) return "Need approval";
   if (issue.humanReplyStatus === "pending_processor") return "Pending zac-agent";
+  if (issue.localStatus === "create_failed" || issue.relayStatus === "failed") return "Need approval";
+  if (issue.requiresHumanConfirmation || issue.processorStatus === "needs_human" || issue.processorStatus === "ready_to_reply") return "Need approval";
   if (issue.pendingOnAgentId === "zac-agent") return "Pending zac-agent";
   if (issue.pendingOnAgentId) return "Pending " + issue.pendingOnAgentId;
-  if (issue.requiresHumanConfirmation) return "Need approval";
-  if (issue.localStatus === "create_failed" || issue.relayStatus === "failed") return "Need approval";
   return "";
 }
 

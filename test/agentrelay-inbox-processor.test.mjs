@@ -317,6 +317,8 @@ test("runCodexExec inherits the user's Codex home by default", async () => {
     ""
   ].join("\n"));
   await chmod(fakeCodex, 0o755);
+  const schemaPath = join(root, "schema.json");
+  await writeFile(schemaPath, JSON.stringify({ type: "object", properties: {} }));
   const previousCodexHome = process.env.CODEX_HOME;
   const previousMode = process.env.AGENTRELAY_PROCESSOR_CODEX_HOME_MODE;
   const userCodexHome = join(root, "user-codex-home");
@@ -325,7 +327,7 @@ test("runCodexExec inherits the user's Codex home by default", async () => {
   try {
     const output = await runCodexExec({
       prompt: "hello",
-      schemaPath: join(root, "schema.json"),
+      schemaPath,
       codexCli: fakeCodex,
       cwd: root,
       timeoutMs: 5000
@@ -366,12 +368,14 @@ test("runCodexExec applies processor reasoning effort as a per-run override", as
     ""
   ].join("\n"));
   await chmod(fakeCodex, 0o755);
+  const schemaPath = join(root, "schema.json");
+  await writeFile(schemaPath, JSON.stringify({ type: "object", properties: {} }));
   const previousEffort = process.env.AGENTRELAY_PROCESSOR_REASONING_EFFORT;
   process.env.AGENTRELAY_PROCESSOR_REASONING_EFFORT = "low";
   try {
     const output = await runCodexExec({
       prompt: "hello",
-      schemaPath: join(root, "schema.json"),
+      schemaPath,
       codexCli: fakeCodex,
       cwd: root,
       timeoutMs: 5000
@@ -385,6 +389,56 @@ test("runCodexExec applies processor reasoning effort as a per-run override", as
       process.env.AGENTRELAY_PROCESSOR_REASONING_EFFORT = previousEffort;
     }
   }
+});
+
+test("runCodexExec embeds schema in stdin instead of using Codex CLI output-schema", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-codex-json-prompt-"));
+  const fakeCodex = join(root, "fake-codex.mjs");
+  const schemaPath = join(root, "schema.json");
+  await writeFile(schemaPath, JSON.stringify({
+    type: "object",
+    properties: {
+      processorStatus: { type: "string", enum: ["waiting"] },
+      summary: { type: "string" }
+    }
+  }));
+  await writeFile(fakeCodex, [
+    "#!/usr/bin/env node",
+    "let stdin = '';",
+    "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+    "process.stdin.on('end', () => {",
+    "  process.stdout.write(JSON.stringify({",
+    "    processorStatus: 'needs_human',",
+    "    summary: JSON.stringify({ args: process.argv.slice(2), stdin }),",
+    "    suggestedReply: '',",
+    "    needsHumanReason: 'confirm',",
+    "    requiresHumanConfirmation: true,",
+    "    actionIntent: 'none',",
+    "    actionReason: '',",
+    "    terminalReason: '',",
+    "    artifactKind: '',",
+    "    artifactText: ''",
+    "  }));",
+    "});",
+    ""
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  const output = await runCodexExec({
+    prompt: "processor prompt",
+    schemaPath,
+    codexCli: fakeCodex,
+    cwd: root,
+    timeoutMs: 5000
+  });
+  const parsed = JSON.parse(output);
+  const captured = JSON.parse(parsed.summary);
+  assert.equal(captured.args.includes("--output-schema"), false);
+  assert.equal(captured.args.includes(schemaPath), false);
+  assert.match(captured.stdin, /processor prompt/);
+  assert.match(captured.stdin, /Codex CLI JSON output instructions/);
+  assert.match(captured.stdin, /agentrelay_processor_output/);
+  assert.match(captured.stdin, /"processorStatus"/);
 });
 
 test("ensureProcessorCodexHome creates an isolated minimal Codex home", async () => {
