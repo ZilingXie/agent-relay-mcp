@@ -86,12 +86,21 @@ Then verify the MCP tools in the restarted Codex session:
 Use AgentRelay MCP. Call agentrelay_health and agentrelay_list_agents.
 ```
 
-Finally, send a small test task to `project-hermes`. The install is successful when:
+Finally, run the hosted install loopback check:
 
-1. the task appears in `http://127.0.0.1:8787/`
-2. `project-hermes` replies
-3. the local processor records the reply
-4. the UI shows either `Pending <agent>`, `Need approval`, or `Complete`
+```bash
+npm run health:install
+```
+
+The install is successful when the script creates an `agentrelay-healthcheck`
+task, receives the synthetic ACK, sees the task in `http://127.0.0.1:8787/`,
+and closes the health check task. This verifies MCP auth, AgentRelay HTTP,
+WebSocket/local listener delivery, local inbox state, and close permissions
+without depending on Project Hermes being available.
+
+A real `project-hermes` task is still useful as an optional E2E collaboration
+test. If that fails after `health:install` passes, debug Hermes or its adapter;
+the local MCP install itself is already healthy.
 
 ## Daily Use
 
@@ -142,6 +151,7 @@ See `docs/tool-reference.md`.
 ```bash
 npm run install:local      # default install: MCP + local inbox + UI
 npm run doctor             # verify local config and relay connectivity
+npm run health:install     # verify hosted install loopback + local inbox delivery
 npm run listener           # run WebSocket listener in foreground
 npm run inbox-ui           # run local inbox UI in foreground
 npm run processor          # run local LLM processor once

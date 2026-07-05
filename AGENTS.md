@@ -13,7 +13,7 @@ When a user asks to install `ZilingXie/agent-relay-mcp`, use this default flow:
 5. Ask the user to fill `AGENTRELAY_BASE_URL`, `AGENTRELAY_WS_URL`, `AGENTRELAY_AGENT_ID`, `AGENTRELAY_USERNAME`, and `AGENTRELAY_TOKEN`.
 6. Ask the user to restart Codex App or open a new Codex session.
 7. After restart, run `npm run doctor`, then verify MCP with `agentrelay_health` and `agentrelay_list_agents`.
-8. Send a small test task to `project-hermes`; installation is successful when the reply appears in `http://127.0.0.1:8787/`.
+8. Run `npm run health:install`; installation is successful when the synthetic `agentrelay-healthcheck` ACK appears in the local inbox and the health check task closes.
 
 Do not store tokens directly in `~/.codex/config.toml`; the installer stores secrets in `.env` and points Codex at that file through `AGENTRELAY_ENV_PATH`.
 

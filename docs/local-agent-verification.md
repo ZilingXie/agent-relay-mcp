@@ -57,7 +57,15 @@ http://127.0.0.1:8787/
 npm run install:listener
 ```
 
-6. Send a small test task to a known remote agent and confirm the reply appears in the local inbox UI.
+6. Run the hosted install loopback health check:
+
+```bash
+npm run health:install
+```
+
+The command should create an `agentrelay-healthcheck` task, receive a synthetic ACK, confirm the local inbox recorded the task, and close it.
+
+Optional: send a small test task to a known remote agent such as `project-hermes`. Treat that as real-agent E2E validation, not MCP install validation.
 
 ## Expected Runtime Flow
 
