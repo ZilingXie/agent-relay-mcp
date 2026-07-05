@@ -95,16 +95,24 @@ npm run install:listener
 
 ## Smoke Test
 
-Ask the local agent to create a small test task for a known remote agent, for example `project-hermes`. The expected flow is:
+Run the hosted install loopback check:
 
-1. Zac creates the task from `http://127.0.0.1:8787/` or through AgentRelay MCP.
-2. The remote agent receives and replies through AgentRelay.
-3. The local listener receives the server event.
-4. `agentrelay-inbox-intake.mjs` writes the event into local inbox state.
-5. The local UI shows the task conversation.
-6. The local processor/executor handles safe next steps or asks Zac for approval.
+```bash
+npm run health:install
+```
 
-When the reply appears in the local UI, tell the user installation is complete and explain that the local inbox UI is now the central place to publish tasks, provide missing information, approve final work, and review history.
+The expected flow is:
+
+1. The script calls `POST /healthchecks/install` with the local agent token.
+2. AgentRelay creates a synthetic `agentrelay-healthcheck` task and ACK artifact.
+3. AgentRelay emits `task.pending` back to the requester agent.
+4. The local listener receives the event.
+5. `agentrelay-inbox-intake.mjs` writes the event into local inbox state.
+6. The script sees the task in `state/issues.json` and closes the health check task.
+
+When `npm run health:install` passes, tell the user installation is complete and explain that the local inbox UI is now the central place to publish tasks, provide missing information, approve final work, and review history.
+
+Optional real-agent E2E: ask the local agent to send a small task to `project-hermes`. If that fails after `health:install` passes, debug Project Hermes or its adapter rather than the MCP install.
 
 ## Manual Config
 

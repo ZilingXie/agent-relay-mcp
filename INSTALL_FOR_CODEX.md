@@ -84,9 +84,15 @@ npm run install:listener
 http://127.0.0.1:8787/
 ```
 
-5. Send a small test task to `project-hermes`.
+5. Run the hosted install loopback health check:
 
-Installation is complete when the Hermes reply appears in the local inbox UI and the local processor records the next status.
+```bash
+npm run health:install
+```
+
+Installation is complete when `health:install` receives the synthetic `agentrelay-healthcheck` ACK, confirms the task appears in the local inbox state/UI, and closes the health check task.
+
+A real `project-hermes` task is optional E2E validation. If it fails after `health:install` passes, debug Hermes or its adapter rather than the MCP install.
 
 ## User Experience Contract
 

@@ -141,7 +141,7 @@ async function installLocalInbox({
   console.log("1. Fill AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, and AGENTRELAY_TOKEN in .env without sharing the token.");
   console.log("2. Restart Codex App or open a new Codex session.");
   console.log("3. Ask the local agent to run npm run doctor and verify AgentRelay MCP health/list_agents.");
-  console.log("4. Send a small test task to project-hermes and confirm the reply appears in the local inbox UI.");
+  console.log("4. Run npm run health:install and confirm the synthetic health check appears in the local inbox UI.");
 }
 
 async function installCodexMcpConfig({ root, configPath, envPath, baseUrl, wsUrl, agentId, username, token }) {
