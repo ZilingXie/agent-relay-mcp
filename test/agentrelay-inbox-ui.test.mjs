@@ -1679,7 +1679,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /pointerdown/);
     assert.match(js, /ArrowLeft/);
     assert.match(js, /ArrowRight/);
-    assert.match(js, /setInterval\(refresh, 10000\)/);
+    assert.match(js, /setInterval\(\(\) => refresh\(\{ passive: true \}\), 10000\)/);
     assert.match(js, /\/api\/task-requests/);
     assert.match(js, /newTask/);
     assert.match(js, /newTask\.addEventListener\("click", openNewTask\)/);
@@ -1732,6 +1732,12 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /function restoreMessageScrollState/);
     assert.match(js, /function captureComposerDraft/);
     assert.match(js, /function restoreComposerDraft/);
+    assert.match(js, /let refreshInFlight = false/);
+    assert.match(js, /setInterval\(\(\) => refresh\(\{ passive: true \}\), 10000\)/);
+    assert.match(js, /async function refresh\(\{ passive = false \} = \{\}\)/);
+    assert.match(js, /if \(passive && isComposerEditing\(\)\) return false/);
+    assert.match(js, /function shouldRefreshSelectedDetail/);
+    assert.match(js, /function isComposerEditing/);
     assert.match(js, /const scrollState = keepView \? captureMessageScrollState\(\) : null/);
     assert.match(js, /const composerDraft = keepView \? captureComposerDraft\(taskId\) : null/);
     assert.match(js, /restoreMessageScrollState\(scrollState\)/);

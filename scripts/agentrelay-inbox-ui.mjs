@@ -2812,6 +2812,8 @@ let selectedDetail = null;
 let activeView = "inbox";
 let showCompleted = false;
 let latestDraft = null;
+let refreshInFlight = false;
+let selectedIssueRequestId = 0;
 const pageMode = document.body.dataset.page || "inbox";
 const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width";
 const FOLDER_COLLAPSE_KEY = "agentrelay-collapsed-folders";
@@ -2848,7 +2850,7 @@ applyTheme(localStorage.getItem("agentrelay-theme") || "dark");
 initSidebarResize();
 
 if (el.search) el.search.addEventListener("input", renderList);
-if (el.refresh) el.refresh.addEventListener("click", refresh);
+if (el.refresh) el.refresh.addEventListener("click", () => refresh());
 if (el.showCompleted) {
   el.showCompleted.addEventListener("click", () => {
     showCompleted = !showCompleted;
@@ -2877,7 +2879,7 @@ if (el.fileAccessForm) el.fileAccessForm.addEventListener("submit", addFileAcces
 
 await refresh();
 if (pageMode === "dashboard") await renderFileAccessWhitelist();
-setInterval(refresh, 10000);
+setInterval(() => refresh({ passive: true }), 10000);
 
 function initSidebarResize() {
   const storedWidth = Number.parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) || "", 10);
@@ -2924,15 +2926,35 @@ function setSidebarWidth(width, { persist = true } = {}) {
   if (persist) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
 }
 
-async function refresh() {
-  const response = await fetch("/api/issues", { cache: "no-store" });
-  snapshot = await response.json();
-  await loadAgents();
-  renderMetrics();
-  renderList();
-  if (el.freshness) el.freshness.textContent = "Updated " + formatTime(snapshot.generatedAt);
-  if (selectedTaskId) await selectIssue(selectedTaskId, { keepView: true });
-  renderDashboard();
+async function refresh({ passive = false } = {}) {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  try {
+    const response = await fetch("/api/issues", { cache: "no-store" });
+    snapshot = await response.json();
+    await loadAgents();
+    renderMetrics();
+    renderList();
+    if (el.freshness) el.freshness.textContent = "Updated " + formatTime(snapshot.generatedAt);
+    if (shouldRefreshSelectedDetail({ passive })) {
+      await selectIssue(selectedTaskId, { keepView: true });
+    }
+    renderDashboard();
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
+function shouldRefreshSelectedDetail({ passive = false } = {}) {
+  if (!selectedTaskId) return false;
+  if (passive && isComposerEditing()) return false;
+  return true;
+}
+
+function isComposerEditing() {
+  const textarea = el.detailBody?.querySelector("#reply-text");
+  if (!textarea) return false;
+  return document.activeElement === textarea || Boolean(textarea.value.trim());
 }
 
 async function loadAgents() {
@@ -3132,6 +3154,7 @@ function issueStatus(issue) {
 
 async function selectIssue(taskId, { keepView = false } = {}) {
   if (!el.issues || !el.detailEmpty || !el.detailBody) return;
+  const requestId = ++selectedIssueRequestId;
   const scrollState = keepView ? captureMessageScrollState() : null;
   const composerDraft = keepView ? captureComposerDraft(taskId) : null;
   selectedTaskId = taskId;
@@ -3146,7 +3169,9 @@ async function selectIssue(taskId, { keepView = false } = {}) {
     el.detailEmpty.querySelector("h2").textContent = "Task not found";
     return;
   }
-  selectedDetail = await response.json();
+  const detail = await response.json();
+  if (requestId !== selectedIssueRequestId || selectedTaskId !== taskId) return;
+  selectedDetail = detail;
   el.detailEmpty.hidden = true;
   el.detailBody.hidden = false;
   el.detailBody.innerHTML = renderChat(selectedDetail);
