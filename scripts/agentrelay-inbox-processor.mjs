@@ -45,6 +45,7 @@ export async function processInbox({
     const event = getIssueEvent({ inbox, issue });
     const { analysis, source, error } = await analyzeWithCodex({
       localAgentId,
+      stateRoot,
       task,
       event,
       humanReplies,
@@ -99,10 +100,10 @@ export async function processInbox({
   return { scanned: issues.length, processed, externalActions: [] };
 }
 
-async function analyzeWithCodex({ localAgentId, task, event, humanReplies = [], codexRunner }) {
+async function analyzeWithCodex({ localAgentId, stateRoot, task, event, humanReplies = [], codexRunner }) {
   try {
     return {
-      analysis: await runCodexAnalysis({ localAgentId, task, event, humanReplies, codexRunner }),
+      analysis: await runCodexAnalysis({ localAgentId, stateRoot, task, event, humanReplies, codexRunner }),
       source: "codex",
       error: null
     };
@@ -122,13 +123,16 @@ export async function runCodexAnalysis({
   humanReplies = [],
   codexRunner = runDefaultLlmRunner,
   agentsMdPath = resolve(PROJECT_ROOT, "AGENTS.md"),
+  stateRoot = process.env.AGENTRELAY_STATE_DIR || join(PROJECT_ROOT, "state"),
+  fileAccessWhitelistPath = join(stateRoot, "file-access-whitelist.json"),
   schemaPath = PROCESSOR_SCHEMA_PATH,
   codexCli = process.env.CODEX_CLI || DEFAULT_CODEX_CLI,
   cwd = PROJECT_ROOT,
   timeoutMs = Number(process.env.AGENTRELAY_PROCESSOR_CODEX_TIMEOUT_MS || 120000)
 }) {
   const agentsMd = await readFile(agentsMdPath, "utf8").catch(() => "");
-  const prompt = buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event, humanReplies });
+  const fileAccessWhitelist = await readFileAccessWhitelist(fileAccessWhitelistPath, { defaultRoot: resolve(stateRoot, "..") });
+  const prompt = buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event, humanReplies, fileAccessWhitelist });
   const rawOutput = await codexRunner({ prompt, schemaPath, codexCli, cwd, timeoutMs });
   return validateCodexAnalysis(parseCodexJson(rawOutput));
 }
@@ -142,7 +146,7 @@ export async function runDefaultLlmRunner(options) {
   return (options.responsesRunner || runResponsesApi)(options);
 }
 
-export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event, humanReplies = [] }) {
+export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event, humanReplies = [], fileAccessWhitelist = null }) {
   return [
     "You are the LLM agent behind Zac's local AgentRelay inbox processor.",
     "",
@@ -156,6 +160,7 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "- Do not run terminal commands.",
     "- Do not use AgentRelay MCP.",
     "- Do not directly send external replies, submit artifacts, close tasks, or make commitments.",
+    "- Respect the file access whitelist. If the task requires reading or writing outside these roots, do not claim access and do not guess file contents; set requiresHumanConfirmation=true, actionIntent=none, and ask Zac to approve adding that folder to the whitelist.",
     "- Analyze only the task snapshot and Local Zac replies below.",
     "- You are the only component allowed to interpret Zac's intent from Local Zac replies; wrapper code will not infer intent.",
     "- Before asking Zac to close or confirm, actively decide whether the remote agent can make progress within the original task scope.",
@@ -172,6 +177,11 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "- Return only JSON matching the provided schema.",
     "",
     `Local agent id: ${localAgentId}`,
+    "",
+    "Allowed filesystem roots:",
+    "```json",
+    JSON.stringify(normalizeFileAccessWhitelist(fileAccessWhitelist), null, 2),
+    "```",
     "",
     "Relay event snapshot:",
     "```json",
@@ -505,6 +515,42 @@ async function readInbox(path) {
     version: parsed.version || 1,
     issues: parsed.issues || {},
     events: parsed.events || {}
+  };
+}
+
+async function readFileAccessWhitelist(path, { defaultRoot = PROJECT_ROOT } = {}) {
+  if (!path || !existsSync(path)) return initialFileAccessWhitelist(defaultRoot);
+  try {
+    return normalizeFileAccessWhitelist(JSON.parse(await readFile(path, "utf8")));
+  } catch {
+    return initialFileAccessWhitelist(defaultRoot);
+  }
+}
+
+function normalizeFileAccessWhitelist(value) {
+  const roots = Array.isArray(value?.roots) ? value.roots : [];
+  return {
+    version: 1,
+    roots: roots
+      .map((root) => ({
+        path: String(root?.path || "").trim(),
+        label: String(root?.label || "").trim(),
+        source: String(root?.source || "").trim(),
+        createdAt: String(root?.createdAt || "").trim()
+      }))
+      .filter((root) => root.path)
+  };
+}
+
+function initialFileAccessWhitelist(defaultRoot) {
+  return {
+    version: 1,
+    roots: [{
+      path: resolve(defaultRoot),
+      label: "AgentRelay install root",
+      source: "default",
+      createdAt: ""
+    }]
   };
 }
 

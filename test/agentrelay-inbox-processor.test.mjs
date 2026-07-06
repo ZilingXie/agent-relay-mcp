@@ -615,6 +615,58 @@ test("buildCodexProcessorPrompt keeps intent interpretation inside the LLM agent
   assert.match(prompt, /waiting for the completion owner to call close_task/);
 });
 
+test("buildCodexProcessorPrompt tells the LLM to request approval for files outside the whitelist", () => {
+  const prompt = buildCodexProcessorPrompt({
+    agentsMd: "Ask before accessing private folders.",
+    localAgentId: "zac-agent",
+    task: incomingTask({ taskId: "task_files" }),
+    event: { eventId: "evt_files" },
+    humanReplies: [],
+    fileAccessWhitelist: {
+      version: 1,
+      roots: [{
+        path: "/Users/zac/project/agentRelay",
+        label: "AgentRelay install root",
+        source: "install",
+        createdAt: "2026-07-06T01:02:03.000Z"
+      }]
+    }
+  });
+
+  assert.match(prompt, /Allowed filesystem roots/);
+  assert.match(prompt, /\/Users\/zac\/project\/agentRelay/);
+  assert.match(prompt, /outside these roots/);
+  assert.match(prompt, /requiresHumanConfirmation=true/);
+  assert.match(prompt, /approve adding that folder/);
+});
+
+test("runCodexAnalysis defaults the file whitelist to the install root next to state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-whitelist-"));
+  const stateRoot = join(root, "state");
+  let capturedPrompt = "";
+
+  await runCodexAnalysis({
+    localAgentId: "zac-agent",
+    stateRoot,
+    task: incomingTask({ taskId: "task_default_whitelist" }),
+    event: { eventId: "evt_default_whitelist" },
+    codexRunner: async ({ prompt }) => {
+      capturedPrompt = prompt;
+      return JSON.stringify({
+        processorStatus: "waiting",
+        summary: "ok",
+        suggestedReply: "",
+        needsHumanReason: "",
+        requiresHumanConfirmation: false,
+        actionIntent: "none"
+      });
+    }
+  });
+
+  assert.match(capturedPrompt, /Allowed filesystem roots/);
+  assert.match(capturedPrompt, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
 test("processInbox skips issues that are not pending on the local agent", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-"));
   const stateRoot = join(root, "state");
