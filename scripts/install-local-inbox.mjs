@@ -11,6 +11,21 @@ const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 
+export function buildInitialFileAccessWhitelist({
+  installRoot,
+  now = () => new Date().toISOString()
+}) {
+  return {
+    version: 1,
+    roots: [{
+      path: resolve(installRoot),
+      label: "AgentRelay install root",
+      source: "install",
+      createdAt: now()
+    }]
+  };
+}
+
 export function buildLocalInboxEnvBlock({
   repoRoot,
   inboxDir = resolve(repoRoot, ".agentrelay", "inbox"),
@@ -94,6 +109,7 @@ async function installLocalInbox({
   await mkdir(resolve(stateDir, "logs"), { recursive: true, mode: 0o700 });
   await writeJsonIfMissing(resolve(stateDir, "issues.json"), { version: 1, issues: {}, events: {} });
   await writeJsonIfMissing(resolve(stateDir, "task-drafts.json"), { version: 1, drafts: {} });
+  await writeJsonIfMissing(resolve(stateDir, "file-access-whitelist.json"), buildInitialFileAccessWhitelist({ installRoot: root }));
 
   await installCodexMcpConfig({
     root,

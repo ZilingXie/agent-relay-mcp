@@ -1815,6 +1815,75 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
   }
 });
 
+test("inbox UI server exposes a default file access whitelist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-whitelist-"));
+  const stateRoot = join(root, "state");
+  const server = createInboxUiServer({
+    stateRoot,
+    installRoot: root,
+    now: () => "2026-07-06T01:02:03.000Z"
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/file-access-whitelist`);
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.version, 1);
+    assert.deepEqual(body.roots, [{
+      path: root,
+      label: "AgentRelay install root",
+      source: "install",
+      createdAt: "2026-07-06T01:02:03.000Z"
+    }]);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("inbox UI server adds file access whitelist roots idempotently and rejects relative paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-whitelist-"));
+  const stateRoot = join(root, "state");
+  const extraRoot = join(root, "workspace");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(extraRoot, { recursive: true }));
+  const server = createInboxUiServer({
+    stateRoot,
+    installRoot: root,
+    now: () => "2026-07-06T01:02:03.000Z"
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const add = async (body) => fetch(`http://127.0.0.1:${port}/api/file-access-whitelist/roots`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
+    const first = await add({ path: extraRoot, label: "Hermes workspace" });
+    assert.equal(first.status, 201);
+    const firstBody = await first.json();
+    assert.equal(firstBody.roots.length, 2);
+    assert.equal(firstBody.roots[1].path, extraRoot);
+    assert.equal(firstBody.roots[1].label, "Hermes workspace");
+    assert.equal(firstBody.roots[1].source, "user");
+
+    const duplicate = await add({ path: extraRoot, label: "Duplicate label" });
+    assert.equal(duplicate.status, 200);
+    const duplicateBody = await duplicate.json();
+    assert.equal(duplicateBody.roots.length, 2);
+    assert.equal(duplicateBody.roots[1].label, "Hermes workspace");
+
+    const rejected = await add({ path: "relative/path" });
+    assert.equal(rejected.status, 400);
+    const rejectedBody = await rejected.json();
+    assert.match(rejectedBody.message, /absolute path/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test("isMainModulePath accepts relative and absolute script paths", () => {
   const moduleUrl = new URL("../scripts/agentrelay-inbox-ui.mjs", import.meta.url).href;
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
