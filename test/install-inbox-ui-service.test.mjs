@@ -14,8 +14,8 @@ test("buildInboxUiLaunchdPlist creates a launchd service for the inbox UI", () =
     localAgentRunner: "codex",
     host: "127.0.0.1",
     port: 8787,
-    outLogPath: "/Users/zac/agentInbox/state/logs/inbox-ui.out.log",
-    errLogPath: "/Users/zac/agentInbox/state/logs/inbox-ui.err.log"
+    outLogPath: "/Users/zac/agentInbox/state/logs/inbox-ui-service.out.log",
+    errLogPath: "/Users/zac/agentInbox/state/logs/inbox-ui-service.err.log"
   });
 
   assert.match(plist, /<key>Label<\/key><string>space\.stellarix\.agentrelay\.inbox-ui<\/string>/);
@@ -29,6 +29,6 @@ test("buildInboxUiLaunchdPlist creates a launchd service for the inbox UI", () =
   assert.doesNotMatch(plist, /AGENTRELAY_PROCESSOR_MODE/);
   assert.match(plist, /<key>HOST<\/key><string>127\.0\.0\.1<\/string>/);
   assert.match(plist, /<key>PORT<\/key><string>8787<\/string>/);
-  assert.match(plist, /inbox-ui\.out\.log/);
-  assert.match(plist, /inbox-ui\.err\.log/);
+  assert.match(plist, /inbox-ui-service\.out\.log/);
+  assert.match(plist, /inbox-ui-service\.err\.log/);
 });

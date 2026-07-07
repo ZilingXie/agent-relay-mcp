@@ -83,8 +83,8 @@ async function installInboxUiService({
     localAgentRunner,
     host,
     port,
-    outLogPath: resolve(logDir, "inbox-ui.out.log"),
-    errLogPath: resolve(logDir, "inbox-ui.err.log")
+    outLogPath: resolve(logDir, "inbox-ui-service.out.log"),
+    errLogPath: resolve(logDir, "inbox-ui-service.err.log")
   });
 
   await writeFile(plistPath, plist, { mode: 0o644 });
@@ -95,7 +95,7 @@ async function installInboxUiService({
 
   console.log(`Installed launchd inbox UI: ${plistPath}`);
   console.log(`URL: http://${host}:${port}/`);
-  console.log(`Logs: ${resolve(logDir, "inbox-ui.out.log")} and inbox-ui.err.log`);
+  console.log(`Logs: ${resolve(logDir, "inbox-ui-service.out.log")} and inbox-ui-service.err.log`);
 }
 
 function resolveHome(path) {
