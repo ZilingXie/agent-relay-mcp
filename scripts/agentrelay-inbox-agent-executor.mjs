@@ -88,6 +88,29 @@ export async function executeInboxAgent({
         executed += 1;
         continue;
       }
+      if (actionIntent === "amend_task") {
+        assertCanAmendTask({ task, issue, localAgentId });
+        const amendParams = buildAmendTaskParams({ task, issue, localAgentId });
+        const amendResponse = await relayClient.amendTask(amendParams);
+        const amendedTask = amendResponse.task || amendResponse;
+        inbox.issues[issue.taskId] = applyAmendedTaskToIssue({
+          issue,
+          task: amendedTask,
+          humanReplyId: issue.latestHumanReplyId || issue.processorLastHumanReplyId || "",
+          runAt
+        });
+        await appendJsonl(join(stateRoot, "executor-runs.jsonl"), {
+          at: runAt,
+          taskId: issue.taskId,
+          actionIntent,
+          status: "completed",
+          humanReplyId: issue.latestHumanReplyId || issue.processorLastHumanReplyId || "",
+          goalVersion: amendedTask.goal_version || amendedTask.goalVersion || null
+        });
+        actions.push({ taskId: issue.taskId, actionIntent, status: "completed" });
+        executed += 1;
+        continue;
+      }
 
       assertCanSubmitArtifact({ task, issue, localAgentId });
       const submitParams = buildSubmitArtifactParams({ task, issue, localAgentId });
@@ -137,7 +160,7 @@ export async function executeInboxAgent({
 }
 
 function shouldAttemptAction({ issue, localAgentId }) {
-  if (!new Set(["close_task", "submit_artifact", "request_revision"]).has(issue.processorActionIntent)) return false;
+  if (!new Set(["close_task", "submit_artifact", "request_revision", "amend_task"]).has(issue.processorActionIntent)) return false;
   if (issue.localStatus === "archived") return false;
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
   if (issue.pendingOnAgentId && issue.pendingOnAgentId !== localAgentId) return false;
@@ -152,6 +175,7 @@ function shouldAttemptAction({ issue, localAgentId }) {
   if (!humanReplyId) return false;
   if (issue.executorStatus === "completed" && issue.executorLastHumanReplyId === humanReplyId) return false;
   if (issue.processorActionIntent === "close_task" && !issue.processorTerminalReason) return false;
+  if (issue.processorActionIntent === "amend_task" && !issue.processorAmendedDoneCriteria) return false;
   return true;
 }
 
@@ -180,6 +204,28 @@ function assertCanSubmitArtifact({ task, issue, localAgentId }) {
   }
 }
 
+function assertCanAmendTask({ task, issue, localAgentId }) {
+  const taskId = task.task_id || issue.taskId;
+  const requester = task.requester_agent_id || issue.requesterAgentId || "";
+  const owner = task.completion_owner_agent_id || issue.completionOwnerAgentId || requester;
+  if (requester !== localAgentId || owner !== localAgentId) {
+    throw new Error(`Cannot amend ${taskId}: local agent must be both requester and completion owner`);
+  }
+  if (["completed", "failed", "cancelled", "expired", "rejected"].includes(task.status)) {
+    throw new Error(`Cannot amend ${taskId}: task is terminal`);
+  }
+  const pendingAgent = task.pending_on_agent_id || issue.pendingOnAgentId || "";
+  if (pendingAgent !== localAgentId) {
+    throw new Error(`Cannot amend ${taskId}: pending_on_agent_id is ${pendingAgent || "(none)"}`);
+  }
+  if (!String(issue.latestHumanReplyId || issue.processorLastHumanReplyId || "").trim()) {
+    throw new Error(`Cannot amend ${taskId}: human reply is required`);
+  }
+  if (!String(issue.processorAmendedDoneCriteria || "").trim()) {
+    throw new Error(`Cannot amend ${taskId}: amended done criteria are required`);
+  }
+}
+
 function buildSubmitArtifactParams({ task, issue, localAgentId }) {
   const isRevisionRequest = issue.processorActionIntent === "request_revision";
   const to = isRevisionRequest
@@ -195,10 +241,28 @@ function buildSubmitArtifactParams({ task, issue, localAgentId }) {
     kind: issue.processorArtifactKind || (isRevisionRequest ? "revision_request" : "text"),
     text: issue.processorArtifactText,
     pendingOnAgentId,
+    responseToGoalVersion: task.goal_version || issue.goalVersion || undefined,
     nextStatus: task.status || issue.relayStatus || "delivery_pending",
     nextAction: isRevisionRequest
       ? "Remote agent should address the local revision request and return an updated artifact."
       : undefined
+  };
+}
+
+function buildAmendTaskParams({ task, issue, localAgentId }) {
+  const humanReplyId = issue.latestHumanReplyId || issue.processorLastHumanReplyId || `local-human-${issue.taskId}`;
+  return {
+    taskId: issue.taskId,
+    actorAgentId: localAgentId,
+    expectedGoalVersion: task.goal_version || issue.goalVersion || 1,
+    newDoneCriteria: issue.processorAmendedDoneCriteria,
+    previousGoalDisposition: issue.processorPreviousGoalDisposition || "clarified",
+    humanOwnerId: ownerIdFromAgent(localAgentId),
+    humanApprovalRef: humanReplyId,
+    humanApprovalSummary: issue.processorAmendmentReason || issue.processorActionReason || "Human owner clarified the task goal.",
+    reason: issue.processorAmendmentReason || issue.processorActionReason || "Requester-side human clarified the task goal.",
+    newMaxTurns: issue.processorNewMaxTurns || undefined,
+    nextAction: `${task.target_agent_id || issue.targetAgentId || "target agent"} should answer the amended goal version.`
   };
 }
 
@@ -253,6 +317,23 @@ function applySubmittedArtifactToIssue({ issue, task, artifact, humanReplyId, pr
   };
 }
 
+function applyAmendedTaskToIssue({ issue, task, humanReplyId, runAt }) {
+  return {
+    ...issue,
+    relayStatus: task.status || issue.relayStatus || "submitted",
+    pendingOnAgentId: task.pending_on_agent_id || "",
+    pendingOnHumanId: task.pending_on_human_id || null,
+    goalVersion: task.goal_version || task.goalVersion || issue.goalVersion || 1,
+    exchangeEpoch: task.exchange_epoch || task.exchangeEpoch || issue.exchangeEpoch || 1,
+    executorStatus: "completed",
+    executorActionIntent: "amend_task",
+    executorLastHumanReplyId: humanReplyId,
+    executorLastRunAt: runAt,
+    executorError: null,
+    updatedAt: runAt
+  };
+}
+
 class AgentRelayExecutorHttpClient {
   constructor({ baseUrl, token, agentId, username }) {
     this.baseUrl = baseUrl;
@@ -281,7 +362,7 @@ class AgentRelayExecutorHttpClient {
     });
   }
 
-  async submitArtifact({ taskId, from, to, kind, text, pendingOnAgentId, pendingOnHumanId, nextStatus, nextAction }) {
+  async submitArtifact({ taskId, from, to, kind, text, pendingOnAgentId, pendingOnHumanId, nextStatus, nextAction, responseToGoalVersion }) {
     return this.request("POST", `/tasks/${encodeURIComponent(taskId)}/artifacts`, {
       protocol_version: PROTOCOL_VERSION,
       idempotency_key: `local-executor-artifact-${taskId}-${hashText(`${from}:${to}:${kind}:${text}`)}`,
@@ -289,6 +370,7 @@ class AgentRelayExecutorHttpClient {
       target_agent_id: to,
       intent: kind || "work_result",
       pending_on_agent_id: pendingOnAgentId || to,
+      response_to_goal_version: responseToGoalVersion,
       next_status: nextStatus || "delivery_pending",
       next_action: nextAction || `${pendingOnAgentId || to} should evaluate the artifact against the task done criteria.`,
       from,
@@ -303,6 +385,39 @@ class AgentRelayExecutorHttpClient {
         summary: summarizeText(text),
         parts: [{ kind: "text", text }]
       }
+    });
+  }
+
+  async amendTask({
+    taskId,
+    actorAgentId,
+    expectedGoalVersion,
+    newDoneCriteria,
+    previousGoalDisposition,
+    humanOwnerId,
+    humanApprovalRef,
+    humanApprovalSummary,
+    reason,
+    newMaxTurns,
+    nextAction
+  }) {
+    return this.request("POST", `/tasks/${encodeURIComponent(taskId)}/amend`, {
+      protocol_version: PROTOCOL_VERSION,
+      idempotency_key: `local-executor-amend-${taskId}-${hashText(`${expectedGoalVersion}:${newDoneCriteria}:${humanApprovalRef}`)}`,
+      actor_agent_id: actorAgentId,
+      expected_goal_version: expectedGoalVersion,
+      new_done_criteria: newDoneCriteria,
+      new_max_turns: newMaxTurns,
+      previous_goal_disposition: previousGoalDisposition || "clarified",
+      human_authority: {
+        owner_id: humanOwnerId,
+        via_agent_id: actorAgentId,
+        approval_ref: humanApprovalRef,
+        summary: humanApprovalSummary,
+        visibility: "redacted"
+      },
+      reason,
+      next_action: nextAction
     });
   }
 
@@ -362,6 +477,10 @@ function hashText(text) {
     hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
   }
   return Math.abs(hash).toString(36);
+}
+
+function ownerIdFromAgent(value) {
+  return (value || "owner").replace(/-agent$/, "") || "owner";
 }
 
 function normalizeBaseUrl(value) {

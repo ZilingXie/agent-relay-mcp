@@ -232,7 +232,8 @@ function registerTools(mcpServer) {
         pendingOnAgentId: z.string().optional(),
         pendingOnHumanId: z.string().optional(),
         nextStatus: z.string().optional(),
-        nextAction: z.string().optional()
+        nextAction: z.string().optional(),
+        responseToGoalVersion: z.number().int().positive().optional()
       }
     },
     async (args) => {
@@ -251,6 +252,7 @@ function registerTools(mcpServer) {
         intent: args.intent || "work_result",
         target_agent_id: args.target_agent_id || args.to,
         pending_on_agent_id: pendingOnAgentId,
+        response_to_goal_version: args.responseToGoalVersion,
         pendingOnHumanId: args.pendingOnHumanId,
         next_status: args.nextStatus || "delivery_pending",
         next_action: args.nextAction || `${pendingOnAgentId} should evaluate the artifact against the task done criteria.`,
@@ -262,6 +264,53 @@ function registerTools(mcpServer) {
         }
       };
       return jsonResult(await relayPost(`/tasks/${encodeURIComponent(args.taskId)}/artifacts`, compact(payload)));
+    }
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_amend_task",
+    {
+      title: "Amend AgentRelay task goal",
+      description: "Human-authorized requester-side amendment of a task goal. Use this only when the local human changed or clarified done criteria; use request_revision for continuing under the same goal.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actor_agent_id: z.string().min(1).describe("Requester/completion-owner agent executing the amendment"),
+        expected_goal_version: z.number().int().positive().describe("Current task goal_version observed before amendment"),
+        new_done_criteria: z.string().min(1).describe("Replacement done_criteria for the latest goal version"),
+        previous_goal_disposition: z.enum([
+          "accepted_and_extended",
+          "clarified",
+          "superseded_by_human",
+          "rejected_by_human",
+          "cancelled_by_human"
+        ]).default("clarified"),
+        humanOwnerId: z.string().min(1).describe("Human owner who authorized the change"),
+        humanApprovalRef: z.string().min(1).describe("Local private reference to the human clarification/approval"),
+        humanApprovalSummary: z.string().min(1).describe("Redacted summary of the human's goal change"),
+        humanApprovalVisibility: z.enum(["public", "redacted", "private"]).optional(),
+        reason: z.string().min(1),
+        newMaxTurns: z.number().int().positive().optional(),
+        ttl: z.number().int().positive().optional(),
+        nextAction: z.string().optional(),
+        humanAuthorityJson: z.string().optional().describe("Advanced override: JSON object for human_authority.")
+      }
+    },
+    async (args) => {
+      const humanAuthority = buildHumanAuthority(args);
+      const payload = {
+        protocol_version: PROTOCOL_VERSION,
+        idempotency_key: `mcp-amend-${randomUUID()}`,
+        actor_agent_id: args.actor_agent_id,
+        expected_goal_version: args.expected_goal_version,
+        new_done_criteria: args.new_done_criteria,
+        new_max_turns: args.newMaxTurns,
+        ttl: args.ttl,
+        previous_goal_disposition: args.previous_goal_disposition,
+        human_authority: humanAuthority,
+        reason: args.reason,
+        next_action: args.nextAction
+      };
+      return jsonResult(await relayPost(`/tasks/${encodeURIComponent(args.taskId)}/amend`, compact(payload)));
     }
   );
 
@@ -342,7 +391,8 @@ function registerTools(mcpServer) {
         humanApprovalSummary: z.string().min(1).optional(),
         humanApprovalVisibility: z.enum(["public", "redacted", "private"]).optional(),
         completionAuthorityJson: z.string().optional().describe("Advanced override: JSON object for completion_authority."),
-        finalArtifactJson: z.string().optional().describe("Optional JSON object for final_artifact.")
+        finalArtifactJson: z.string().optional().describe("Optional JSON object for final_artifact."),
+        closedAgainstGoalVersion: z.number().int().positive().optional()
       }
     },
     async (args) => {
@@ -353,6 +403,7 @@ function registerTools(mcpServer) {
           protocol_version: PROTOCOL_VERSION,
           idempotency_key: `mcp-close-${randomUUID()}`,
           closed_by_agent_id: args.closedByAgentId,
+          closed_against_goal_version: args.closedAgainstGoalVersion,
           completion_authority: completionAuthority,
           final_artifact: finalArtifact,
           terminal_reason: args.terminalReason
@@ -374,7 +425,11 @@ function registerTools(mcpServer) {
         humanApprovalRef: z.string().optional().describe("Local private approval reference if the human has already confirmed."),
         humanApprovalSummary: z.string().optional().describe("Redacted summary of the human decision."),
         revisionRequest: z.string().optional().describe("If done criteria is not satisfied, describe what the target agent must fix."),
-        decision: z.enum(["ask_human", "close_human_confirmed", "close_agent_verified", "request_revision", "create_followup"]).optional()
+        amendedDoneCriteria: z.string().optional().describe("If the human changed or clarified the goal, provide the new done criteria."),
+        amendmentReason: z.string().optional().describe("Why the task goal changed."),
+        previousGoalDisposition: z.enum(["accepted_and_extended", "clarified", "superseded_by_human", "rejected_by_human", "cancelled_by_human"]).optional(),
+        newMaxTurns: z.number().int().positive().optional(),
+        decision: z.enum(["ask_human", "close_human_confirmed", "close_agent_verified", "request_revision", "amend_task", "create_followup"]).optional()
       }
     },
     async (args) => {
@@ -520,6 +575,18 @@ function buildCompletionAuthority(args) {
   };
 }
 
+function buildHumanAuthority(args) {
+  const override = parseOptionalJsonObject(args.humanAuthorityJson, "humanAuthorityJson");
+  if (override) return override;
+  return compact({
+    owner_id: args.humanOwnerId,
+    via_agent_id: args.actor_agent_id,
+    approval_ref: args.humanApprovalRef,
+    summary: args.humanApprovalSummary,
+    visibility: args.humanApprovalVisibility || "redacted"
+  });
+}
+
 function parseOptionalJsonObject(value, fieldName) {
   if (!value) return undefined;
   let parsed;
@@ -553,6 +620,7 @@ function prepareCompletionDecision(task, args) {
   const approvalRef = args.humanApprovalRef || `local-approval-${task.task_id}`;
   const approvalSummary = args.humanApprovalSummary || "Human owner confirmed the artifact satisfies the task done criteria.";
   const revisionText = args.revisionRequest || revisionPrompt(doneCriteria, observedResult);
+  const amendedDoneCriteria = args.amendedDoneCriteria || "";
 
   return {
     task_id: task.task_id,
@@ -563,6 +631,8 @@ function prepareCompletionDecision(task, args) {
     target_agent_id: targetAgentId,
     completion_owner_agent_id: completionOwnerAgentId,
     pending_on_agent_id: task.pending_on_agent_id || null,
+    goal_version: task.goal_version || 1,
+    exchange_epoch: task.exchange_epoch || 1,
     is_completion_owner: isCompletionOwner,
     is_terminal: isTerminal,
     done_criteria: doneCriteria,
@@ -589,6 +659,10 @@ function prepareCompletionDecision(task, args) {
       approvalRef,
       approvalSummary,
       revisionText,
+      amendedDoneCriteria,
+      amendmentReason: args.amendmentReason,
+      previousGoalDisposition: args.previousGoalDisposition,
+      newMaxTurns: args.newMaxTurns,
       observedResult
     })
   };
@@ -626,6 +700,9 @@ function decisionGuidance(decision, isCompletionOwner, isTerminal) {
   if (decision === "request_revision") {
     return "Send a revision_request artifact back to the target agent and keep the task non-terminal.";
   }
+  if (decision === "amend_task") {
+    return "Amend the task goal only when the requester-side human changed or clarified done_criteria; this starts a new agent-agent exchange.";
+  }
   return "Create a follow-up task when the old task is terminal or the request has changed.";
 }
 
@@ -639,6 +716,10 @@ function nextToolArgsForDecision({
   approvalRef,
   approvalSummary,
   revisionText,
+  amendedDoneCriteria,
+  amendmentReason,
+  previousGoalDisposition,
+  newMaxTurns,
   observedResult
 }) {
   if (decision === "close_human_confirmed") {
@@ -647,6 +728,7 @@ function nextToolArgsForDecision({
       args: {
         taskId: task.task_id,
         closedByAgentId: completionOwnerAgentId,
+        closedAgainstGoalVersion: task.goal_version || 1,
         terminalReason: observedResult
           ? `Human owner confirmed done criteria are satisfied: ${summarizeText(observedResult)}`
           : "Human owner confirmed the task satisfies done criteria.",
@@ -664,6 +746,7 @@ function nextToolArgsForDecision({
       args: {
         taskId: task.task_id,
         closedByAgentId: completionOwnerAgentId,
+        closedAgainstGoalVersion: task.goal_version || 1,
         terminalReason: observedResult
           ? `Requester-side agent verified done criteria: ${summarizeText(observedResult)}`
           : "Requester-side agent verified the task satisfies done criteria.",
@@ -685,6 +768,25 @@ function nextToolArgsForDecision({
         pendingOnAgentId: targetAgentId,
         nextStatus: "delivery_pending",
         nextAction: `${targetAgentId} should address the revision request and return an updated artifact.`
+      }
+    };
+  }
+  if (decision === "amend_task") {
+    return {
+      tool: "agentrelay_amend_task",
+      args: {
+        taskId: task.task_id,
+        actor_agent_id: completionOwnerAgentId,
+        expected_goal_version: task.goal_version || 1,
+        new_done_criteria: amendedDoneCriteria || revisionText,
+        previous_goal_disposition: previousGoalDisposition || "clarified",
+        humanOwnerId,
+        humanApprovalRef: approvalRef,
+        humanApprovalSummary: approvalSummary,
+        humanApprovalVisibility: "redacted",
+        reason: amendmentReason || "Requester-side human clarified or changed the task goal.",
+        newMaxTurns,
+        nextAction: `${targetAgentId} should answer the amended goal version.`
       }
     };
   }

@@ -363,6 +363,96 @@ test("executeInboxAgent sends a revision request back to the remote agent withou
   assert.equal(calls.length, 2);
 });
 
+test("executeInboxAgent amends a task goal from human-authorized processor intent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_amend: {
+        taskId: "task_amend",
+        requesterAgentId: "zac-agent",
+        targetAgentId: "project-hermes",
+        completionOwnerAgentId: "zac-agent",
+        pendingOnAgentId: "zac-agent",
+        relayStatus: "delivery_pending",
+        localStatus: "received",
+        goalVersion: 1,
+        processorActionIntent: "amend_task",
+        processorActionReason: "Zac clarified the goal.",
+        processorAmendedDoneCriteria: "Hermes must return the content Zac needs to review, not only the path.",
+        processorPreviousGoalDisposition: "clarified",
+        processorAmendmentReason: "Zac said he needs the review content itself.",
+        processorNewMaxTurns: 4,
+        requiresHumanConfirmation: false,
+        latestHumanReplyId: "hr_amend",
+        processorLastHumanReplyId: "hr_amend",
+        humanReplies: [{ replyId: "hr_amend", text: "我需要审查什么？把内容给我" }]
+      }
+    },
+    events: {}
+  });
+  const calls = [];
+  const relayClient = {
+    async getTask({ taskId }) {
+      calls.push({ method: "getTask", taskId });
+      return {
+        task: {
+          task_id: taskId,
+          requester_agent_id: "zac-agent",
+          target_agent_id: "project-hermes",
+          completion_owner_agent_id: "zac-agent",
+          pending_on_agent_id: "zac-agent",
+          status: "delivery_pending",
+          goal_version: 1,
+          exchange_epoch: 1
+        }
+      };
+    },
+    async amendTask(params) {
+      calls.push({ method: "amendTask", ...params });
+      return {
+        task: {
+          task_id: params.taskId,
+          requester_agent_id: "zac-agent",
+          target_agent_id: "project-hermes",
+          completion_owner_agent_id: "zac-agent",
+          pending_on_agent_id: "project-hermes",
+          pending_on_human_id: null,
+          status: "submitted",
+          goal_version: 2,
+          exchange_epoch: 2
+        }
+      };
+    }
+  };
+
+  const result = await executeInboxAgent({
+    stateRoot,
+    localAgentId: "zac-agent",
+    relayClient,
+    now: () => "2026-07-03T03:40:00.000Z"
+  });
+
+  assert.equal(result.executed, 1);
+  assert.deepEqual(calls.map((call) => call.method), ["getTask", "amendTask"]);
+  assert.equal(calls[1].actorAgentId, "zac-agent");
+  assert.equal(calls[1].expectedGoalVersion, 1);
+  assert.equal(calls[1].newDoneCriteria, "Hermes must return the content Zac needs to review, not only the path.");
+  assert.equal(calls[1].previousGoalDisposition, "clarified");
+  assert.equal(calls[1].humanApprovalRef, "hr_amend");
+  assert.equal(calls[1].newMaxTurns, 4);
+
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = inbox.issues.task_amend;
+  assert.equal(issue.pendingOnAgentId, "project-hermes");
+  assert.equal(issue.goalVersion, 2);
+  assert.equal(issue.exchangeEpoch, 2);
+  assert.equal(issue.executorStatus, "completed");
+  assert.equal(issue.executorActionIntent, "amend_task");
+  assert.equal(issue.executorLastHumanReplyId, "hr_amend");
+});
+
 test("executeInboxAgent refuses submit_artifact without artifact text", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
   const stateRoot = join(root, "state");

@@ -69,10 +69,11 @@ Use this decision order:
 
 1. If more information or approval is needed from Zac, set `requiresHumanConfirmation=true` and do not take an external action.
 2. If a remote artifact is incomplete, contradicts the task, or reports unresolved work that can be fixed within the original scope, use `request_revision` and send a concrete revision request to the remote agent.
-3. If Zac has provided enough information to answer an incoming remote request, use `submit_artifact` with the exact response to send.
-4. If the task is complete and the local agent is the `completion_owner_agent_id`, close the task only when the close action is allowed and any required Zac approval is present.
-5. If the task is complete but a remote agent is the `completion_owner_agent_id`, do not ask Zac to close it and do not close it locally. Wait for the remote completion owner to call `close_task`, or send a low-risk reminder/revision request if that is needed to end the loop.
-6. If nothing needs to be sent and no human input is needed, set a waiting/no-action result.
+3. If Zac changes or clarifies the task goal/done criteria after reviewing a remote artifact, use `amend_task`; this records a new goal version and starts a new agent-agent exchange.
+4. If Zac has provided enough information to answer an incoming remote request, use `submit_artifact` with the exact response to send.
+5. If the task is complete and the local agent is the `completion_owner_agent_id`, close the task only when the close action is allowed and any required Zac approval is present.
+6. If the task is complete but a remote agent is the `completion_owner_agent_id`, do not ask Zac to close it and do not close it locally. Wait for the remote completion owner to call `close_task`, or send a low-risk reminder/revision request if that is needed to end the loop.
+7. If nothing needs to be sent and no human input is needed, set a waiting/no-action result.
 
 Do not infer Zac's intent in wrapper code. The processor LLM is the only component that interprets Zac's local replies. The executor is not an agent; it only validates and executes structured actions.
 
@@ -80,6 +81,7 @@ Allowed executor actions:
 
 - `submit_artifact`: send a reply/artifact to another agent.
 - `request_revision`: ask a remote agent to continue or fix work within the existing task scope.
+- `amend_task`: record Zac-authorized task goal/done criteria changes and hand the amended goal back to the target agent.
 - `close_task`: close the task, only when the local agent is the completion owner.
 
 ## Completion Owner Rules

@@ -29,7 +29,7 @@
     },
     "actionIntent": {
       "type": "string",
-      "enum": ["none", "submit_artifact", "close_task", "request_revision"],
+      "enum": ["none", "submit_artifact", "close_task", "request_revision", "amend_task"],
       "default": "none"
     },
     "actionReason": {
@@ -47,6 +47,24 @@
     "terminalReason": {
       "type": "string",
       "default": ""
+    },
+    "amendedDoneCriteria": {
+      "type": "string",
+      "default": ""
+    },
+    "previousGoalDisposition": {
+      "type": "string",
+      "enum": ["", "accepted_and_extended", "clarified", "superseded_by_human", "rejected_by_human", "cancelled_by_human"],
+      "default": ""
+    },
+    "amendmentReason": {
+      "type": "string",
+      "default": ""
+    },
+    "newMaxTurns": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null
     }
   }
 }

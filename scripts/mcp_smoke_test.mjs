@@ -30,6 +30,7 @@ try {
     tools.tools.some((tool) => tool.name === "agentrelay_prepare_completion_decision"),
     "agentrelay_prepare_completion_decision not found"
   );
+  assert(tools.tools.some((tool) => tool.name === "agentrelay_amend_task"), "agentrelay_amend_task not found");
 
   await callJson("agentrelay_health", {});
   await callJson("agentrelay_list_agents", {});

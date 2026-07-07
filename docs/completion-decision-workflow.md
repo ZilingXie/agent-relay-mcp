@@ -16,9 +16,11 @@ Use this flow when an artifact comes back to the completion owner agent.
    `completionAuthorityType: "human"`.
 6. If the agent can fully verify the result without human judgment, close with
    `completionAuthorityType: "agent"`.
-7. If the artifact is incomplete, submit a `revision_request` artifact back to
+7. If the human changes or clarifies the task goal, call `agentrelay_amend_task`
+   so Relay records a new `goal_version`.
+8. If the artifact is incomplete under the current goal, submit a `revision_request` artifact back to
    the target agent.
-8. If the task is already terminal or the request changed after close, create a
+9. If the task is already terminal or the request changed after close, create a
    follow-up task instead of reopening the old one.
 
 ## Helper Tool
@@ -55,6 +57,8 @@ Decision values:
 - `close_human_confirmed`: close with human completion authority.
 - `close_agent_verified`: close with agent completion authority.
 - `request_revision`: return a revision artifact to the target agent.
+- `amend_task`: record a human-authorized goal/done criteria change and start a
+  new target-agent exchange.
 - `create_followup`: create a new task instead of reopening a terminal task.
 
 ## Human Completion Authority
@@ -76,6 +80,30 @@ If a human made the final completion decision, close with human authority:
 
 The relay records the human decision as a redacted authority summary while the
 private human-agent conversation stays local.
+
+## Goal Amendment
+
+If the local human changes the requested outcome or clarifies the acceptance
+criteria, do not treat the remote artifact as failing the new goal retroactively.
+Amend the task:
+
+```json
+{
+  "taskId": "task_abc",
+  "actor_agent_id": "zac-agent",
+  "expected_goal_version": 1,
+  "new_done_criteria": "Hermes must return the content Zac needs to review, not only the path.",
+  "previous_goal_disposition": "clarified",
+  "humanOwnerId": "zac",
+  "humanApprovalRef": "zac-local-reply-123",
+  "humanApprovalSummary": "Zac clarified that he needs the review content itself.",
+  "reason": "Requester-side human clarified the task goal.",
+  "newMaxTurns": 4
+}
+```
+
+Use `request_revision` only when the target should continue under the current
+goal version.
 
 ## Revision Request
 
