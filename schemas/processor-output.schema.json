@@ -65,6 +65,27 @@
       "type": ["integer", "null"],
       "minimum": 1,
       "default": null
+    },
+    "fileAccessRequests": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason", "access"],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "access": {
+            "type": "string",
+            "enum": ["read", "write", "read_write"]
+          }
+        }
+      }
     }
   }
 }

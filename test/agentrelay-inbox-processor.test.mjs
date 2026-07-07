@@ -441,6 +441,50 @@ test("runCodexExec embeds schema in stdin instead of using Codex CLI output-sche
   assert.match(captured.stdin, /"processorStatus"/);
 });
 
+test("runCodexExec uses workspace-write and add-dir roots for local agent file access", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-codex-sandbox-"));
+  const fakeCodex = join(root, "fake-codex.mjs");
+  const schemaPath = join(root, "schema.json");
+  const skillRoot = join(root, "skills");
+  const projectRoot = join(root, "project");
+  await mkdir(skillRoot, { recursive: true });
+  await mkdir(projectRoot, { recursive: true });
+  await writeFile(schemaPath, JSON.stringify({ type: "object", properties: {} }));
+  await writeFile(fakeCodex, [
+    "#!/usr/bin/env node",
+    "process.stdout.write(JSON.stringify({",
+    "  processorStatus: 'waiting',",
+    "  summary: JSON.stringify({ args: process.argv.slice(2) }),",
+    "  suggestedReply: '',",
+    "  needsHumanReason: '',",
+    "  requiresHumanConfirmation: false,",
+    "  actionIntent: 'none',",
+    "  actionReason: '',",
+    "  terminalReason: '',",
+    "  artifactKind: '',",
+    "  artifactText: ''",
+    "}));",
+    ""
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  const output = await runCodexExec({
+    prompt: "processor prompt",
+    schemaPath,
+    codexCli: fakeCodex,
+    cwd: projectRoot,
+    timeoutMs: 5000,
+    sandboxMode: "workspace-write",
+    writableRoots: [skillRoot]
+  });
+
+  const parsed = JSON.parse(output);
+  const captured = JSON.parse(parsed.summary);
+  assert.deepEqual(captured.args.slice(captured.args.indexOf("--sandbox"), captured.args.indexOf("--sandbox") + 2), ["--sandbox", "workspace-write"]);
+  assert.equal(captured.args.includes("--add-dir"), true);
+  assert.equal(captured.args[captured.args.indexOf("--add-dir") + 1], skillRoot);
+});
+
 test("ensureProcessorCodexHome creates an isolated minimal Codex home", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-home-"));
   const sourceCodexHome = join(root, "source-codex");
@@ -525,6 +569,177 @@ test("runCodexAnalysis validates the action allowlist and payload requirements",
   assert.equal(revision.actionIntent, "request_revision");
   assert.equal(revision.artifactKind, "revision_request");
   assert.match(revision.artifactText, /visible heading/);
+});
+
+test("runCodexAnalysis accepts local file access requests from the local agent", async () => {
+  const analysis = await runCodexAnalysis({
+    task: incomingTask({ taskId: "task_file_request" }),
+    event: { eventId: "evt_file_request" },
+    localAgentId: "zac-agent",
+    codexRunner: async () => JSON.stringify({
+      processorStatus: "needs_human",
+      summary: "I need approval to inspect another folder.",
+      suggestedReply: "",
+      needsHumanReason: "Please approve access to /tmp/project.",
+      requiresHumanConfirmation: true,
+      actionIntent: "none",
+      actionReason: "",
+      artifactKind: "",
+      artifactText: "",
+      terminalReason: "",
+      fileAccessRequests: [{
+        path: "/tmp/project",
+        reason: "Need to inspect the requested project files.",
+        access: "read_write"
+      }]
+    })
+  });
+
+  assert.equal(analysis.fileAccessRequests.length, 1);
+  assert.equal(analysis.fileAccessRequests[0].path, "/tmp/project");
+  assert.equal(analysis.fileAccessRequests[0].access, "read_write");
+});
+
+test("processInbox stores local agent file access requests for UI approval", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-files-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify({
+    event: { eventId: "evt_file_access", type: "task.pending", agentId: "zac-agent", taskId: "task_file_access" },
+    task: incomingTask({ taskId: "task_file_access" })
+  }, null, 2));
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_file_access: {
+        taskId: "task_file_access",
+        pendingOnAgentId: "zac-agent",
+        lastEventId: "evt_file_access",
+        eventIds: ["evt_file_access"]
+      }
+    },
+    events: {
+      evt_file_access: { eventId: "evt_file_access", taskId: "task_file_access", sourcePath: eventPath }
+    }
+  });
+
+  await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async () => JSON.stringify({
+      processorStatus: "needs_human",
+      summary: "Need folder approval.",
+      suggestedReply: "",
+      needsHumanReason: "Approve /tmp/project.",
+      requiresHumanConfirmation: true,
+      actionIntent: "none",
+      actionReason: "",
+      artifactKind: "",
+      artifactText: "",
+      terminalReason: "",
+      fileAccessRequests: [{
+        path: "/tmp/project",
+        reason: "Need to inspect project files.",
+        access: "read_write"
+      }]
+    }),
+    now: () => "2026-07-07T04:00:00.000Z"
+  });
+
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const request = inbox.issues.task_file_access.fileAccessRequests[0];
+  assert.match(request.requestId, /^far_/);
+  assert.equal(request.status, "pending");
+  assert.equal(request.path, "/tmp/project");
+  assert.equal(request.reason, "Need to inspect project files.");
+});
+
+test("processInbox resumes local agent work after file access approval even while Relay is pending remote", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-grant-"));
+  const stateRoot = join(root, "state");
+  const allowedRoot = join(root, "approved-checkout");
+  const eventPath = join(root, "event.json");
+  await mkdir(allowedRoot, { recursive: true });
+  await writeFile(eventPath, JSON.stringify({
+    event: { eventId: "evt_remote_pending_grant", type: "task.pending", agentId: "zac-agent", taskId: "task_remote_pending_grant" },
+    task: incomingTask({ taskId: "task_remote_pending_grant" })
+  }, null, 2));
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_remote_pending_grant: {
+        taskId: "task_remote_pending_grant",
+        pendingOnAgentId: "vivi-agent",
+        relayStatus: "delivery_pending",
+        humanReplyStatus: "pending_processor",
+        latestHumanReplyId: "hr_install",
+        processorLastHumanReplyId: "hr_install",
+        processorLastEventId: "evt_remote_pending_grant",
+        processorLastInputFingerprint: "pif_old_without_grant",
+        lastEventId: "evt_remote_pending_grant",
+        humanReplies: [{
+          replyId: "hr_install",
+          taskId: "task_remote_pending_grant",
+          text: "你按照步骤安装这个 skill。",
+          createdAt: "2026-07-07T02:21:50.745Z",
+          processedAt: "2026-07-07T02:22:54.582Z"
+        }],
+        fileAccessRequests: [{
+          requestId: "far_checkout",
+          path: allowedRoot,
+          reason: "Need to inspect checkout.",
+          status: "approved_once",
+          createdAt: "2026-07-07T02:22:54.582Z",
+          decidedAt: "2026-07-07T02:54:09.657Z"
+        }],
+        fileAccessGrants: [{
+          grantId: "fag_checkout",
+          requestId: "far_checkout",
+          path: allowedRoot,
+          scope: "once",
+          status: "active",
+          createdAt: "2026-07-07T02:54:09.657Z"
+        }],
+        eventIds: ["evt_remote_pending_grant"]
+      }
+    },
+    events: {
+      evt_remote_pending_grant: { eventId: "evt_remote_pending_grant", taskId: "task_remote_pending_grant", sourcePath: eventPath }
+    }
+  });
+  const calls = [];
+
+  const result = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async (options) => {
+      calls.push(options);
+      return JSON.stringify({
+        processorStatus: "waiting",
+        summary: "I resumed after file access approval.",
+        suggestedReply: "",
+        needsHumanReason: "",
+        requiresHumanConfirmation: false,
+        actionIntent: "none",
+        actionReason: "",
+        artifactKind: "",
+        artifactText: "",
+        terminalReason: "",
+        fileAccessRequests: []
+      });
+    },
+    now: () => "2026-07-07T03:00:00.000Z"
+  });
+
+  assert.equal(result.processed, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].writableRoots.includes(allowedRoot), true);
+  assert.match(calls[0].prompt, /Active file access grants/);
+  assert.match(calls[0].prompt, new RegExp(allowedRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = inbox.issues.task_remote_pending_grant;
+  assert.equal(issue.humanReplyStatus, "processed");
+  assert.notEqual(issue.processorLastInputFingerprint, "pif_old_without_grant");
 });
 
 test("runResponsesApi sends the processor prompt with a JSON schema and extracts output text", async () => {
@@ -640,6 +855,60 @@ test("buildCodexProcessorPrompt tells the LLM to request approval for files outs
   assert.match(prompt, /approve adding that folder/);
 });
 
+test("buildCodexProcessorPrompt allows local tools and network while routing AgentRelay mutations through guardrail", () => {
+  const prompt = buildCodexProcessorPrompt({
+    agentsMd: "Use local tools when needed.",
+    localAgentId: "zac-agent",
+    task: incomingTask({ taskId: "task_agent_runtime" }),
+    event: { eventId: "evt_agent_runtime" },
+    humanReplies: []
+  });
+
+  assert.match(prompt, /may use local Codex tools/);
+  assert.match(prompt, /network access/);
+  assert.match(prompt, /AgentRelay MCP read-only/);
+  assert.match(prompt, /outbox JSON action/);
+  assert.doesNotMatch(prompt, /Do not use AgentRelay MCP/);
+  assert.doesNotMatch(prompt, /Do not call tools/);
+  assert.doesNotMatch(prompt, /Do not run terminal commands/);
+});
+
+test("runCodexExec enables network access for the local agent runtime", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-codex-network-"));
+  const fakeCodex = join(root, "fake-codex.mjs");
+  const schemaPath = join(root, "schema.json");
+  await writeFile(schemaPath, JSON.stringify({ type: "object", properties: {} }));
+  await writeFile(fakeCodex, [
+    "#!/usr/bin/env node",
+    "process.stdout.write(JSON.stringify({",
+    "  processorStatus: 'waiting',",
+    "  summary: JSON.stringify({ args: process.argv.slice(2) }),",
+    "  suggestedReply: '',",
+    "  needsHumanReason: '',",
+    "  requiresHumanConfirmation: false,",
+    "  actionIntent: 'none',",
+    "  actionReason: '',",
+    "  terminalReason: '',",
+    "  artifactKind: '',",
+    "  artifactText: ''",
+    "}));",
+    ""
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  const output = await runCodexExec({
+    prompt: "processor prompt",
+    schemaPath,
+    codexCli: fakeCodex,
+    cwd: root,
+    timeoutMs: 5000
+  });
+
+  const captured = JSON.parse(JSON.parse(output).summary);
+  assert.equal(captured.args.includes("--config"), true);
+  assert.equal(captured.args.includes("network_access=\"enabled\""), true);
+});
+
 test("runCodexAnalysis defaults the file whitelist to the install root next to state", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-whitelist-"));
   const stateRoot = join(root, "state");
@@ -665,6 +934,135 @@ test("runCodexAnalysis defaults the file whitelist to the install root next to s
 
   assert.match(capturedPrompt, /Allowed filesystem roots/);
   assert.match(capturedPrompt, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("runCodexAnalysis runs the local agent with workspace-write access to whitelisted roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-access-"));
+  const stateRoot = join(root, "state");
+  const allowedRoot = join(root, "allowed-project");
+  await mkdir(stateRoot, { recursive: true });
+  await mkdir(allowedRoot, { recursive: true });
+  await writeFile(join(stateRoot, "file-access-whitelist.json"), JSON.stringify({
+    version: 1,
+    roots: [{
+      path: allowedRoot,
+      label: "Allowed project",
+      source: "user",
+      createdAt: "2026-07-07T01:00:00.000Z"
+    }]
+  }, null, 2));
+
+  const calls = [];
+  await runCodexAnalysis({
+    localAgentId: "zac-agent",
+    stateRoot,
+    task: incomingTask({ taskId: "task_allowed_access" }),
+    event: { eventId: "evt_allowed_access" },
+    codexRunner: async (options) => {
+      calls.push(options);
+      return JSON.stringify({
+        processorStatus: "waiting",
+        summary: "checked",
+        suggestedReply: "",
+        needsHumanReason: "",
+        requiresHumanConfirmation: false,
+        actionIntent: "none"
+      });
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sandboxMode, "workspace-write");
+  assert.deepEqual(calls[0].writableRoots, [allowedRoot]);
+});
+
+test("processInbox records local agent session, processor runs, input fingerprint, and outbox", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-runtime-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify({
+    event: { eventId: "evt_runtime", type: "task.pending", agentId: "zac-agent", taskId: "task_runtime" },
+    task: incomingTask({ taskId: "task_runtime" })
+  }, null, 2));
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_runtime: {
+        taskId: "task_runtime",
+        subject: "Runtime state task",
+        pendingOnAgentId: "zac-agent",
+        lastEventId: "evt_runtime",
+        latestHumanReplyId: "hr_runtime",
+        humanReplyStatus: "pending_processor",
+        humanReplies: [{
+          replyId: "hr_runtime",
+          taskId: "task_runtime",
+          text: "请继续让 Hermes 修正标题。",
+          createdAt: "2026-07-07T01:00:00.000Z",
+          processedAt: null
+        }],
+        eventIds: ["evt_runtime"]
+      }
+    },
+    events: {
+      evt_runtime: { eventId: "evt_runtime", taskId: "task_runtime", sourcePath: eventPath }
+    }
+  });
+
+  let attempts = 0;
+  const first = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async () => {
+      attempts += 1;
+      return JSON.stringify({
+        processorStatus: "ready_to_reply",
+        summary: "I will ask Hermes to revise the title.",
+        suggestedReply: "Ask Hermes to revise.",
+        needsHumanReason: "",
+        requiresHumanConfirmation: false,
+        actionIntent: "request_revision",
+        actionReason: "Hermes can continue within the original scope.",
+        artifactKind: "revision_request",
+        artifactText: "Please revise the title and verify again.",
+        terminalReason: ""
+      });
+    },
+    now: () => "2026-07-07T01:01:00.000Z"
+  });
+
+  assert.equal(first.processed, 1);
+  assert.equal(attempts, 1);
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = inbox.issues.task_runtime;
+  assert.match(issue.localAgentSession.sessionId, /^las_/);
+  assert.equal(issue.localAgentSession.taskId, "task_runtime");
+  assert.equal(issue.localAgentSession.createdAt, "2026-07-07T01:01:00.000Z");
+  assert.equal(issue.localAgentSession.updatedAt, "2026-07-07T01:01:00.000Z");
+  assert.equal(issue.inputFingerprint.length > 12, true);
+  assert.equal(issue.processorRuns.length, 1);
+  assert.equal(issue.processorRuns[0].status, "ready_to_reply");
+  assert.equal(issue.processorRuns[0].source, "codex");
+  assert.equal(issue.processorRuns[0].inputFingerprint, issue.inputFingerprint);
+  assert.equal(issue.processorRuns[0].suggestedReply, "Ask Hermes to revise.");
+  assert.equal(issue.processorRuns[0].needsHumanReason, "");
+  assert.equal(issue.outbox.length, 1);
+  assert.equal(issue.outbox[0].status, "pending_guardrail");
+  assert.equal(issue.outbox[0].actionIntent, "request_revision");
+  assert.equal(issue.outbox[0].artifactText, "Please revise the title and verify again.");
+
+  const second = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async () => {
+      attempts += 1;
+      throw new Error("duplicate input should not run the local agent");
+    },
+    now: () => "2026-07-07T01:02:00.000Z"
+  });
+
+  assert.equal(second.processed, 0);
+  assert.equal(attempts, 1);
 });
 
 test("processInbox skips issues that are not pending on the local agent", async () => {

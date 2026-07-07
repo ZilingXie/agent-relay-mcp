@@ -6,6 +6,148 @@ import test from "node:test";
 
 import { executeInboxAgent } from "../scripts/agentrelay-inbox-agent-executor.mjs";
 
+test("executeInboxAgent guardrail sends a valid pending outbox artifact", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-guardrail-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_outbox_submit: {
+        taskId: "task_outbox_submit",
+        requesterAgentId: "frank-agent",
+        targetAgentId: "zac-agent",
+        completionOwnerAgentId: "frank-agent",
+        pendingOnAgentId: "zac-agent",
+        relayStatus: "delivery_pending",
+        localStatus: "received",
+        outbox: [{
+          outboxId: "out_submit_1",
+          taskId: "task_outbox_submit",
+          status: "pending_guardrail",
+          actionIntent: "submit_artifact",
+          fromAgentId: "zac-agent",
+          artifactKind: "text",
+          artifactText: "Frank, Zac confirmed receipt.",
+          createdAt: "2026-07-07T02:00:00.000Z",
+          updatedAt: "2026-07-07T02:00:00.000Z"
+        }]
+      }
+    },
+    events: {}
+  });
+  const calls = [];
+  const relayClient = {
+    async getTask({ taskId }) {
+      calls.push({ method: "getTask", taskId });
+      return {
+        task: {
+          task_id: taskId,
+          requester_agent_id: "frank-agent",
+          target_agent_id: "zac-agent",
+          completion_owner_agent_id: "frank-agent",
+          pending_on_agent_id: "zac-agent",
+          status: "delivery_pending"
+        }
+      };
+    },
+    async submitArtifact(params) {
+      calls.push({ method: "submitArtifact", ...params });
+      return {
+        task: {
+          task_id: params.taskId,
+          requester_agent_id: "frank-agent",
+          target_agent_id: "zac-agent",
+          completion_owner_agent_id: "frank-agent",
+          pending_on_agent_id: "frank-agent",
+          pending_on_human_id: null,
+          status: "delivery_pending"
+        },
+        artifact: { artifact_id: "art_outbox_submit" }
+      };
+    }
+  };
+
+  const result = await executeInboxAgent({
+    stateRoot,
+    localAgentId: "zac-agent",
+    relayClient,
+    now: () => "2026-07-07T02:01:00.000Z"
+  });
+
+  assert.equal(result.executed, 1);
+  assert.deepEqual(calls.map((call) => call.method), ["getTask", "submitArtifact"]);
+  assert.equal(calls[1].text, "Frank, Zac confirmed receipt.");
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = inbox.issues.task_outbox_submit;
+  assert.equal(issue.outbox[0].status, "sent");
+  assert.equal(issue.outbox[0].artifactId, "art_outbox_submit");
+  assert.equal(issue.outbox[0].sentAt, "2026-07-07T02:01:00.000Z");
+  assert.equal(issue.guardrailResults.length, 1);
+  assert.equal(issue.guardrailResults[0].status, "sent");
+  assert.equal(issue.guardrailResults[0].outboxId, "out_submit_1");
+});
+
+test("executeInboxAgent guardrail rejects invalid outbox protocol without sending", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-guardrail-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_outbox_bad_close: {
+        taskId: "task_outbox_bad_close",
+        requesterAgentId: "frank-agent",
+        targetAgentId: "zac-agent",
+        completionOwnerAgentId: "frank-agent",
+        pendingOnAgentId: "zac-agent",
+        relayStatus: "delivery_pending",
+        localStatus: "received",
+        outbox: [{
+          outboxId: "out_bad_close_1",
+          taskId: "task_outbox_bad_close",
+          status: "pending_guardrail",
+          actionIntent: "close_task",
+          fromAgentId: "zac-agent",
+          terminalReason: "Zac confirmed completion.",
+          createdAt: "2026-07-07T02:00:00.000Z",
+          updatedAt: "2026-07-07T02:00:00.000Z"
+        }]
+      }
+    },
+    events: {}
+  });
+  const relayClient = {
+    async getTask({ taskId }) {
+      return {
+        task: {
+          task_id: taskId,
+          completion_owner_agent_id: "frank-agent",
+          pending_on_agent_id: "zac-agent",
+          status: "delivery_pending"
+        }
+      };
+    },
+    async closeTask() {
+      throw new Error("closeTask should not be called");
+    }
+  };
+
+  const result = await executeInboxAgent({
+    stateRoot,
+    localAgentId: "zac-agent",
+    relayClient,
+    now: () => "2026-07-07T02:01:00.000Z"
+  });
+
+  assert.equal(result.executed, 0);
+  assert.equal(result.failed, 1);
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = inbox.issues.task_outbox_bad_close;
+  assert.equal(issue.outbox[0].status, "rejected_protocol");
+  assert.match(issue.outbox[0].error, /completion owner/);
+  assert.equal(issue.guardrailResults[0].status, "rejected_protocol");
+  assert.match(issue.guardrailResults[0].suggestedFix, /completion owner/);
+});
+
 test("executeInboxAgent closes a task from processor close_task intent", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
   const stateRoot = join(root, "state");

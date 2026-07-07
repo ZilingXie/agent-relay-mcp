@@ -33,6 +33,98 @@ export async function executeInboxAgent({
   });
 
   for (const issue of issues) {
+    const pendingOutbox = pendingGuardrailOutbox(issue);
+    if (pendingOutbox.length > 0) {
+      for (const outboxItem of pendingOutbox) {
+        const runAt = now();
+        const actionIntent = outboxItem.actionIntent;
+        try {
+          const taskResponse = await relayClient.getTask({ taskId: issue.taskId });
+          const task = taskResponse.task || taskResponse;
+          const actionIssue = issueFromOutboxItem({ issue: inbox.issues[issue.taskId] || issue, outboxItem });
+          if (actionIntent === "close_task") {
+            assertCanCloseTask({ task, issue: actionIssue, localAgentId });
+            if (task.status === "completed") {
+              inbox.issues[issue.taskId] = markOutboxSent({
+                issue: applyClosedTaskToIssue({
+                  issue: actionIssue,
+                  task,
+                  localAgentId,
+                  humanReplyId: actionIssue.latestHumanReplyId || actionIssue.processorLastHumanReplyId || "",
+                  runAt
+                }),
+                outboxItem,
+                runAt,
+                result: { alreadyCompleted: true }
+              });
+            } else {
+              const closeResponse = await relayClient.closeTask({
+                taskId: issue.taskId,
+                closedByAgentId: localAgentId,
+                terminalReason: actionIssue.processorTerminalReason
+              });
+              inbox.issues[issue.taskId] = markOutboxSent({
+                issue: applyClosedTaskToIssue({
+                  issue: actionIssue,
+                  task: closeResponse.task || closeResponse,
+                  localAgentId,
+                  humanReplyId: actionIssue.latestHumanReplyId || actionIssue.processorLastHumanReplyId || "",
+                  runAt
+                }),
+                outboxItem,
+                runAt
+              });
+            }
+          } else {
+            assertCanSubmitArtifact({ task, issue: actionIssue, localAgentId });
+            const submitParams = buildSubmitArtifactParams({ task, issue: actionIssue, localAgentId });
+            const submitResponse = await relayClient.submitArtifact(submitParams);
+            inbox.issues[issue.taskId] = markOutboxSent({
+              issue: applySubmittedArtifactToIssue({
+                issue: actionIssue,
+                task: submitResponse.task || submitResponse,
+                artifact: submitResponse.artifact,
+                humanReplyId: actionIssue.latestHumanReplyId || actionIssue.processorLastHumanReplyId || "",
+                processorEventId: actionIssue.processorLastEventId || "",
+                runAt
+              }),
+              outboxItem,
+              runAt,
+              result: { artifactId: submitResponse.artifact?.artifact_id || "" }
+            });
+          }
+          await appendJsonl(join(stateRoot, "executor-runs.jsonl"), {
+            at: runAt,
+            taskId: issue.taskId,
+            outboxId: outboxItem.outboxId || "",
+            actionIntent,
+            status: "sent"
+          });
+          actions.push({ taskId: issue.taskId, outboxId: outboxItem.outboxId || "", actionIntent, status: "sent" });
+          executed += 1;
+        } catch (error) {
+          const status = isProtocolGuardrailError(error) ? "rejected_protocol" : "send_failed";
+          inbox.issues[issue.taskId] = markOutboxFailed({
+            issue: inbox.issues[issue.taskId] || issue,
+            outboxItem,
+            status,
+            error: error.message,
+            runAt
+          });
+          await appendJsonl(join(stateRoot, "executor-runs.jsonl"), {
+            at: runAt,
+            taskId: issue.taskId,
+            outboxId: outboxItem.outboxId || "",
+            actionIntent,
+            status,
+            error: error.message
+          });
+          actions.push({ taskId: issue.taskId, outboxId: outboxItem.outboxId || "", actionIntent, status, error: error.message });
+          failed += 1;
+        }
+      }
+      continue;
+    }
     if (!shouldAttemptAction({ issue, localAgentId })) continue;
     const runAt = now();
     try {
@@ -177,6 +269,104 @@ function shouldAttemptAction({ issue, localAgentId }) {
   if (issue.processorActionIntent === "close_task" && !issue.processorTerminalReason) return false;
   if (issue.processorActionIntent === "amend_task" && !issue.processorAmendedDoneCriteria) return false;
   return true;
+}
+
+function pendingGuardrailOutbox(issue) {
+  if (issue.localStatus === "archived") return [];
+  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return [];
+  return normalizeOutbox(issue.outbox).filter((item) => item.status === "pending_guardrail");
+}
+
+function normalizeOutbox(outbox) {
+  return Array.isArray(outbox) ? outbox.filter((item) => item && typeof item === "object") : [];
+}
+
+function issueFromOutboxItem({ issue, outboxItem }) {
+  return {
+    ...issue,
+    processorActionIntent: outboxItem.actionIntent || "none",
+    processorActionReason: outboxItem.actionReason || "",
+    processorArtifactKind: outboxItem.artifactKind || "",
+    processorArtifactText: outboxItem.artifactText || "",
+    processorTerminalReason: outboxItem.terminalReason || "",
+    requiresHumanConfirmation: false
+  };
+}
+
+function markOutboxSent({ issue, outboxItem, runAt, result = {} }) {
+  const nextOutbox = updateOutboxItem(issue.outbox, outboxItem, {
+    status: "sent",
+    sentAt: runAt,
+    updatedAt: runAt,
+    artifactId: result.artifactId || outboxItem.artifactId || "",
+    error: null
+  });
+  return {
+    ...issue,
+    outbox: nextOutbox,
+    guardrailResults: appendGuardrailResult(issue.guardrailResults, {
+      outboxId: outboxItem.outboxId || "",
+      actionIntent: outboxItem.actionIntent || "",
+      status: "sent",
+      sentAt: runAt,
+      artifactId: result.artifactId || "",
+      alreadyCompleted: Boolean(result.alreadyCompleted)
+    })
+  };
+}
+
+function markOutboxFailed({ issue, outboxItem, status, error, runAt }) {
+  return {
+    ...issue,
+    outbox: updateOutboxItem(issue.outbox, outboxItem, {
+      status,
+      error,
+      updatedAt: runAt
+    }),
+    guardrailResults: appendGuardrailResult(issue.guardrailResults, {
+      outboxId: outboxItem.outboxId || "",
+      actionIntent: outboxItem.actionIntent || "",
+      status,
+      error,
+      suggestedFix: buildProtocolSuggestedFix(error),
+      at: runAt
+    }),
+    executorStatus: "failed",
+    executorActionIntent: outboxItem.actionIntent || "",
+    executorError: error,
+    executorLastRunAt: runAt,
+    updatedAt: runAt
+  };
+}
+
+function updateOutboxItem(outbox, outboxItem, patch) {
+  const current = normalizeOutbox(outbox);
+  return current.map((item) => {
+    if ((item.outboxId || "") !== (outboxItem.outboxId || "")) return item;
+    return { ...item, ...patch };
+  });
+}
+
+function appendGuardrailResult(results, result) {
+  return [...(Array.isArray(results) ? results : []), result];
+}
+
+function isProtocolGuardrailError(error) {
+  return /^Cannot /.test(String(error?.message || ""));
+}
+
+function buildProtocolSuggestedFix(error) {
+  const message = String(error || "");
+  if (/completion owner/i.test(message)) {
+    return "Update the local agent action: only the completion owner may close this task; submit an artifact or wait for the completion owner instead.";
+  }
+  if (/pending_on_agent_id/i.test(message)) {
+    return "Update the local agent action: only the currently pending agent may send this AgentRelay transition.";
+  }
+  if (/artifact text/i.test(message)) {
+    return "Update the local agent action with non-empty artifact text before sending.";
+  }
+  return "Update the local agent action so it matches the AgentRelay task protocol, then retry.";
 }
 
 function assertCanCloseTask({ task, issue, localAgentId }) {

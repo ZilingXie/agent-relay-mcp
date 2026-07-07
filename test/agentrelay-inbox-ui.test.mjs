@@ -167,6 +167,131 @@ test("loadInboxSnapshot marks processor confirmation tasks as needing Zac", asyn
   assert.equal(snapshot.issues.find((issue) => issue.taskId === "task_remote_revision").needsHuman, false);
 });
 
+test("loadInboxSnapshot keeps Need approval active when remote is pending but local agent needs Zac", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_remote_pending_needs_zac: {
+        taskId: "task_remote_pending_needs_zac",
+        subject: "Needs local file approval",
+        direction: "outgoing",
+        counterpartAgentId: "vivi-agent",
+        pendingOnAgentId: "vivi-agent",
+        relayStatus: "delivery_pending",
+        localStatus: "created_from_ui",
+        processorStatus: "needs_human",
+        processorSummary: "Need access to a local checkout.",
+        processorNeedsHumanReason: "Please approve local file access.",
+        requiresHumanConfirmation: true,
+        fileAccessRequests: [{
+          requestId: "far_checkout",
+          path: "/Users/zac/project",
+          reason: "Need to inspect local checkout.",
+          status: "pending",
+          createdAt: "2026-07-07T02:20:00.000Z"
+        }],
+        updatedAt: "2026-07-07T02:21:00.000Z"
+      }
+    },
+    events: {}
+  });
+
+  const snapshot = await loadInboxSnapshot({
+    stateRoot,
+    localAgentId: "zac-agent",
+    now: () => "2026-07-07T02:22:00.000Z"
+  });
+
+  const issue = snapshot.issues[0];
+  assert.equal(issue.needsHuman, true);
+  assert.equal(issueWorkflowStatus(issue, { localAgentId: "zac-agent" }), "need approval");
+  assert.equal(issue.fileAccessRequests[0].status, "pending");
+});
+
+test("buildChatTimeline keeps Zac input before same-second local agent processor output", () => {
+  const issue = {
+    taskId: "task_same_second_processor_order",
+    humanReplies: [{
+      replyId: "hr_same_second",
+      taskId: "task_same_second_processor_order",
+      text: "请按步骤安装 skill。",
+      createdAt: "2026-07-07T02:22:54.500Z",
+      processedAt: "2026-07-07T02:22:54.700Z"
+    }],
+    processorStatus: "needs_human",
+    processorSummary: "需要 Zac 提供本地 checkout 路径。",
+    processorNeedsHumanReason: "请提供路径。",
+    requiresHumanConfirmation: true,
+    processorLastRunAt: "2026-07-07T02:22:54.500Z"
+  };
+
+  const timeline = buildChatTimeline({ issue, events: [], localAgentId: "zac-agent" });
+
+  assert.deepEqual(timeline.map((item) => item.type), ["local_reply", "processor"]);
+  assert.equal(timeline[0].speaker, "Zac");
+  assert.equal(timeline[1].speaker, "Agent");
+});
+
+test("buildChatTimeline renders processor runs as stable history", () => {
+  const issue = {
+    taskId: "task_processor_history",
+    processorStatus: "needs_human",
+    processorSummary: "new mutable summary",
+    processorSuggestedReply: "new mutable suggestion",
+    processorNeedsHumanReason: "new mutable reason",
+    processorLastInputFingerprint: "pif_second",
+    processorRuns: [{
+      runId: "run_first",
+      inputFingerprint: "pif_first",
+      status: "needs_human",
+      summary: "first stable summary",
+      suggestedReply: "first stable suggestion",
+      needsHumanReason: "first stable reason",
+      requiresHumanConfirmation: true,
+      createdAt: "2026-07-07T02:22:00.000Z"
+    }, {
+      runId: "run_second",
+      inputFingerprint: "pif_second",
+      status: "needs_human",
+      summary: "second stable summary",
+      requiresHumanConfirmation: true,
+      createdAt: "2026-07-07T02:23:00.000Z"
+    }]
+  };
+
+  const timeline = buildChatTimeline({ issue, events: [], localAgentId: "zac-agent" });
+
+  assert.deepEqual(timeline.map((item) => item.runId), ["run_first", "run_second"]);
+  assert.match(timeline[0].text, /first stable summary/);
+  assert.match(timeline[0].text, /first stable suggestion/);
+  assert.doesNotMatch(timeline[0].text, /new mutable/);
+  assert.match(timeline[1].text, /second stable summary/);
+  assert.match(timeline[1].text, /new mutable suggestion/);
+});
+
+test("buildChatTimeline includes pending file access requests as approval cards", () => {
+  const issue = {
+    taskId: "task_file_access_card",
+    fileAccessRequests: [{
+      requestId: "far_checkout",
+      path: "/Users/zac/project",
+      reason: "Need to inspect local checkout.",
+      status: "pending",
+      createdAt: "2026-07-07T02:23:00.000Z"
+    }]
+  };
+
+  const timeline = buildChatTimeline({ issue, events: [], localAgentId: "zac-agent" });
+
+  assert.equal(timeline.length, 1);
+  assert.equal(timeline[0].type, "file_access_request");
+  assert.equal(timeline[0].requestId, "far_checkout");
+  assert.match(timeline[0].text, /Need to inspect local checkout/);
+  assert.match(timeline[0].text, /\/Users\/zac\/project/);
+});
+
 test("loadInboxSnapshot does not ask Zac to close remote-owned completed handoffs", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
@@ -1008,6 +1133,49 @@ test("scheduleInboxProcessing does not automatically retry processor failures", 
   assert.equal(calls[0].stateRoot, stateRoot);
 });
 
+test("scheduleInboxProcessing serializes overlapping background runs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-serialized-"));
+  const stateRoot = join(root, "state");
+  let active = 0;
+  let maxActive = 0;
+  let releaseFirst;
+  const firstRun = new Promise((resolve) => { releaseFirst = resolve; });
+  const calls = [];
+
+  scheduleInboxProcessing({
+    stateRoot,
+    now: () => "2026-07-03T03:11:00.000Z",
+    processInbox: async () => {
+      calls.push("process");
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (calls.length === 1) await firstRun;
+      active -= 1;
+      return { scanned: 1, processed: 1, externalActions: [] };
+    },
+    executeInboxAgent: async () => ({ scanned: 0, executed: 0, failed: 0, actions: [] })
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls.length, 1);
+  scheduleInboxProcessing({
+    stateRoot,
+    now: () => "2026-07-03T03:11:01.000Z",
+    processInbox: async () => {
+      calls.push("process");
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      active -= 1;
+      return { scanned: 1, processed: 0, externalActions: [] };
+    },
+    executeInboxAgent: async () => ({ scanned: 0, executed: 0, failed: 0, actions: [] })
+  });
+
+  releaseFirst();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls.length, 2);
+  assert.equal(maxActive, 1);
+});
+
 test("inbox UI server creates task drafts without sending relay tasks", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
@@ -1725,7 +1893,9 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.doesNotMatch(js, /rowFact\("from"/);
     assert.doesNotMatch(js, /rowFact\("pending"/);
     assert.match(js, /function visibleChatItems/);
-    assert.match(js, /item\.type === "relay_message" \|\| item\.type === "artifact" \|\| item\.type === "local_reply" \|\| item\.type === "local_request"/);
+    assert.match(js, /item\.type === "relay_message"/);
+    assert.match(js, /item\.type === "file_access_request"/);
+    assert.match(js, /data-file-access-action="approve-once"/);
     assert.match(js, /function renderPendingMarker/);
     assert.match(js, /formatTime\(at\) \+ " "/);
     assert.match(js, /function captureMessageScrollState/);
@@ -1754,6 +1924,9 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /Delivered/);
     assert.match(js, /renderNewTaskMessage/);
     assert.match(js, /renderNewTaskMessage\(\{ text, status: "sending" \}\);[\s\S]*textarea\.value = "";[\s\S]*fetch\("\/api\/task-requests"/);
+    assert.match(js, /Preparing local task/);
+    assert.match(js, /status: "sent"/);
+    assert.match(js, /pendingOn: body\.task\?\.pending_on_agent_id \|\| body\.draft\?\.to \|\| "remote agent"/);
     assert.match(js, /form\.requestSubmit\(\)/);
     assert.match(js, /class="send-button"/);
     assert.match(js, /if \(!issue\.needsHuman\) return ""/);
@@ -1885,6 +2058,116 @@ test("inbox UI server adds file access whitelist roots idempotently and rejects 
     assert.equal(rejected.status, 400);
     const rejectedBody = await rejected.json();
     assert.match(rejectedBody.message, /absolute path/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("inbox UI server removes whitelist roots without deleting the install root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-whitelist-"));
+  const stateRoot = join(root, "state");
+  const extraRoot = join(root, "workspace");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(extraRoot, { recursive: true }));
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(stateRoot, { recursive: true }));
+  await writeFile(join(stateRoot, "file-access-whitelist.json"), JSON.stringify({
+    version: 1,
+    roots: [
+      { path: root, label: "AgentRelay install root", source: "install", createdAt: "2026-07-06T01:02:03.000Z" },
+      { path: extraRoot, label: "Workspace", source: "user", createdAt: "2026-07-06T01:02:04.000Z" }
+    ]
+  }, null, 2));
+  const server = createInboxUiServer({ stateRoot, installRoot: root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const removed = await fetch(`http://127.0.0.1:${port}/api/file-access-whitelist/roots?path=${encodeURIComponent(extraRoot)}`, {
+      method: "DELETE"
+    });
+    assert.equal(removed.status, 200);
+    const body = await removed.json();
+    assert.equal(body.roots.length, 1);
+    assert.equal(body.roots[0].path, root);
+
+    const installRejected = await fetch(`http://127.0.0.1:${port}/api/file-access-whitelist/roots?path=${encodeURIComponent(root)}`, {
+      method: "DELETE"
+    });
+    assert.equal(installRejected.status, 400);
+    assert.match((await installRejected.json()).message, /install root/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("inbox UI server approves file access requests and retries outbox through local agent controls", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-permissions-"));
+  const stateRoot = join(root, "state");
+  const extraRoot = join(root, "workspace");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(extraRoot, { recursive: true }));
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_permissions: {
+        taskId: "task_permissions",
+        subject: "Needs file access",
+        pendingOnAgentId: "zac-agent",
+        relayStatus: "delivery_pending",
+        localStatus: "received",
+        fileAccessRequests: [{
+          requestId: "far_1",
+          path: extraRoot,
+          reason: "Need to inspect project files.",
+          status: "pending",
+          createdAt: "2026-07-07T03:00:00.000Z"
+        }],
+        outbox: [{
+          outboxId: "out_retry_1",
+          actionIntent: "submit_artifact",
+          artifactText: "hello",
+          status: "send_failed",
+          error: "temporary failure",
+          createdAt: "2026-07-07T03:00:00.000Z"
+        }]
+      }
+    },
+    events: {}
+  });
+  const calls = [];
+  const server = createInboxUiServer({
+    stateRoot,
+    installRoot: root,
+    now: () => "2026-07-07T03:01:00.000Z",
+    processInbox: async (options) => {
+      calls.push({ method: "processInbox", stateRoot: options.stateRoot });
+      return { processed: 1 };
+    },
+    executeInboxAgent: async (options) => {
+      calls.push({ method: "executeInboxAgent", stateRoot: options.stateRoot });
+      return { executed: 1 };
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const approveOnce = await fetch(`http://127.0.0.1:${port}/api/issues/task_permissions/file-access-requests/far_1/approve-once`, {
+      method: "POST"
+    });
+    assert.equal(approveOnce.status, 200);
+    let body = await approveOnce.json();
+    assert.equal(body.request.status, "approved_once");
+    assert.equal(body.issue.fileAccessGrants[0].scope, "once");
+
+    const retry = await fetch(`http://127.0.0.1:${port}/api/issues/task_permissions/outbox/out_retry_1/retry`, {
+      method: "POST"
+    });
+    assert.equal(retry.status, 200);
+    body = await retry.json();
+    assert.equal(body.outbox.status, "pending_guardrail");
+
+    const run = await fetch(`http://127.0.0.1:${port}/api/issues/task_permissions/run-processor`, {
+      method: "POST"
+    });
+    assert.equal(run.status, 200);
+    assert.deepEqual(calls.map((call) => call.method).slice(-2), ["processInbox", "executeInboxAgent"]);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }

@@ -21,6 +21,7 @@ const DEFAULT_CODEX_CLI = "/Applications/Codex.app/Contents/Resources/codex";
 const PROTOCOL_VERSION = "agent-collab-v0.3";
 const TASK_DRAFT_SCHEMA_PATH = resolve(PROJECT_ROOT, "schemas/task-draft.schema.json");
 const TASK_DRAFT_SUBJECT_MAX_LENGTH = 32;
+const backgroundProcessingByStateRoot = new Map();
 const envPath = process.env.AGENTRELAY_ENV_PATH || resolve(PROJECT_ROOT, ".env");
 loadDotEnv(envPath);
 
@@ -168,6 +169,53 @@ export function createInboxUiServer({
           now
         });
         sendJson(res, result.added ? 201 : 200, result.whitelist);
+        return;
+      }
+
+      if (req.method === "DELETE" && url.pathname === "/api/file-access-whitelist/roots") {
+        const result = await removeFileAccessWhitelistRoot({
+          stateRoot,
+          installRoot,
+          body: url.searchParams.get("path") ? { path: url.searchParams.get("path") } : await readJsonRequest(req),
+          now
+        });
+        sendJson(res, 200, result.whitelist);
+        return;
+      }
+
+      const fileAccessMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/file-access-requests\/([^/]+)\/(approve-once|approve-and-save|deny)$/);
+      if (req.method === "POST" && fileAccessMatch) {
+        const taskId = decodeURIComponent(fileAccessMatch[1]);
+        const requestId = decodeURIComponent(fileAccessMatch[2]);
+        const decision = fileAccessMatch[3];
+        const result = await decideFileAccessRequest({
+          stateRoot,
+          installRoot,
+          taskId,
+          requestId,
+          decision,
+          now
+        });
+        sendJson(res, 200, result);
+        if (decision !== "deny") scheduleInboxProcessing({ stateRoot, processInbox, executeInboxAgent, now });
+        return;
+      }
+
+      const runProcessorMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/run-processor$/);
+      if (req.method === "POST" && runProcessorMatch) {
+        const processorResult = processInbox ? await processInbox({ stateRoot, localAgentId, now }) : { status: "disabled" };
+        const executorResult = executeInboxAgent ? await executeInboxAgent({ stateRoot, localAgentId, now }) : { status: "disabled" };
+        sendJson(res, 200, { status: "completed", processorResult, executorResult });
+        return;
+      }
+
+      const retryOutboxMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/outbox\/([^/]+)\/retry$/);
+      if (req.method === "POST" && retryOutboxMatch) {
+        const taskId = decodeURIComponent(retryOutboxMatch[1]);
+        const outboxId = decodeURIComponent(retryOutboxMatch[2]);
+        const result = await retryOutboxItem({ stateRoot, taskId, outboxId, now });
+        sendJson(res, 200, result);
+        if (executeInboxAgent) scheduleInboxProcessing({ stateRoot, processInbox: null, executeInboxAgent, now });
         return;
       }
 
@@ -407,6 +455,12 @@ function hashRelayTask(task) {
     .slice(0, 12);
 }
 
+function hashText(text) {
+  return createHash("sha256")
+    .update(String(text || ""))
+    .digest("hex");
+}
+
 function inferCounterpartFromIssue(task, issue) {
   const localAgentId = issue.requesterAgentId || process.env.AGENTRELAY_AGENT_ID || "zac-agent";
   if (task.requester_agent_id && task.requester_agent_id !== localAgentId) return task.requester_agent_id;
@@ -491,23 +545,42 @@ async function deleteIssue({ stateRoot, taskId, now }) {
 
 export function scheduleInboxProcessing({ stateRoot, processInbox, executeInboxAgent, now }) {
   if (!processInbox && !executeInboxAgent) return;
-  setImmediate(async () => {
-    const startedAt = now();
-    try {
-      if (processInbox) await processInbox({ stateRoot });
-      if (executeInboxAgent) await executeInboxAgent({ stateRoot });
-      await appendJsonl(join(stateRoot, "ui-background-runs.jsonl"), {
-        at: startedAt,
-        status: "completed"
-      });
-    } catch (error) {
-      await appendJsonl(join(stateRoot, "ui-background-errors.jsonl"), {
-        at: startedAt,
-        status: "failed",
-        error: error.message
-      });
-    }
+  const key = resolve(stateRoot);
+  const activeRun = backgroundProcessingByStateRoot.get(key);
+  if (activeRun) {
+    activeRun.rerunRequested = true;
+    return activeRun.promise;
+  }
+  const runState = { rerunRequested: false, promise: null };
+  runState.promise = new Promise((resolveRun) => {
+    setImmediate(async () => {
+      try {
+        do {
+          runState.rerunRequested = false;
+          const startedAt = now();
+          try {
+            if (processInbox) await processInbox({ stateRoot });
+            if (executeInboxAgent) await executeInboxAgent({ stateRoot });
+            await appendJsonl(join(stateRoot, "ui-background-runs.jsonl"), {
+              at: startedAt,
+              status: "completed"
+            });
+          } catch (error) {
+            await appendJsonl(join(stateRoot, "ui-background-errors.jsonl"), {
+              at: startedAt,
+              status: "failed",
+              error: error.message
+            });
+          }
+        } while (runState.rerunRequested);
+      } finally {
+        backgroundProcessingByStateRoot.delete(key);
+        resolveRun();
+      }
+    });
   });
+  backgroundProcessingByStateRoot.set(key, runState);
+  return runState.promise;
 }
 
 async function readEventRaw(sourcePath) {
@@ -558,7 +631,12 @@ function normalizeIssue(issue, eventsById, { localAgentId = process.env.AGENTREL
     terminalReason: issue.terminalReason || "",
     requiresHumanConfirmation: Boolean(issue.requiresHumanConfirmation),
     humanReplies: normalizeHumanReplies(issue.humanReplies),
+    processorRuns: normalizeProcessorRuns(issue.processorRuns),
     localActions: normalizeLocalActions(issue.localActions),
+    outbox: normalizeOutbox(issue.outbox),
+    guardrailResults: normalizeGuardrailResults(issue.guardrailResults),
+    fileAccessRequests: normalizeFileAccessRequests(issue.fileAccessRequests),
+    fileAccessGrants: normalizeFileAccessGrants(issue.fileAccessGrants),
     latestHumanReplyId: issue.latestHumanReplyId || "",
     humanReplyStatus: issue.humanReplyStatus || "",
     projectPath: issue.projectPath || "",
@@ -586,6 +664,30 @@ function normalizeHumanReplies(humanReplies) {
     : [];
 }
 
+function normalizeProcessorRuns(processorRuns) {
+  return Array.isArray(processorRuns)
+    ? processorRuns
+      .filter((run) => run && typeof run === "object")
+      .map((run) => ({
+        runId: String(run.runId || ""),
+        sessionId: String(run.sessionId || ""),
+        taskId: String(run.taskId || ""),
+        eventId: String(run.eventId || ""),
+        humanReplyId: String(run.humanReplyId || ""),
+        inputFingerprint: String(run.inputFingerprint || ""),
+        status: String(run.status || ""),
+        source: String(run.source || ""),
+        error: run.error || null,
+        actionIntent: String(run.actionIntent || "none"),
+        requiresHumanConfirmation: Boolean(run.requiresHumanConfirmation),
+        summary: String(run.summary || ""),
+        suggestedReply: String(run.suggestedReply || ""),
+        needsHumanReason: String(run.needsHumanReason || ""),
+        createdAt: String(run.createdAt || "")
+      }))
+    : [];
+}
+
 function normalizeLocalActions(localActions) {
   return Array.isArray(localActions)
     ? localActions
@@ -603,6 +705,78 @@ function normalizeLocalActions(localActions) {
     : [];
 }
 
+function normalizeOutbox(outbox) {
+  return Array.isArray(outbox)
+    ? outbox
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        outboxId: String(item.outboxId || ""),
+        taskId: String(item.taskId || ""),
+        source: String(item.source || ""),
+        status: String(item.status || ""),
+        actionIntent: String(item.actionIntent || ""),
+        actionReason: String(item.actionReason || ""),
+        artifactKind: String(item.artifactKind || ""),
+        artifactText: String(item.artifactText || ""),
+        terminalReason: String(item.terminalReason || ""),
+        error: String(item.error || ""),
+        artifactId: String(item.artifactId || ""),
+        createdAt: String(item.createdAt || ""),
+        updatedAt: String(item.updatedAt || ""),
+        sentAt: String(item.sentAt || ""),
+        retryCount: Number(item.retryCount || 0)
+      }))
+    : [];
+}
+
+function normalizeGuardrailResults(results) {
+  return Array.isArray(results)
+    ? results
+      .filter((result) => result && typeof result === "object")
+      .map((result) => ({
+        outboxId: String(result.outboxId || ""),
+        actionIntent: String(result.actionIntent || ""),
+        status: String(result.status || ""),
+        error: String(result.error || ""),
+        suggestedFix: String(result.suggestedFix || ""),
+        at: String(result.at || result.sentAt || ""),
+        sentAt: String(result.sentAt || ""),
+        artifactId: String(result.artifactId || "")
+      }))
+    : [];
+}
+
+function normalizeFileAccessRequests(requests) {
+  return Array.isArray(requests)
+    ? requests
+      .filter((request) => request && typeof request === "object")
+      .map((request) => ({
+        requestId: String(request.requestId || ""),
+        path: String(request.path || ""),
+        reason: String(request.reason || ""),
+        status: String(request.status || "pending"),
+        createdAt: String(request.createdAt || ""),
+        decidedAt: String(request.decidedAt || "")
+      }))
+      .filter((request) => request.requestId)
+    : [];
+}
+
+function normalizeFileAccessGrants(grants) {
+  return Array.isArray(grants)
+    ? grants
+      .filter((grant) => grant && typeof grant === "object")
+      .map((grant) => ({
+        grantId: String(grant.grantId || ""),
+        requestId: String(grant.requestId || ""),
+        path: String(grant.path || ""),
+        scope: String(grant.scope || ""),
+        status: String(grant.status || ""),
+        createdAt: String(grant.createdAt || "")
+      }))
+    : [];
+}
+
 function needsHumanAttention(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
   if (issue.localStatus === "archived") return false;
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
@@ -610,9 +784,23 @@ function needsHumanAttention(issue, { localAgentId = process.env.AGENTRELAY_AGEN
   if (issue.humanReplyStatus === "pending_processor") return true;
   if (issue.executorStatus === "failed") return true;
   if (isWaitingForRemoteCompletionOwner(issue, { localAgentId })) return false;
-  if (issue.pendingOnAgentId && issue.pendingOnAgentId !== localAgentId) return false;
+  if (isWaitingForRemoteAgentAfterLocalHandoff(issue, { localAgentId })) return false;
+  if (hasPendingFileAccessRequest(issue)) return true;
   if (issue.requiresHumanConfirmation) return true;
-  return issue.processorStatus === "needs_human" || issue.processorStatus === "ready_to_reply";
+  if (issue.processorStatus === "needs_human" || issue.processorStatus === "ready_to_reply") return true;
+  if (issue.pendingOnAgentId && issue.pendingOnAgentId !== localAgentId) return false;
+  return false;
+}
+
+function isWaitingForRemoteAgentAfterLocalHandoff(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
+  if (!issue.pendingOnAgentId || issue.pendingOnAgentId === localAgentId) return false;
+  if (issue.executorStatus !== "completed" || issue.executorError) return false;
+  return new Set(["submit_artifact", "request_revision"]).has(issue.executorActionIntent || "");
+}
+
+function hasPendingFileAccessRequest(issue) {
+  return Array.isArray(issue.fileAccessRequests) &&
+    issue.fileAccessRequests.some((request) => request?.status === "pending");
 }
 
 function isWaitingForRemoteCompletionOwner(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
@@ -748,7 +936,22 @@ export function buildChatTimeline({ issue, events, localAgentId = process.env.AG
       replyId: reply.replyId || ""
     });
   }
-  if (issue.processorStatus) {
+  const processorRuns = normalizeProcessorRuns(issue.processorRuns);
+  if (processorRuns.length) {
+    for (const run of processorRuns) {
+      items.push({
+        type: "processor",
+        at: run.createdAt || "",
+        title: `Processor: ${run.status || "unknown"}`,
+        speaker: "Agent",
+        side: "remote",
+        text: processorRunChatText(run, issue),
+        actionIntent: run.actionIntent || "none",
+        runId: run.runId || "",
+        inputFingerprint: run.inputFingerprint || ""
+      });
+    }
+  } else if (issue.processorStatus) {
     items.push({
       type: "processor",
       at: issue.processorLastRunAt || "",
@@ -757,6 +960,22 @@ export function buildChatTimeline({ issue, events, localAgentId = process.env.AG
       side: "remote",
       text: processorChatText(issue),
       actionIntent: issue.processorActionIntent || "none"
+    });
+  }
+  for (const request of issue.fileAccessRequests || []) {
+    items.push({
+      type: "file_access_request",
+      at: request.createdAt || "",
+      title: "File access request",
+      speaker: "Agent",
+      side: "system",
+      text: [
+        request.reason || "Local agent needs file access.",
+        request.path ? `Path: ${request.path}` : ""
+      ].filter(Boolean).join("\n"),
+      requestId: request.requestId || "",
+      path: request.path || "",
+      status: request.status || "pending"
     });
   }
   if (issue.executorStatus) {
@@ -809,8 +1028,24 @@ function compareTimelineItems(a, b) {
     if (isLocalRequestBeforeAgentRelayPair(a, b) && Math.abs(aTime - bTime) < 1000) return -1;
     if (isLocalRequestBeforeAgentRelayPair(b, a) && Math.abs(aTime - bTime) < 1000) return 1;
     if (aTime !== bTime) return aTime - bTime;
+    return timelineTypeOrder(a) - timelineTypeOrder(b);
   }
-  return String(a.at || "").localeCompare(String(b.at || ""));
+  const lexical = String(a.at || "").localeCompare(String(b.at || ""));
+  return lexical || (timelineTypeOrder(a) - timelineTypeOrder(b));
+}
+
+function timelineTypeOrder(item) {
+  const order = {
+    local_request: 10,
+    local_reply: 20,
+    relay_message: 30,
+    artifact: 40,
+    processor: 50,
+    file_access_request: 55,
+    executor: 60,
+    local_action: 70
+  };
+  return order[item?.type] ?? 100;
 }
 
 function isLocalRequestBeforeAgentRelayPair(first, second) {
@@ -834,6 +1069,27 @@ function processorChatText(issue) {
     ].filter(Boolean).join("\n\n");
   }
   return issue.processorSummary || "";
+}
+
+function processorRunChatText(run, issue) {
+  if (run.status === "failed" || run.source === "codex_failed") {
+    return [
+      "我收到了新的 AgentRelay 回复，但本地 LLM processor 这次没有成功完成判断。",
+      run.error ? `错误：${run.error}` : "",
+      "请稍后重试本地处理，或直接告诉我下一步要回复、继续等待，还是确认关闭这个 task。"
+    ].filter(Boolean).join("\n\n");
+  }
+  const isLatestRun = run.inputFingerprint && run.inputFingerprint === issue.processorLastInputFingerprint;
+  const suggestedReply = run.suggestedReply || (isLatestRun ? issue.processorSuggestedReply : "");
+  const needsHumanReason = run.needsHumanReason || (isLatestRun ? issue.processorNeedsHumanReason : "");
+  if (run.requiresHumanConfirmation || run.status === "needs_human" || run.status === "ready_to_reply") {
+    return [
+      run.summary || "",
+      suggestedReply ? `建议回复：${suggestedReply}` : "",
+      needsHumanReason || (run.requiresHumanConfirmation ? "请确认下一步怎么处理。" : "")
+    ].filter(Boolean).join("\n\n");
+  }
+  return run.summary || "";
 }
 
 function speakerForRelayAgent(agentId, localAgentId) {
@@ -1008,6 +1264,97 @@ async function addFileAccessWhitelistRoot({ stateRoot, installRoot = PROJECT_ROO
   };
   await writeJsonAtomic(join(stateRoot, "file-access-whitelist.json"), next);
   return { added: true, whitelist: next };
+}
+
+async function removeFileAccessWhitelistRoot({ stateRoot, installRoot = PROJECT_ROOT, body, now = () => new Date().toISOString() }) {
+  const rawPath = String(body?.path || "").trim();
+  if (!rawPath) throw statusError("path is required", 400);
+  if (!isAbsolute(rawPath)) throw statusError("path must be an absolute path", 400);
+  const normalizedPath = resolve(rawPath);
+  const installPath = resolve(installRoot);
+  if (normalizedPath === installPath) throw statusError("cannot remove the AgentRelay install root from file access", 400);
+  const whitelist = await readFileAccessWhitelist({ stateRoot, installRoot, now });
+  const next = {
+    ...whitelist,
+    roots: whitelist.roots.filter((root) => root.path !== normalizedPath)
+  };
+  await writeJsonAtomic(join(stateRoot, "file-access-whitelist.json"), next);
+  return { removed: next.roots.length !== whitelist.roots.length, whitelist: next };
+}
+
+async function decideFileAccessRequest({ stateRoot, installRoot = PROJECT_ROOT, taskId, requestId, decision, now = () => new Date().toISOString() }) {
+  const inboxPath = join(stateRoot, "issues.json");
+  const inbox = await readInboxFile(inboxPath);
+  const issue = inbox.issues?.[taskId];
+  if (!issue) throw statusError(`issue not found: ${taskId}`, 404);
+  const requests = normalizeFileAccessRequests(issue.fileAccessRequests);
+  const request = requests.find((item) => item.requestId === requestId);
+  if (!request) throw statusError(`file access request not found: ${requestId}`, 404);
+  const decidedAt = now();
+  const status = decision === "approve-once"
+    ? "approved_once"
+    : decision === "approve-and-save"
+      ? "approved_saved"
+      : "denied";
+  const updatedRequest = { ...request, status, decidedAt };
+  const grants = normalizeFileAccessGrants(issue.fileAccessGrants);
+  const nextGrants = decision === "deny"
+    ? grants
+    : [...grants, {
+      grantId: `fag_${hashText(`${taskId}:${requestId}:${decision}:${decidedAt}`).slice(0, 16)}`,
+      requestId,
+      path: request.path,
+      scope: decision === "approve-once" ? "once" : "saved",
+      status: "active",
+      createdAt: decidedAt
+    }];
+
+  if (decision === "approve-and-save") {
+    await addFileAccessWhitelistRoot({
+      stateRoot,
+      installRoot,
+      body: { path: request.path, label: request.path },
+      now
+    });
+  }
+
+  const nextIssue = {
+    ...issue,
+    fileAccessRequests: requests.map((item) => item.requestId === requestId ? updatedRequest : item),
+    fileAccessGrants: nextGrants,
+    humanReplyStatus: decision === "deny" ? (issue.humanReplyStatus || "") : "pending_processor",
+    updatedAt: decidedAt
+  };
+  inbox.issues[taskId] = nextIssue;
+  await writeJsonAtomic(inboxPath, inbox);
+  return { request: updatedRequest, issue: normalizeIssue(nextIssue, inbox.events || {}) };
+}
+
+async function retryOutboxItem({ stateRoot, taskId, outboxId, now = () => new Date().toISOString() }) {
+  const inboxPath = join(stateRoot, "issues.json");
+  const inbox = await readInboxFile(inboxPath);
+  const issue = inbox.issues?.[taskId];
+  if (!issue) throw statusError(`issue not found: ${taskId}`, 404);
+  const outbox = normalizeOutbox(issue.outbox);
+  const item = outbox.find((candidate) => candidate.outboxId === outboxId);
+  if (!item) throw statusError(`outbox item not found: ${outboxId}`, 404);
+  if (item.status === "sent") throw statusError(`outbox item already sent: ${outboxId}`, 409);
+  const updatedAt = now();
+  const nextItem = {
+    ...item,
+    status: "pending_guardrail",
+    error: "",
+    retryCount: Number(item.retryCount || 0) + 1,
+    updatedAt
+  };
+  const nextIssue = {
+    ...issue,
+    outbox: outbox.map((candidate) => candidate.outboxId === outboxId ? nextItem : candidate),
+    updatedAt
+  };
+  inbox.issues[taskId] = nextIssue;
+  await writeJsonAtomic(inboxPath, inbox);
+  return { outbox: nextItem, issue: normalizeIssue(nextIssue, inbox.events || {}) };
 }
 
 function initialFileAccessWhitelist({ installRoot = PROJECT_ROOT, now = () => new Date().toISOString() } = {}) {
@@ -2419,6 +2766,42 @@ button.list-header:focus-visible {
   color: var(--muted);
 }
 
+.file-access-request-message .bubble {
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+}
+
+.file-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.file-access-actions button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: var(--surface-3);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.file-access-actions button:hover {
+  border-color: var(--accent);
+}
+
+.file-access-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.file-access-status {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .delivery-indicator {
   position: relative;
   display: inline-grid;
@@ -3176,6 +3559,7 @@ async function selectIssue(taskId, { keepView = false } = {}) {
   el.detailBody.hidden = false;
   el.detailBody.innerHTML = renderChat(selectedDetail);
   bindReplyForm(taskId);
+  bindFileAccessRequestControls(taskId);
   restoreComposerDraft(composerDraft);
   restoreMessageScrollState(scrollState);
   renderDashboard();
@@ -3282,6 +3666,7 @@ function renderMessages(timeline) {
   const chatItems = visibleChatItems(timeline);
   if (!chatItems.length) return '<div class="empty-state"><p>No conversation messages yet.</p></div>';
   return chatItems.map((item) => {
+    if (item.type === "file_access_request") return renderFileAccessRequestMessage(item);
     const side = item.side || "system";
     const speakerClass = messageSpeakerClass(item);
     const delivery = deliveryIndicator(item);
@@ -3296,6 +3681,23 @@ function renderMessages(timeline) {
         '</div>' +
     '</article>';
   }).join("");
+}
+
+function renderFileAccessRequestMessage(item) {
+  const pending = item.status === "pending";
+  return '<article class="message system speaker-agent file-access-request-message" data-request-id="' + escapeAttr(item.requestId || "") + '">' +
+    '<div class="message-meta">Agent · ' + escapeHtml(formatTime(item.at)) + '</div>' +
+    '<div class="message-line">' +
+      '<div class="bubble">' +
+        '<pre>' + escapeHtml(item.text || "Local agent needs file access.") + '</pre>' +
+        (pending ? '<div class="file-access-actions">' +
+          '<button type="button" data-file-access-action="approve-once" data-request-id="' + escapeAttr(item.requestId || "") + '">Approve once</button>' +
+          '<button type="button" data-file-access-action="approve-and-save" data-request-id="' + escapeAttr(item.requestId || "") + '">Add to whitelist</button>' +
+          '<button type="button" data-file-access-action="deny" data-request-id="' + escapeAttr(item.requestId || "") + '">Deny</button>' +
+        '</div>' : '<div class="file-access-status">Status: ' + escapeHtml(item.status || "") + '</div>') +
+      '</div>' +
+    '</div>' +
+  '</article>';
 }
 
 function messageSpeakerClass(item) {
@@ -3323,7 +3725,12 @@ function messageError(item) {
 function visibleChatItems(timeline) {
   return (timeline || []).filter((item) => {
     if (!item || !String(item.text || "").trim()) return false;
-    return item.type === "relay_message" || item.type === "artifact" || item.type === "local_reply" || item.type === "local_request" || item.type === "processor";
+    return item.type === "relay_message" ||
+      item.type === "artifact" ||
+      item.type === "local_reply" ||
+      item.type === "local_request" ||
+      item.type === "processor" ||
+      item.type === "file_access_request";
   });
 }
 
@@ -3414,6 +3821,30 @@ function bindReplyForm(taskId) {
   });
 }
 
+function bindFileAccessRequestControls(taskId) {
+  for (const button of document.querySelectorAll("[data-file-access-action]")) {
+    button.addEventListener("click", async () => {
+      const action = button.dataset.fileAccessAction;
+      const requestId = button.dataset.requestId;
+      if (!action || !requestId) return;
+      const buttons = Array.from(document.querySelectorAll('[data-request-id="' + CSS.escape(requestId) + '"][data-file-access-action]'));
+      for (const item of buttons) item.disabled = true;
+      try {
+        const response = await fetch("/api/issues/" + encodeURIComponent(taskId) + "/file-access-requests/" + encodeURIComponent(requestId) + "/" + encodeURIComponent(action), {
+          method: "POST"
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.message || body.error || "file access update failed");
+        await refresh();
+        await selectIssue(taskId, { keepView: true });
+      } catch (error) {
+        window.alert(error.message);
+        for (const item of buttons) item.disabled = false;
+      }
+    });
+  }
+}
+
 async function createDraft(event) {
   event.preventDefault();
   const textarea = document.querySelector("#draft-text");
@@ -3440,6 +3871,11 @@ async function createDraft(event) {
       throw error;
     }
     latestDraft = body.draft;
+    renderNewTaskMessage({
+      text,
+      status: "sent",
+      pendingOn: body.task?.pending_on_agent_id || body.draft?.to || "remote agent"
+    });
     await refresh();
     await selectIssue(body.taskId);
   } catch (error) {
@@ -3453,7 +3889,7 @@ async function createDraft(event) {
   }
 }
 
-function renderNewTaskMessage({ text, status = "sending", error = "" }) {
+function renderNewTaskMessage({ text, status = "sending", error = "", pendingOn = "" }) {
   const container = document.querySelector("#new-task-messages");
   if (!container) return;
   container.classList.remove("new-task-empty");
@@ -3461,13 +3897,22 @@ function renderNewTaskMessage({ text, status = "sending", error = "" }) {
   const failed = status === "failed"
     ? '<span class="delivery-indicator failed" tabindex="0" title="Deliver failed" data-tooltip="' + escapeAttr(error ? "Deliver failed: " + error : "Deliver failed") + '" aria-label="Deliver failed">!</span>'
     : "";
-  const pending = status === "sending"
-      ? '<div class="pending-marker"><span>' + escapeHtml(formatTime(now) + " Pending zac-agent") + '</span></div>'
+  const delivered = status === "sent"
+    ? '<span class="delivery-indicator delivered" tabindex="0" title="Delivered" data-tooltip="Delivered" aria-label="Delivered">✓</span>'
+    : "";
+  const pendingLabel = status === "sending"
+    ? "Preparing local task"
+    : status === "sent" && pendingOn
+      ? "Pending " + pendingOn
+      : "";
+  const pending = pendingLabel
+      ? '<div class="pending-marker"><span>' + escapeHtml(formatTime(now) + " " + pendingLabel) + '</span></div>'
       : "";
   container.innerHTML = '<article class="message local speaker-zac">' +
     '<div class="message-meta">Zac · ' + escapeHtml(formatTime(now)) + '</div>' +
     '<div class="message-line">' +
       failed +
+      delivered +
       '<div class="bubble"><pre>' + escapeHtml(text) + '</pre>' +
         (status === "failed" ? '<div class="message-error">' + escapeHtml(error ? "Deliver failed: " + error : "Deliver failed") + '</div>' : "") +
       '</div>' +

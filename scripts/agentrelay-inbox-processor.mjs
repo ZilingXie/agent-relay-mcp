@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
@@ -30,33 +31,73 @@ export async function processInbox({
 
   for (const issue of issues) {
     if (issue.localStatus === "archived") continue;
-    if (issue.pendingOnAgentId !== localAgentId) continue;
+    if (!shouldProcessIssue({ issue, localAgentId })) continue;
     if (issue.relayStatus === "completed" || issue.localStatus === "closed") continue;
     const humanReplies = normalizeHumanReplies(issue.humanReplies);
     const latestHumanReplyId = issue.latestHumanReplyId || latestReplyId(humanReplies);
     const hasNewHumanReply = Boolean(latestHumanReplyId && latestHumanReplyId !== issue.processorLastHumanReplyId);
+    const hasLocalProcessorWork = issue.humanReplyStatus === "pending_processor" || hasActiveFileAccessGrant(issue);
     if (
       issue.processorLastEventId &&
       issue.processorLastEventId === issue.lastEventId &&
-      !hasNewHumanReply
+      !hasNewHumanReply &&
+      !hasLocalProcessorWork
     ) continue;
     const task = await readTaskSnapshotForIssue({ inbox, issue });
     if (!task) continue;
     const event = getIssueEvent({ inbox, issue });
+    const inputFingerprint = buildProcessorInputFingerprint({ issue, task, event, humanReplies, latestHumanReplyId });
+    if (issue.processorLastInputFingerprint && issue.processorLastInputFingerprint === inputFingerprint) continue;
     const { analysis, source, error } = await analyzeWithCodex({
       localAgentId,
       stateRoot,
       task,
       event,
       humanReplies,
+      fileAccessGrants: issue.fileAccessGrants,
       codexRunner
     });
     const updatedAt = now();
     const processorSucceeded = source === "codex";
     const processorAttemptedEventId = issue.lastEventId || "";
     const processorAttemptedHumanReplyId = latestHumanReplyId || "";
+    const localAgentSession = updateLocalAgentSession({
+      session: issue.localAgentSession,
+      taskId: issue.taskId,
+      localAgentId,
+      updatedAt
+    });
+    const processorRun = buildProcessorRun({
+      issue,
+      localAgentSession,
+      inputFingerprint,
+      updatedAt,
+      analysis,
+      source,
+      error
+    });
+    const outbox = mergeOutboxEntries({
+      existingOutbox: issue.outbox,
+      entries: buildOutboxEntries({
+        issue,
+        analysis,
+        localAgentId,
+        inputFingerprint,
+        createdAt: updatedAt
+      })
+    });
+    const fileAccessRequests = mergeFileAccessRequests({
+      existingRequests: issue.fileAccessRequests,
+      requests: analysis.fileAccessRequests,
+      inputFingerprint,
+      createdAt: updatedAt
+    });
     inbox.issues[issue.taskId] = {
       ...issue,
+      localAgentSession,
+      processorRuns: [...normalizeProcessorRuns(issue.processorRuns), processorRun],
+      inputFingerprint,
+      fileAccessRequests,
       humanReplies: processorSucceeded ? markHumanRepliesProcessed(humanReplies, updatedAt) : humanReplies,
       latestHumanReplyId,
       humanReplyStatus: latestHumanReplyId
@@ -80,6 +121,8 @@ export async function processInbox({
       processorError: error || null,
       processorLastEventId: processorSucceeded ? processorAttemptedEventId : (issue.processorLastEventId || ""),
       processorLastHumanReplyId: processorSucceeded ? processorAttemptedHumanReplyId : (issue.processorLastHumanReplyId || ""),
+      processorLastInputFingerprint: processorSucceeded ? inputFingerprint : (issue.processorLastInputFingerprint || ""),
+      outbox,
       processorRetryCount: 0,
       processorRetryAfterAt: "",
       processorRetryEventId: "",
@@ -104,10 +147,21 @@ export async function processInbox({
   return { scanned: issues.length, processed, externalActions: [] };
 }
 
-async function analyzeWithCodex({ localAgentId, stateRoot, task, event, humanReplies = [], codexRunner }) {
+function shouldProcessIssue({ issue, localAgentId }) {
+  if (issue.pendingOnAgentId === localAgentId) return true;
+  if (issue.humanReplyStatus === "pending_processor") return true;
+  return hasActiveFileAccessGrant(issue);
+}
+
+function hasActiveFileAccessGrant(issue) {
+  return Array.isArray(issue.fileAccessGrants) &&
+    issue.fileAccessGrants.some((grant) => grant?.status === "active" && grant?.path);
+}
+
+async function analyzeWithCodex({ localAgentId, stateRoot, task, event, humanReplies = [], fileAccessGrants = [], codexRunner }) {
   try {
     return {
-      analysis: await runCodexAnalysis({ localAgentId, stateRoot, task, event, humanReplies, codexRunner }),
+      analysis: await runCodexAnalysis({ localAgentId, stateRoot, task, event, humanReplies, fileAccessGrants, codexRunner }),
       source: "codex",
       error: null
     };
@@ -125,6 +179,7 @@ export async function runCodexAnalysis({
   task,
   event,
   humanReplies = [],
+  fileAccessGrants = [],
   codexRunner = runDefaultLlmRunner,
   agentsMdPath = resolve(PROJECT_ROOT, "AGENTS.md"),
   stateRoot = process.env.AGENTRELAY_STATE_DIR || join(PROJECT_ROOT, "state"),
@@ -136,8 +191,25 @@ export async function runCodexAnalysis({
 }) {
   const agentsMd = await readFile(agentsMdPath, "utf8").catch(() => "");
   const fileAccessWhitelist = await readFileAccessWhitelist(fileAccessWhitelistPath, { defaultRoot: resolve(stateRoot, "..") });
-  const prompt = buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event, humanReplies, fileAccessWhitelist });
-  const rawOutput = await codexRunner({ prompt, schemaPath, codexCli, cwd, timeoutMs });
+  const effectiveFileAccess = buildEffectiveFileAccess({ fileAccessWhitelist, fileAccessGrants });
+  const prompt = buildCodexProcessorPrompt({
+    agentsMd,
+    localAgentId,
+    task,
+    event,
+    humanReplies,
+    fileAccessWhitelist: effectiveFileAccess,
+    fileAccessGrants
+  });
+  const rawOutput = await codexRunner({
+    prompt,
+    schemaPath,
+    codexCli,
+    cwd,
+    timeoutMs,
+    sandboxMode: "workspace-write",
+    writableRoots: effectiveFileAccess.roots.map((root) => root.path).filter((root) => existsSync(root))
+  });
   return validateCodexAnalysis(parseCodexJson(rawOutput));
 }
 
@@ -150,7 +222,7 @@ export async function runDefaultLlmRunner(options) {
   return (options.responsesRunner || runResponsesApi)(options);
 }
 
-export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event, humanReplies = [], fileAccessWhitelist = null }) {
+export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event, humanReplies = [], fileAccessWhitelist = null, fileAccessGrants = [] }) {
   return [
     "You are the LLM agent behind Zac's local AgentRelay inbox processor.",
     "",
@@ -160,12 +232,13 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "```",
     "",
     "Automatic processor constraints:",
-    "- Do not call tools.",
-    "- Do not run terminal commands.",
-    "- Do not use AgentRelay MCP.",
-    "- Do not directly send external replies, submit artifacts, close tasks, or make commitments.",
+    "- You may use local Codex tools, shell commands, configured MCP tools, and network access when needed to complete the task.",
+    "- You may use AgentRelay MCP read-only operations when useful for fresh task context.",
+    "- Do not directly mutate AgentRelay state through MCP/server calls: do not create tasks, submit artifacts, close tasks, or send external replies directly.",
+    "- Any AgentRelay state-changing reply must be returned as a structured outbox JSON action; the local guardrail will validate and send it.",
+    "- You may inspect and modify files inside the allowed filesystem roots when needed to complete the task.",
     "- Respect the file access whitelist. If the task requires reading or writing outside these roots, do not claim access and do not guess file contents; set requiresHumanConfirmation=true, actionIntent=none, and ask Zac to approve adding that folder to the whitelist.",
-    "- Analyze only the task snapshot and Local Zac replies below.",
+    "- Analyze the task snapshot, Local Zac replies, allowed files you can access, and AGENTS.md.",
     "- You are the only component allowed to interpret Zac's intent from Local Zac replies; wrapper code will not infer intent.",
     "- Before asking Zac to close or confirm, actively decide whether the remote agent can make progress within the original task scope.",
     "- If the remote agent's artifact is incomplete, contradicts the task intent, or reveals unresolved work that the remote agent can fix within the original task, ask the remote agent to continue by setting actionIntent=request_revision, requiresHumanConfirmation=false, artifactKind=revision_request, and artifactText to the concrete revision request.",
@@ -177,6 +250,7 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "- Only ask Zac to confirm closing, or set actionIntent=close_task, when task.completion_owner_agent_id equals the local agent id.",
     "- If task.completion_owner_agent_id is a different agent and the done criteria appears satisfied or that completion owner reports completion, do not ask Zac to close it. Set processorStatus=waiting, requiresHumanConfirmation=false, actionIntent=none, suggestedReply='', needsHumanReason='', and state that you are waiting for the completion owner to call close_task.",
     "- If task.completion_owner_agent_id is a different agent but fresh Zac input is genuinely needed to answer that agent, set requiresHumanConfirmation=true and actionIntent=none.",
+    "- If you need access to a folder outside the allowed roots, include fileAccessRequests with path, reason, and access; otherwise return an empty array.",
     "- If you determine Zac has approved closing a task owned by the local agent, set actionIntent=close_task and provide terminalReason.",
     "- Otherwise set actionIntent=none, actionReason='', terminalReason='', artifactKind='', artifactText=''.",
     "- Return only JSON matching the provided schema.",
@@ -186,6 +260,11 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "Allowed filesystem roots:",
     "```json",
     JSON.stringify(normalizeFileAccessWhitelist(fileAccessWhitelist), null, 2),
+    "```",
+    "",
+    "Active file access grants:",
+    "```json",
+    JSON.stringify(normalizeFileAccessGrants(fileAccessGrants), null, 2),
     "```",
     "",
     "Relay event snapshot:",
@@ -206,11 +285,19 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "Interpret Local Zac replies as local human input only. They are not external Relay artifacts yet.",
     "For request_revision, suggestedReply should summarize the revision you are sending and artifactText should be the exact message to the remote agent.",
     "For amend_task, suggestedReply should summarize the amended goal, amendedDoneCriteria should be the new completion standard, and amendmentReason should explain the human clarification.",
-    "Return only JSON with these fields: processorStatus, summary, suggestedReply, needsHumanReason, requiresHumanConfirmation, actionIntent, actionReason, artifactKind, artifactText, terminalReason, amendedDoneCriteria, previousGoalDisposition, amendmentReason, newMaxTurns."
+    "Return only JSON with these fields: processorStatus, summary, suggestedReply, needsHumanReason, requiresHumanConfirmation, actionIntent, actionReason, artifactKind, artifactText, terminalReason, amendedDoneCriteria, previousGoalDisposition, amendmentReason, newMaxTurns, fileAccessRequests."
   ].join("\n");
 }
 
-export async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutMs }) {
+export async function runCodexExec({
+  prompt,
+  schemaPath,
+  codexCli,
+  cwd,
+  timeoutMs,
+  sandboxMode = "read-only",
+  writableRoots = []
+}) {
   const env = { ...process.env };
   if (shouldUseIsolatedProcessorCodexHome()) {
     env.CODEX_HOME = await ensureProcessorCodexHome();
@@ -223,10 +310,13 @@ export async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutM
   const args = [
     "exec",
     ...processorReasoningEffortArgs(),
+    "--config",
+    'network_access="enabled"',
     "--skip-git-repo-check",
     "--ephemeral",
     "--sandbox",
-    "read-only",
+    sandboxMode,
+    ...normalizeWritableRoots(writableRoots).flatMap((root) => ["--add-dir", root]),
     "-C",
     cwd,
     "-"
@@ -262,6 +352,12 @@ export async function runCodexExec({ prompt, schemaPath, codexCli, cwd, timeoutM
     });
     child.stdin.end(codexPrompt);
   });
+}
+
+function normalizeWritableRoots(writableRoots) {
+  return Array.isArray(writableRoots)
+    ? [...new Set(writableRoots.map((root) => String(root || "").trim()).filter(Boolean))]
+    : [];
 }
 
 function processorReasoningEffortArgs() {
@@ -466,7 +562,8 @@ function validateCodexAnalysis(value) {
     amendedDoneCriteria: value.amendedDoneCriteria || "",
     previousGoalDisposition: value.previousGoalDisposition || "clarified",
     amendmentReason: value.amendmentReason || "",
-    newMaxTurns: value.newMaxTurns || null
+    newMaxTurns: value.newMaxTurns || null,
+    fileAccessRequests: normalizeFileAccessRequests(value.fileAccessRequests)
   };
 }
 
@@ -529,6 +626,177 @@ function markHumanRepliesProcessed(humanReplies, processedAt) {
     ...reply,
     processedAt: reply.processedAt || processedAt
   }));
+}
+
+function buildProcessorInputFingerprint({ issue, task, event, humanReplies, latestHumanReplyId }) {
+  return `pif_${hashText(JSON.stringify({
+    taskId: issue.taskId || task?.task_id || "",
+    lastEventId: issue.lastEventId || event?.eventId || "",
+    latestHumanReplyId: latestHumanReplyId || "",
+    task,
+    humanReplies: humanReplies.map((reply) => ({
+      replyId: reply.replyId,
+      text: reply.text,
+      createdAt: reply.createdAt
+    })),
+    fileAccessRequests: normalizeIssueFileAccessRequests(issue.fileAccessRequests),
+    fileAccessGrants: normalizeFileAccessGrants(issue.fileAccessGrants)
+  }))}`;
+}
+
+function updateLocalAgentSession({ session, taskId, localAgentId, updatedAt }) {
+  const sessionId = session?.sessionId || `las_${hashText(`${localAgentId}:${taskId}`)}`;
+  return {
+    sessionId,
+    taskId: String(session?.taskId || taskId || ""),
+    localAgentId: String(session?.localAgentId || localAgentId || ""),
+    createdAt: String(session?.createdAt || updatedAt || ""),
+    updatedAt: String(updatedAt || session?.updatedAt || "")
+  };
+}
+
+function normalizeProcessorRuns(runs) {
+  return Array.isArray(runs) ? runs.filter((run) => run && typeof run === "object") : [];
+}
+
+function buildProcessorRun({ issue, localAgentSession, inputFingerprint, updatedAt, analysis, source, error }) {
+  return {
+    runId: `prun_${hashText(`${issue.taskId}:${inputFingerprint}:${updatedAt}`)}`,
+    sessionId: localAgentSession.sessionId,
+    taskId: issue.taskId,
+    eventId: issue.lastEventId || "",
+    humanReplyId: issue.latestHumanReplyId || "",
+    inputFingerprint,
+    status: analysis.processorStatus,
+    source,
+    error: error || null,
+    actionIntent: analysis.actionIntent || "none",
+    requiresHumanConfirmation: analysis.requiresHumanConfirmation,
+    summary: analysis.summary,
+    suggestedReply: analysis.suggestedReply || "",
+    needsHumanReason: analysis.needsHumanReason || "",
+    createdAt: updatedAt
+  };
+}
+
+function buildOutboxEntries({ issue, analysis, localAgentId, inputFingerprint, createdAt }) {
+  const actionIntent = analysis.actionIntent || "none";
+  if (analysis.requiresHumanConfirmation || actionIntent === "none") return [];
+  if (!new Set(["submit_artifact", "close_task", "request_revision"]).has(actionIntent)) return [];
+  return [{
+    outboxId: `out_${hashText(`${issue.taskId}:${inputFingerprint}:${actionIntent}:${analysis.artifactText || analysis.terminalReason || ""}`)}`,
+    taskId: issue.taskId,
+    source: "local_agent",
+    sourceInputFingerprint: inputFingerprint,
+    status: "pending_guardrail",
+    actionIntent,
+    actionReason: analysis.actionReason || "",
+    fromAgentId: localAgentId,
+    artifactKind: analysis.artifactKind || "",
+    artifactText: analysis.artifactText || "",
+    terminalReason: analysis.terminalReason || "",
+    createdAt,
+    updatedAt: createdAt
+  }];
+}
+
+function mergeOutboxEntries({ existingOutbox, entries }) {
+  const outbox = Array.isArray(existingOutbox) ? [...existingOutbox] : [];
+  const seen = new Set(outbox.map((entry) => entry?.outboxId).filter(Boolean));
+  for (const entry of entries) {
+    if (seen.has(entry.outboxId)) continue;
+    outbox.push(entry);
+    seen.add(entry.outboxId);
+  }
+  return outbox;
+}
+
+function normalizeFileAccessRequests(requests) {
+  return Array.isArray(requests)
+    ? requests
+      .filter((request) => request && typeof request === "object")
+      .map((request) => ({
+        path: String(request.path || "").trim(),
+        reason: String(request.reason || "").trim(),
+        access: normalizeFileAccessMode(request.access)
+      }))
+      .filter((request) => request.path && request.reason)
+    : [];
+}
+
+function normalizeFileAccessMode(access) {
+  const value = String(access || "read_write").trim();
+  return new Set(["read", "write", "read_write"]).has(value) ? value : "read_write";
+}
+
+function mergeFileAccessRequests({ existingRequests, requests, inputFingerprint, createdAt }) {
+  const existing = Array.isArray(existingRequests) ? [...existingRequests] : [];
+  const seen = new Set(existing.map((request) => `${request.path}\u0000${request.reason}\u0000${request.status || "pending"}`));
+  for (const request of requests || []) {
+    const key = `${request.path}\u0000${request.reason}\u0000pending`;
+    if (seen.has(key)) continue;
+    existing.push({
+      requestId: `far_${hashText(`${inputFingerprint}:${request.path}:${request.reason}`).slice(0, 16)}`,
+      path: request.path,
+      reason: request.reason,
+      access: request.access,
+      status: "pending",
+      createdAt
+    });
+    seen.add(key);
+  }
+  return existing;
+}
+
+function normalizeIssueFileAccessRequests(requests) {
+  return Array.isArray(requests)
+    ? requests
+      .filter((request) => request && typeof request === "object")
+      .map((request) => ({
+        requestId: String(request.requestId || ""),
+        path: String(request.path || ""),
+        reason: String(request.reason || ""),
+        status: String(request.status || ""),
+        decidedAt: String(request.decidedAt || "")
+      }))
+    : [];
+}
+
+function normalizeFileAccessGrants(grants) {
+  return Array.isArray(grants)
+    ? grants
+      .filter((grant) => grant && typeof grant === "object")
+      .map((grant) => ({
+        grantId: String(grant.grantId || ""),
+        requestId: String(grant.requestId || ""),
+        path: String(grant.path || "").trim(),
+        scope: String(grant.scope || ""),
+        status: String(grant.status || ""),
+        createdAt: String(grant.createdAt || "")
+      }))
+      .filter((grant) => grant.path)
+    : [];
+}
+
+function buildEffectiveFileAccess({ fileAccessWhitelist, fileAccessGrants }) {
+  const whitelist = normalizeFileAccessWhitelist(fileAccessWhitelist);
+  const roots = [...whitelist.roots];
+  const seen = new Set(roots.map((root) => root.path));
+  for (const grant of normalizeFileAccessGrants(fileAccessGrants)) {
+    if (grant.status !== "active" || seen.has(grant.path)) continue;
+    roots.push({
+      path: grant.path,
+      label: grant.scope === "once" ? "One-time approved folder" : "Approved folder",
+      source: grant.scope === "once" ? "grant_once" : "grant",
+      createdAt: grant.createdAt || ""
+    });
+    seen.add(grant.path);
+  }
+  return { version: 1, roots };
+}
+
+function hashText(text) {
+  return createHash("sha256").update(String(text || "")).digest("hex").slice(0, 24);
 }
 
 async function readInbox(path) {
