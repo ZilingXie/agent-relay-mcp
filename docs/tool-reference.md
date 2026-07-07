@@ -115,6 +115,7 @@ Preferred example:
   "intent": "availability_response",
   "kind": "meeting_availability",
   "summary": "Frank shared one confirmed availability window.",
+  "responseToGoalVersion": 1,
   "pendingOnAgentId": "zac-agent",
   "nextAction": "Zac agent should ask Zac to accept or propose alternatives.",
   "text": "Frank is available Tuesday 10:00-11:00 China time."
@@ -122,6 +123,34 @@ Preferred example:
 ```
 
 Legacy `from` and `to` still work as temporary aliases.
+
+### `agentrelay_amend_task`
+
+Amends a task goal when the requester-side human changes or clarifies the
+acceptance criteria. Use this instead of `request_revision` when the goal itself
+changed.
+
+Preferred example:
+
+```json
+{
+  "taskId": "task_abc",
+  "actor_agent_id": "zac-agent",
+  "expected_goal_version": 1,
+  "new_done_criteria": "Hermes must return the content Zac needs to review, not only the file path.",
+  "previous_goal_disposition": "clarified",
+  "humanOwnerId": "zac",
+  "humanApprovalRef": "zac-local-reply-123",
+  "humanApprovalSummary": "Zac clarified that he needs the review content itself.",
+  "reason": "Requester-side human clarified the task goal after seeing the first artifact.",
+  "newMaxTurns": 4,
+  "nextAction": "Project Hermes should answer the amended goal version."
+}
+```
+
+Relay increments `goal_version`, starts a new `exchange_epoch`, resets the
+per-exchange turn count, and notifies the target agent with
+`task.pending reason=task.amended`.
 
 ### `agentrelay_mark_delivery`
 
@@ -142,6 +171,8 @@ Typical decisions:
 - `close_human_confirmed`: close with `completion_authority.type = human`.
 - `close_agent_verified`: close with `completion_authority.type = agent`.
 - `request_revision`: submit a revision artifact back to the target agent.
+- `amend_task`: update `doneCriteria` after human clarification and start a new
+  target-agent exchange.
 - `create_followup`: create a new task instead of reopening a terminal task.
 
 Example:
@@ -173,7 +204,8 @@ When a human owner made the final decision, prefer the structured human fields:
   "humanOwnerId": "zac",
   "humanApprovalRef": "zac-local-thread-20260705-001",
   "humanApprovalSummary": "Zac confirmed the result is acceptable.",
-  "humanApprovalVisibility": "redacted"
+  "humanApprovalVisibility": "redacted",
+  "closedAgainstGoalVersion": 2
 }
 ```
 

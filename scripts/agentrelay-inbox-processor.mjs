@@ -72,6 +72,10 @@ export async function processInbox({
       processorTerminalReason: analysis.terminalReason,
       processorArtifactKind: analysis.artifactKind,
       processorArtifactText: analysis.artifactText,
+      processorAmendedDoneCriteria: analysis.amendedDoneCriteria,
+      processorPreviousGoalDisposition: analysis.previousGoalDisposition,
+      processorAmendmentReason: analysis.amendmentReason,
+      processorNewMaxTurns: analysis.newMaxTurns,
       processorSource: source,
       processorError: error || null,
       processorLastEventId: processorSucceeded ? processorAttemptedEventId : (issue.processorLastEventId || ""),
@@ -167,6 +171,7 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "- If the remote agent's artifact is incomplete, contradicts the task intent, or reveals unresolved work that the remote agent can fix within the original task, ask the remote agent to continue by setting actionIntent=request_revision, requiresHumanConfirmation=false, artifactKind=revision_request, and artifactText to the concrete revision request.",
     "- If a title/page/dashboard-title task response says one title field is correct but also reports a related visible heading or user-facing title is still different, treat that as unresolved unless the task explicitly forbids changing it; use request_revision to ask the remote agent to align or justify the remaining mismatch.",
     "- Use request_revision only for low-risk follow-up needed to complete the original task; do not use it to expand scope, make commitments, share sensitive data, or close the task.",
+    "- If fresh Zac input changes or clarifies the task goal/done criteria rather than merely asking the remote agent to fix the current goal, set actionIntent=amend_task. Provide amendedDoneCriteria, previousGoalDisposition, amendmentReason, and optionally newMaxTurns. This records a human-authorized goal_version change and starts a new agent-agent exchange.",
     "- If more Zac input is needed, set requiresHumanConfirmation=true and actionIntent=none.",
     "- If you determine Zac has approved submitting a reply/artifact, set actionIntent=submit_artifact and provide artifactKind plus artifactText.",
     "- Only ask Zac to confirm closing, or set actionIntent=close_task, when task.completion_owner_agent_id equals the local agent id.",
@@ -200,7 +205,8 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "",
     "Interpret Local Zac replies as local human input only. They are not external Relay artifacts yet.",
     "For request_revision, suggestedReply should summarize the revision you are sending and artifactText should be the exact message to the remote agent.",
-    "Return only JSON with these fields: processorStatus, summary, suggestedReply, needsHumanReason, requiresHumanConfirmation, actionIntent, actionReason, artifactKind, artifactText, terminalReason."
+    "For amend_task, suggestedReply should summarize the amended goal, amendedDoneCriteria should be the new completion standard, and amendmentReason should explain the human clarification.",
+    "Return only JSON with these fields: processorStatus, summary, suggestedReply, needsHumanReason, requiresHumanConfirmation, actionIntent, actionReason, artifactKind, artifactText, terminalReason, amendedDoneCriteria, previousGoalDisposition, amendmentReason, newMaxTurns."
   ].join("\n");
 }
 
@@ -416,7 +422,7 @@ function parseCodexJson(output) {
 
 function validateCodexAnalysis(value) {
   const allowedStatuses = new Set(["waiting", "needs_human", "ready_to_reply", "failed"]);
-  const allowedActions = new Set(["none", "submit_artifact", "close_task", "request_revision"]);
+  const allowedActions = new Set(["none", "submit_artifact", "close_task", "request_revision", "amend_task"]);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("codex analysis must be an object");
   if (!allowedStatuses.has(value.processorStatus)) throw new Error(`invalid processorStatus: ${value.processorStatus}`);
   const actionIntent = value.actionIntent || "none";
@@ -426,6 +432,12 @@ function validateCodexAnalysis(value) {
   }
   for (const field of ["actionReason", "terminalReason", "artifactKind", "artifactText"]) {
     if (value[field] !== undefined && typeof value[field] !== "string") throw new Error(`invalid ${field}`);
+  }
+  for (const field of ["amendedDoneCriteria", "previousGoalDisposition", "amendmentReason"]) {
+    if (value[field] !== undefined && typeof value[field] !== "string") throw new Error(`invalid ${field}`);
+  }
+  if (value.newMaxTurns !== undefined && value.newMaxTurns !== null && (!Number.isInteger(value.newMaxTurns) || value.newMaxTurns <= 0)) {
+    throw new Error("invalid newMaxTurns");
   }
   if (typeof value.requiresHumanConfirmation !== "boolean") throw new Error("invalid requiresHumanConfirmation");
   if (actionIntent === "close_task" && !String(value.terminalReason || "").trim()) {
@@ -437,6 +449,9 @@ function validateCodexAnalysis(value) {
   if (actionIntent === "request_revision" && !String(value.artifactText || "").trim()) {
     throw new Error("request_revision requires artifactText");
   }
+  if (actionIntent === "amend_task" && !String(value.amendedDoneCriteria || "").trim()) {
+    throw new Error("amend_task requires amendedDoneCriteria");
+  }
   return {
     processorStatus: value.processorStatus,
     summary: value.summary,
@@ -447,7 +462,11 @@ function validateCodexAnalysis(value) {
     actionReason: value.actionReason || "",
     terminalReason: value.terminalReason || "",
     artifactKind: value.artifactKind || "",
-    artifactText: value.artifactText || ""
+    artifactText: value.artifactText || "",
+    amendedDoneCriteria: value.amendedDoneCriteria || "",
+    previousGoalDisposition: value.previousGoalDisposition || "clarified",
+    amendmentReason: value.amendmentReason || "",
+    newMaxTurns: value.newMaxTurns || null
   };
 }
 
@@ -462,7 +481,11 @@ function buildCodexFailureAnalysis() {
     actionReason: "",
     terminalReason: "",
     artifactKind: "",
-    artifactText: ""
+    artifactText: "",
+    amendedDoneCriteria: "",
+    previousGoalDisposition: "clarified",
+    amendmentReason: "",
+    newMaxTurns: null
   };
 }
 
