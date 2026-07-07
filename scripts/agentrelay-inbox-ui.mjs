@@ -4,9 +4,9 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
@@ -49,6 +49,7 @@ export async function loadInboxSnapshot({
 
 export function createInboxUiServer({
   stateRoot = process.env.AGENTRELAY_STATE_DIR || join(PROJECT_ROOT, "state"),
+  installRoot = PROJECT_ROOT,
   localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent",
   now = () => new Date().toISOString(),
   replyIdFactory = () => `hr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`,
@@ -159,6 +160,17 @@ export function createInboxUiServer({
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/api/file-access-whitelist/roots") {
+        const result = await addFileAccessWhitelistRoot({
+          stateRoot,
+          installRoot,
+          body: await readJsonRequest(req),
+          now
+        });
+        sendJson(res, result.added ? 201 : 200, result.whitelist);
+        return;
+      }
+
       const deleteIssueMatch = url.pathname.match(/^\/api\/issues\/([^/]+)$/);
       if (req.method === "DELETE" && deleteIssueMatch) {
         const taskId = decodeURIComponent(deleteIssueMatch[1]);
@@ -173,6 +185,11 @@ export function createInboxUiServer({
 
       if (url.pathname === "/api/agents") {
         sendJson(res, 200, await loadKnownAgents({ stateRoot, relayClient }));
+        return;
+      }
+
+      if (url.pathname === "/api/file-access-whitelist") {
+        sendJson(res, 200, await readFileAccessWhitelist({ stateRoot, installRoot, now }));
         return;
       }
 
@@ -947,6 +964,85 @@ async function readInboxFile(path) {
   };
 }
 
+async function readFileAccessWhitelist({ stateRoot, installRoot = PROJECT_ROOT, now = () => new Date().toISOString() }) {
+  const whitelistPath = join(stateRoot, "file-access-whitelist.json");
+  if (!existsSync(whitelistPath)) {
+    const initial = initialFileAccessWhitelist({ installRoot, now });
+    await writeJsonAtomic(whitelistPath, initial);
+    return initial;
+  }
+  try {
+    return normalizeFileAccessWhitelist(JSON.parse(await readFile(whitelistPath, "utf8")), { installRoot, now });
+  } catch {
+    const initial = initialFileAccessWhitelist({ installRoot, now });
+    await writeJsonAtomic(whitelistPath, initial);
+    return initial;
+  }
+}
+
+async function addFileAccessWhitelistRoot({ stateRoot, installRoot = PROJECT_ROOT, body, now = () => new Date().toISOString() }) {
+  const rawPath = String(body?.path || "").trim();
+  if (!rawPath) throw statusError("path is required", 400);
+  if (!isAbsolute(rawPath)) throw statusError("path must be an absolute path", 400);
+  const normalizedPath = resolve(rawPath);
+  let stats;
+  try {
+    stats = await stat(normalizedPath);
+  } catch {
+    throw statusError(`path does not exist: ${normalizedPath}`, 400);
+  }
+  if (!stats.isDirectory()) throw statusError(`path must be a directory: ${normalizedPath}`, 400);
+
+  const whitelist = await readFileAccessWhitelist({ stateRoot, installRoot, now });
+  const existing = whitelist.roots.find((root) => root.path === normalizedPath);
+  if (existing) return { added: false, whitelist };
+
+  const next = {
+    ...whitelist,
+    roots: [...whitelist.roots, {
+      path: normalizedPath,
+      label: String(body?.label || "").trim() || normalizedPath,
+      source: "user",
+      createdAt: now()
+    }]
+  };
+  await writeJsonAtomic(join(stateRoot, "file-access-whitelist.json"), next);
+  return { added: true, whitelist: next };
+}
+
+function initialFileAccessWhitelist({ installRoot = PROJECT_ROOT, now = () => new Date().toISOString() } = {}) {
+  return {
+    version: 1,
+    roots: [{
+      path: resolve(installRoot),
+      label: "AgentRelay install root",
+      source: "install",
+      createdAt: now()
+    }]
+  };
+}
+
+function normalizeFileAccessWhitelist(value, { installRoot = PROJECT_ROOT, now = () => new Date().toISOString() } = {}) {
+  const roots = Array.isArray(value?.roots) ? value.roots : [];
+  const seen = new Set();
+  const normalizedRoots = roots
+    .map((root) => ({
+      path: String(root?.path || "").trim(),
+      label: String(root?.label || "").trim(),
+      source: String(root?.source || "").trim() || "user",
+      createdAt: String(root?.createdAt || "").trim() || now()
+    }))
+    .filter((root) => root.path && isAbsolute(root.path))
+    .map((root) => ({ ...root, path: resolve(root.path) }))
+    .filter((root) => {
+      if (seen.has(root.path)) return false;
+      seen.add(root.path);
+      return true;
+    });
+  if (normalizedRoots.length > 0) return { version: 1, roots: normalizedRoots };
+  return initialFileAccessWhitelist({ installRoot, now });
+}
+
 async function writeJsonAtomic(path, value) {
   await mkdir(dirname(path), { recursive: true });
   const tempPath = `${path}.tmp-${process.pid}-${Date.now()}`;
@@ -1699,6 +1795,19 @@ const DASHBOARD_HTML = String.raw`<!doctype html>
           <a class="text-link" href="/">Back to inbox</a>
         </header>
         <div class="metrics" id="metrics"></div>
+        <section class="file-access-panel" aria-label="File access whitelist">
+          <div>
+            <h3>File Access Whitelist</h3>
+            <p>Local agents should ask before using folders outside these roots.</p>
+          </div>
+          <div id="file-access-roots" class="file-access-roots">Loading...</div>
+          <form id="file-access-form" class="file-access-form">
+            <input name="path" type="text" placeholder="/absolute/path/to/folder" required />
+            <input name="label" type="text" placeholder="Label (optional)" />
+            <button type="submit">Add folder</button>
+          </form>
+          <p id="file-access-status" class="status-text" aria-live="polite"></p>
+        </section>
         <div id="dashboard-detail" class="dashboard-detail"></div>
       </div>
     </section>
@@ -2491,6 +2600,58 @@ button:disabled {
   font-size: 13px;
 }
 
+.file-access-panel {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  background: var(--surface-2);
+}
+
+.file-access-panel h3 {
+  margin: 0;
+}
+
+.file-access-panel p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.file-access-roots {
+  display: grid;
+  gap: 6px;
+}
+
+.file-access-root {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+}
+
+.file-access-root code {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.file-access-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.file-access-form button {
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  padding: 0 12px;
+  background: var(--accent);
+  color: #fff;
+}
+
 .empty-state {
   color: var(--muted);
   text-align: center;
@@ -2651,6 +2812,8 @@ let selectedDetail = null;
 let activeView = "inbox";
 let showCompleted = false;
 let latestDraft = null;
+let refreshInFlight = false;
+let selectedIssueRequestId = 0;
 const pageMode = document.body.dataset.page || "inbox";
 const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width";
 const FOLDER_COLLAPSE_KEY = "agentrelay-collapsed-folders";
@@ -2663,6 +2826,9 @@ let collapsedFolders = loadCollapsedFolders();
 const el = {
   freshness: document.querySelector("#freshness"),
   metrics: document.querySelector("#metrics"),
+  fileAccessRoots: document.querySelector("#file-access-roots"),
+  fileAccessForm: document.querySelector("#file-access-form"),
+  fileAccessStatus: document.querySelector("#file-access-status"),
   issues: document.querySelector("#issues"),
   visibleCount: document.querySelector("#visible-count"),
   detailEmpty: document.querySelector("#detail-empty"),
@@ -2684,7 +2850,7 @@ applyTheme(localStorage.getItem("agentrelay-theme") || "dark");
 initSidebarResize();
 
 if (el.search) el.search.addEventListener("input", renderList);
-if (el.refresh) el.refresh.addEventListener("click", refresh);
+if (el.refresh) el.refresh.addEventListener("click", () => refresh());
 if (el.showCompleted) {
   el.showCompleted.addEventListener("click", () => {
     showCompleted = !showCompleted;
@@ -2709,9 +2875,11 @@ if (el.draftForm) {
   }
   el.draftForm.addEventListener("submit", createDraft);
 }
+if (el.fileAccessForm) el.fileAccessForm.addEventListener("submit", addFileAccessRoot);
 
 await refresh();
-setInterval(refresh, 10000);
+if (pageMode === "dashboard") await renderFileAccessWhitelist();
+setInterval(() => refresh({ passive: true }), 10000);
 
 function initSidebarResize() {
   const storedWidth = Number.parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) || "", 10);
@@ -2758,15 +2926,35 @@ function setSidebarWidth(width, { persist = true } = {}) {
   if (persist) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
 }
 
-async function refresh() {
-  const response = await fetch("/api/issues", { cache: "no-store" });
-  snapshot = await response.json();
-  await loadAgents();
-  renderMetrics();
-  renderList();
-  if (el.freshness) el.freshness.textContent = "Updated " + formatTime(snapshot.generatedAt);
-  if (selectedTaskId) await selectIssue(selectedTaskId, { keepView: true });
-  renderDashboard();
+async function refresh({ passive = false } = {}) {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  try {
+    const response = await fetch("/api/issues", { cache: "no-store" });
+    snapshot = await response.json();
+    await loadAgents();
+    renderMetrics();
+    renderList();
+    if (el.freshness) el.freshness.textContent = "Updated " + formatTime(snapshot.generatedAt);
+    if (shouldRefreshSelectedDetail({ passive })) {
+      await selectIssue(selectedTaskId, { keepView: true });
+    }
+    renderDashboard();
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
+function shouldRefreshSelectedDetail({ passive = false } = {}) {
+  if (!selectedTaskId) return false;
+  if (passive && isComposerEditing()) return false;
+  return true;
+}
+
+function isComposerEditing() {
+  const textarea = el.detailBody?.querySelector("#reply-text");
+  if (!textarea) return false;
+  return document.activeElement === textarea || Boolean(textarea.value.trim());
 }
 
 async function loadAgents() {
@@ -2966,6 +3154,7 @@ function issueStatus(issue) {
 
 async function selectIssue(taskId, { keepView = false } = {}) {
   if (!el.issues || !el.detailEmpty || !el.detailBody) return;
+  const requestId = ++selectedIssueRequestId;
   const scrollState = keepView ? captureMessageScrollState() : null;
   const composerDraft = keepView ? captureComposerDraft(taskId) : null;
   selectedTaskId = taskId;
@@ -2980,7 +3169,9 @@ async function selectIssue(taskId, { keepView = false } = {}) {
     el.detailEmpty.querySelector("h2").textContent = "Task not found";
     return;
   }
-  selectedDetail = await response.json();
+  const detail = await response.json();
+  if (requestId !== selectedIssueRequestId || selectedTaskId !== taskId) return;
+  selectedDetail = detail;
   el.detailEmpty.hidden = true;
   el.detailBody.hidden = false;
   el.detailBody.innerHTML = renderChat(selectedDetail);
@@ -3314,6 +3505,44 @@ function bindSendDraft() {
       button.disabled = false;
     }
   });
+}
+
+async function renderFileAccessWhitelist() {
+  if (!el.fileAccessRoots) return;
+  try {
+    const response = await fetch("/api/file-access-whitelist");
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.message || body.error || "failed to load whitelist");
+    el.fileAccessRoots.innerHTML = (body.roots || []).length
+      ? body.roots.map((root) => '<div class="file-access-root"><strong>' + escapeHtml(root.label || root.path) + '</strong><code>' + escapeHtml(root.path) + '</code></div>').join("")
+      : '<p>No folders are currently whitelisted.</p>';
+  } catch (error) {
+    el.fileAccessRoots.textContent = error.message;
+  }
+}
+
+async function addFileAccessRoot(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const formData = new FormData(form);
+  if (el.fileAccessStatus) el.fileAccessStatus.textContent = "Adding folder...";
+  try {
+    const response = await fetch("/api/file-access-whitelist/roots", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        path: String(formData.get("path") || ""),
+        label: String(formData.get("label") || "")
+      })
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.message || body.error || "failed to add folder");
+    form.reset();
+    if (el.fileAccessStatus) el.fileAccessStatus.textContent = response.status === 201 ? "Folder added." : "Folder already exists.";
+    await renderFileAccessWhitelist();
+  } catch (error) {
+    if (el.fileAccessStatus) el.fileAccessStatus.textContent = error.message;
+  }
 }
 
 function renderDashboard() {

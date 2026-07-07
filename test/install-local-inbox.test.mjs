@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildInitialFileAccessWhitelist,
   buildInitialEnv,
   buildLocalInboxEnvBlock,
   upsertLocalInboxEnvBlock
@@ -68,4 +69,19 @@ test("buildInitialEnv writes placeholders plus local inbox defaults", () => {
   assert.match(env, /AGENTRELAY_USERNAME="replace-with-username"/);
   assert.match(env, /AGENTRELAY_TOKEN="replace-with-cloud-token"/);
   assert.match(env, /BEGIN AgentRelay Local Inbox managed block/);
+});
+
+test("buildInitialFileAccessWhitelist defaults to the install root", () => {
+  const whitelist = buildInitialFileAccessWhitelist({
+    installRoot: "/Users/zac/project/agentRelay",
+    now: () => "2026-07-06T01:02:03.000Z"
+  });
+
+  assert.equal(whitelist.version, 1);
+  assert.deepEqual(whitelist.roots, [{
+    path: "/Users/zac/project/agentRelay",
+    label: "AgentRelay install root",
+    source: "install",
+    createdAt: "2026-07-06T01:02:03.000Z"
+  }]);
 });

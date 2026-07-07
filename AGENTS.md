@@ -1,7 +1,9 @@
-# AgentRelay Local Agent Instructions
+# AgentRelay Local Inbox Template
 
-This workspace is an installable AgentRelay MCP client plus a local inbox workbench.
-The local inbox, not Codex App threads, is the user's AgentRelay operating surface.
+This file is the default `AGENTS.md` template shipped with the AgentRelay MCP client.
+It explains how the local inbox works and provides safe default behavior for a newly installed client.
+
+After installation, users should customize their local copy of this file in the installed inbox directory. Do not treat this repository template as a user-specific policy file.
 
 ## How This Project Works
 
@@ -17,7 +19,7 @@ The local client has five pieces:
 
 The durable local source of truth is:
 
-- `state/issues.json`: normalized task/issues, local replies, processor state, executor state, archive state.
+- `state/issues.json`: normalized tasks, local replies, processor state, executor state, and archive state.
 - `AGENTRELAY_INBOX_DIR`: raw listener event JSON files.
 - `state/processor-runs.jsonl`: processor attempts and failures.
 - `state/executor-runs.jsonl`: executor actions and failures.
@@ -33,11 +35,11 @@ When a user asks to install `ZilingXie/agent-relay-mcp`, use this default flow:
 3. Run `npm run install:local`.
 4. Tell the user where `.env` was created, but do not print secrets.
 5. Ask the user to fill `AGENTRELAY_BASE_URL`, `AGENTRELAY_WS_URL`, `AGENTRELAY_AGENT_ID`, `AGENTRELAY_USERNAME`, and `AGENTRELAY_TOKEN`.
-6. Ask the user to restart Codex App or open a new Codex session.
+6. Ask the user to restart their agent app or open a new agent session.
 7. After restart, run `npm run doctor`, then verify MCP with `agentrelay_health` and `agentrelay_list_agents`.
 8. Run `npm run health:install`; installation is successful when the synthetic `agentrelay-healthcheck` ACK appears in the local inbox and the health check task closes.
 
-Do not store tokens directly in `~/.codex/config.toml`; the installer stores secrets in `.env` and points Codex at that file through `AGENTRELAY_ENV_PATH`.
+Do not store tokens directly in agent config files; the installer stores secrets in `.env` and points the agent app at that file through `AGENTRELAY_ENV_PATH`.
 
 ## Local Inbox Workflow
 
@@ -48,14 +50,14 @@ Incoming remote task:
 1. Listener receives the Relay event.
 2. Intake writes the event and task snapshot to local state.
 3. Intake ACKs the event only after the local inbox write succeeds.
-4. Processor reads the task snapshot, artifacts, and local Zac replies.
+4. Processor reads the task snapshot, artifacts, and local user replies.
 5. Processor returns structured JSON describing the next action.
 6. Executor performs only allowlisted actions that pass ownership, pending-owner, idempotency, and payload validation.
 7. UI shows the conversation, current pending owner, local replies, and failures.
 
 New local task:
 
-1. Zac writes a natural-language request in the UI.
+1. The local user writes a natural-language request in the UI.
 2. The local LLM agent drafts a proper AgentRelay task from the request.
 3. The task is sent to the target remote agent.
 4. The outgoing task is recorded locally immediately, then later merged with Relay snapshots.
@@ -63,19 +65,19 @@ New local task:
 
 ## Message Handling Rules
 
-Always read the current task snapshot, messages, artifacts, done criteria, completion owner, pending owner, and local Zac replies before deciding.
+Always read the current task snapshot, messages, artifacts, done criteria, completion owner, pending owner, and local user replies before deciding.
 
 Use this decision order:
 
-1. If more information or approval is needed from Zac, set `requiresHumanConfirmation=true` and do not take an external action.
+1. If more information or approval is needed from the local user, set `requiresHumanConfirmation=true` and do not take an external action.
 2. If a remote artifact is incomplete, contradicts the task, or reports unresolved work that can be fixed within the original scope, use `request_revision` and send a concrete revision request to the remote agent.
-3. If Zac changes or clarifies the task goal/done criteria after reviewing a remote artifact, use `amend_task`; this records a new goal version and starts a new agent-agent exchange.
-4. If Zac has provided enough information to answer an incoming remote request, use `submit_artifact` with the exact response to send.
-5. If the task is complete and the local agent is the `completion_owner_agent_id`, close the task only when the close action is allowed and any required Zac approval is present.
-6. If the task is complete but a remote agent is the `completion_owner_agent_id`, do not ask Zac to close it and do not close it locally. Wait for the remote completion owner to call `close_task`, or send a low-risk reminder/revision request if that is needed to end the loop.
+3. If the local user changes or clarifies the task goal/done criteria after reviewing a remote artifact, use `amend_task`; this records a new goal version and starts a new agent-agent exchange.
+4. If the local user has provided enough information to answer an incoming remote request, use `submit_artifact` with the exact response to send.
+5. If the task is complete and the local agent is the `completion_owner_agent_id`, close the task only when the close action is allowed and any required human approval is present.
+6. If the task is complete but a remote agent is the `completion_owner_agent_id`, do not ask the local user to close it and do not close it locally. Wait for the remote completion owner to call `close_task`, or send a low-risk reminder/revision request if that is needed to end the loop.
 7. If nothing needs to be sent and no human input is needed, set a waiting/no-action result.
 
-Do not infer Zac's intent in wrapper code. The processor LLM is the only component that interprets Zac's local replies. The executor is not an agent; it only validates and executes structured actions.
+Do not infer local user intent in wrapper code. The processor LLM is the only component that interprets local user replies. The executor is not an agent; it only validates and executes structured actions.
 
 Allowed executor actions:
 
@@ -91,15 +93,15 @@ The `completion_owner_agent_id` decides who is allowed to close a task.
 - If `completion_owner_agent_id` is the local agent, the local agent may evaluate remote artifacts and close the task after required approval.
 - If `completion_owner_agent_id` is a remote agent, the local agent should provide the requested input or artifact, then wait for that remote agent to close.
 - A remote agent saying "done", "PASS", or "complete" in an artifact is not the same as closing the task. The task is closed only when Relay status is `completed` or the close API succeeds.
-- Do not show a task as needing Zac approval merely because `pending_on_agent_id` was incorrectly set back to the local agent after the local side already submitted the requested artifact and the remote completion owner is responsible for closure.
+- Do not show a task as needing local user approval merely because `pending_on_agent_id` was incorrectly set back to the local agent after the local side already submitted the requested artifact and the remote completion owner is responsible for closure.
 
 ## Human Boundary
 
-Ask Zac before:
+Ask the local user before:
 
 - Confirming a meeting time, deadline, availability, or commitment.
-- Sending a reply/artifact that represents Zac's decision, preference, approval, or personal statement.
-- Closing a task owned by the local agent when closure requires Zac's acceptance.
+- Sending a reply/artifact that represents the user's decision, preference, approval, or personal statement.
+- Closing a task owned by the local agent when closure requires the user's acceptance.
 - Sharing private, credential-like, customer, company-sensitive, or personal data.
 - Making destructive local changes or changing long-running service configuration.
 
@@ -113,21 +115,35 @@ Low-risk automatic work is allowed:
 
 ## UI Expectations
 
-The UI should help Zac do four things:
+The UI should help the local user do four things:
 
 - Publish tasks.
 - Provide information only when the local agent needs it.
 - Review final results.
-- Improve this `AGENTS.md` when behavior should change.
+- Improve the local `AGENTS.md` when behavior should change.
 
 Use these status meanings:
 
-- `Need approval`: Zac input is required before the local agent can proceed.
+- `Need approval`: local user input is required before the local agent can proceed.
 - `Pending`: another agent, the local agent, or Relay state is still progressing.
 - `Complete`: Relay task is completed or the local issue is closed.
 - `Archive`: hidden from normal lists without deleting durable history.
 
-Only open the reply composer when Zac input is actually useful: new local draft conversations or tasks that need approval.
+Only open the reply composer when local user input is actually useful: new local draft conversations or tasks that need approval.
+
+## Local Customization
+
+This repository file is a template. The installed local inbox should have its own `AGENTS.md` for user-specific behavior.
+
+Good local customizations include:
+
+- The user's preferred name and local agent id.
+- Which remote agents are trusted for which work.
+- How much autonomy the local agent should take before asking.
+- Preferred language, tone, and reporting format.
+- User-specific approval boundaries.
+
+Do not overwrite a user's local `AGENTS.md` during upgrades unless the user explicitly asks for it.
 
 ## Recovery
 
