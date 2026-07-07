@@ -207,13 +207,28 @@ test("processInbox records Codex failure without local fallback analysis", async
   assert.equal(issue.processorStatus, "failed");
   assert.equal(issue.processorActionIntent, "none");
   assert.equal(issue.processorArtifactText, "");
-  assert.equal(issue.processorSummary, "我收到了新的 AgentRelay 回复，但本地 LLM processor 这次没有成功完成判断。");
-  assert.equal(issue.processorNeedsHumanReason, "请稍后重试本地处理，或直接告诉我下一步要回复、继续等待，还是确认关闭这个 task。");
+  assert.equal(issue.processorSummary, "本地 LLM processor 处理失败，将自动重试一次。");
+  assert.match(issue.processorNeedsHumanReason, /原因：本地 LLM processor 执行失败。报错：codex unavailable/);
   assert.equal(issue.humanReplyStatus, "processor_failed");
   assert.equal(issue.humanReplies[0].processedAt, null);
   assert.equal(issue.processorLastEventId, "");
   assert.equal(issue.processorLastHumanReplyId, "");
+  assert.equal(issue.processorRetryCount, 1);
+  assert.equal(issue.processorRetryAfterAt, "2026-07-03T03:11:30.000Z");
+  assert.equal(issue.processorRetryEventId, "evt_codex_failed");
   assert.match(issue.processorError, /codex unavailable/);
+
+  const coolingDown = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner: async () => {
+      attempts += 1;
+      throw new Error("processor should not retry before retryAfterAt");
+    },
+    now: () => "2026-07-03T03:11:00.000Z"
+  });
+  assert.equal(coolingDown.processed, 0);
+  assert.equal(attempts, 1);
 
   const second = await processInbox({
     stateRoot,
@@ -245,6 +260,75 @@ test("processInbox records Codex failure without local fallback analysis", async
   assert.equal(retriedIssue.processorLastHumanReplyId, "hr_failed");
   assert.equal(retriedIssue.humanReplyStatus, "processed");
   assert.equal(retriedIssue.humanReplies[0].processedAt, "2026-07-03T03:11:30.000Z");
+});
+
+test("processInbox stops retrying the same input after a second Codex failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-processor-stop-retry-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify({
+    event: { eventId: "evt_codex_stop", type: "task.pending", agentId: "zac-agent", taskId: "task_codex_stop" },
+    task: incomingTask({ taskId: "task_codex_stop" })
+  }, null, 2));
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_codex_stop: {
+        taskId: "task_codex_stop",
+        pendingOnAgentId: "zac-agent",
+        lastEventId: "evt_codex_stop",
+        eventIds: ["evt_codex_stop"]
+      }
+    },
+    events: {
+      evt_codex_stop: { eventId: "evt_codex_stop", taskId: "task_codex_stop", sourcePath: eventPath }
+    }
+  });
+
+  let attempts = 0;
+  const codexRunner = async () => {
+    attempts += 1;
+    throw new Error("codex exec exited with 1: ERROR: 429 Too Many Requests");
+  };
+
+  const first = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner,
+    now: () => "2026-07-03T03:10:00.000Z"
+  });
+  assert.equal(first.processed, 1);
+  assert.equal(attempts, 1);
+
+  const second = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner,
+    now: () => "2026-07-03T03:11:00.000Z"
+  });
+  assert.equal(second.processed, 1);
+  assert.equal(attempts, 2);
+
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = inbox.issues.task_codex_stop;
+  assert.equal(issue.processorSource, "codex_failed");
+  assert.equal(issue.processorStatus, "failed");
+  assert.equal(issue.requiresHumanConfirmation, true);
+  assert.equal(issue.processorRetryCount, 2);
+  assert.equal(issue.processorRetryAfterAt, "");
+  assert.equal(issue.processorRetryEventId, "");
+  assert.equal(issue.processorLastInputFingerprint, issue.inputFingerprint);
+  assert.equal(issue.processorSummary, "本地 LLM processor 连续两次失败，已停止自动重试。");
+  assert.match(issue.processorNeedsHumanReason, /原因：本地 LLM processor 被限流。报错：codex exec exited with 1: ERROR: 429 Too Many Requests/);
+
+  const third = await processInbox({
+    stateRoot,
+    localAgentId: "zac-agent",
+    codexRunner,
+    now: () => "2026-07-03T03:30:00.000Z"
+  });
+  assert.equal(third.processed, 0);
+  assert.equal(attempts, 2);
 });
 
 test("processInbox records transient Codex provider failures as visible failures", async () => {
@@ -288,12 +372,13 @@ test("processInbox records transient Codex provider failures as visible failures
   assert.equal(issue.processorSource, "codex_failed");
   assert.equal(issue.processorStatus, "failed");
   assert.equal(issue.requiresHumanConfirmation, true);
-  assert.equal(issue.processorRetryCount, 0);
-  assert.equal(issue.processorRetryAfterAt, "");
-  assert.equal(issue.processorRetryEventId, "");
+  assert.equal(issue.processorRetryCount, 1);
+  assert.equal(issue.processorRetryAfterAt, "2026-07-03T03:11:00.000Z");
+  assert.equal(issue.processorRetryEventId, "evt_codex_502");
   assert.equal(issue.processorLastEventId, "");
   assert.match(issue.processorError, /502 Bad Gateway/);
-  assert.match(issue.processorSummary, /没有成功完成判断/);
+  assert.equal(issue.processorSummary, "本地 LLM processor 处理失败，将自动重试一次。");
+  assert.match(issue.processorNeedsHumanReason, /原因：本地 LLM provider 临时不可用。报错：codex exec exited with 1: ERROR: unexpected status 502 Bad Gateway/);
 });
 
 test("runCodexExec inherits the user's Codex home by default", async () => {

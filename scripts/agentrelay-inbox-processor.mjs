@@ -31,7 +31,7 @@ export async function processInbox({
 
   for (const issue of issues) {
     if (issue.localStatus === "archived") continue;
-    if (!shouldProcessIssue({ issue, localAgentId })) continue;
+    if (!shouldProcessIssue({ issue, localAgentId, nowIso: now() })) continue;
     if (issue.relayStatus === "completed" || issue.localStatus === "closed") continue;
     const humanReplies = normalizeHumanReplies(issue.humanReplies);
     const latestHumanReplyId = issue.latestHumanReplyId || latestReplyId(humanReplies);
@@ -61,6 +61,14 @@ export async function processInbox({
     const processorSucceeded = source === "codex";
     const processorAttemptedEventId = issue.lastEventId || "";
     const processorAttemptedHumanReplyId = latestHumanReplyId || "";
+    const previousInputFingerprint = issue.inputFingerprint || "";
+    const retryCount = processorSucceeded
+      ? 0
+      : (previousInputFingerprint === inputFingerprint ? Number(issue.processorRetryCount || 0) + 1 : 1);
+    const processorRetryExhausted = !processorSucceeded && retryCount >= 2;
+    const effectiveAnalysis = processorSucceeded
+      ? analysis
+      : buildCodexFailureAnalysis({ error, willRetry: !processorRetryExhausted });
     const localAgentSession = updateLocalAgentSession({
       session: issue.localAgentSession,
       taskId: issue.taskId,
@@ -72,7 +80,7 @@ export async function processInbox({
       localAgentSession,
       inputFingerprint,
       updatedAt,
-      analysis,
+      analysis: effectiveAnalysis,
       source,
       error
     });
@@ -80,7 +88,7 @@ export async function processInbox({
       existingOutbox: issue.outbox,
       entries: buildOutboxEntries({
         issue,
-        analysis,
+        analysis: effectiveAnalysis,
         localAgentId,
         inputFingerprint,
         createdAt: updatedAt
@@ -88,7 +96,7 @@ export async function processInbox({
     });
     const fileAccessRequests = mergeFileAccessRequests({
       existingRequests: issue.fileAccessRequests,
-      requests: analysis.fileAccessRequests,
+      requests: effectiveAnalysis.fileAccessRequests,
       inputFingerprint,
       createdAt: updatedAt
     });
@@ -103,29 +111,29 @@ export async function processInbox({
       humanReplyStatus: latestHumanReplyId
         ? (processorSucceeded ? "processed" : "processor_failed")
         : (issue.humanReplyStatus || ""),
-      processorStatus: analysis.processorStatus,
-      processorSummary: analysis.summary,
-      processorSuggestedReply: analysis.suggestedReply,
-      processorNeedsHumanReason: analysis.needsHumanReason,
-      requiresHumanConfirmation: analysis.requiresHumanConfirmation,
-      processorActionIntent: analysis.actionIntent,
-      processorActionReason: analysis.actionReason,
-      processorTerminalReason: analysis.terminalReason,
-      processorArtifactKind: analysis.artifactKind,
-      processorArtifactText: analysis.artifactText,
-      processorAmendedDoneCriteria: analysis.amendedDoneCriteria,
-      processorPreviousGoalDisposition: analysis.previousGoalDisposition,
-      processorAmendmentReason: analysis.amendmentReason,
-      processorNewMaxTurns: analysis.newMaxTurns,
+      processorStatus: effectiveAnalysis.processorStatus,
+      processorSummary: effectiveAnalysis.summary,
+      processorSuggestedReply: effectiveAnalysis.suggestedReply,
+      processorNeedsHumanReason: effectiveAnalysis.needsHumanReason,
+      requiresHumanConfirmation: effectiveAnalysis.requiresHumanConfirmation,
+      processorActionIntent: effectiveAnalysis.actionIntent,
+      processorActionReason: effectiveAnalysis.actionReason,
+      processorTerminalReason: effectiveAnalysis.terminalReason,
+      processorArtifactKind: effectiveAnalysis.artifactKind,
+      processorArtifactText: effectiveAnalysis.artifactText,
+      processorAmendedDoneCriteria: effectiveAnalysis.amendedDoneCriteria,
+      processorPreviousGoalDisposition: effectiveAnalysis.previousGoalDisposition,
+      processorAmendmentReason: effectiveAnalysis.amendmentReason,
+      processorNewMaxTurns: effectiveAnalysis.newMaxTurns,
       processorSource: source,
       processorError: error || null,
       processorLastEventId: processorSucceeded ? processorAttemptedEventId : (issue.processorLastEventId || ""),
       processorLastHumanReplyId: processorSucceeded ? processorAttemptedHumanReplyId : (issue.processorLastHumanReplyId || ""),
-      processorLastInputFingerprint: processorSucceeded ? inputFingerprint : (issue.processorLastInputFingerprint || ""),
+      processorLastInputFingerprint: (processorSucceeded || processorRetryExhausted) ? inputFingerprint : (issue.processorLastInputFingerprint || ""),
       outbox,
-      processorRetryCount: 0,
-      processorRetryAfterAt: "",
-      processorRetryEventId: "",
+      processorRetryCount: retryCount,
+      processorRetryAfterAt: (processorSucceeded || processorRetryExhausted) ? "" : calculateProcessorRetryAfterAt(updatedAt, retryCount),
+      processorRetryEventId: (processorSucceeded || processorRetryExhausted) ? "" : processorAttemptedEventId,
       processorLastRunAt: updatedAt,
       updatedAt
     };
@@ -133,12 +141,12 @@ export async function processInbox({
       at: updatedAt,
       taskId: issue.taskId,
       eventId: issue.lastEventId || "",
-      processorStatus: analysis.processorStatus,
+      processorStatus: effectiveAnalysis.processorStatus,
       processorSource: source,
       processorError: error || null,
-      requiresHumanConfirmation: analysis.requiresHumanConfirmation,
-      summary: analysis.summary,
-      actionIntent: analysis.actionIntent
+      requiresHumanConfirmation: effectiveAnalysis.requiresHumanConfirmation,
+      summary: effectiveAnalysis.summary,
+      actionIntent: effectiveAnalysis.actionIntent
     });
     processed += 1;
   }
@@ -147,10 +155,27 @@ export async function processInbox({
   return { scanned: issues.length, processed, externalActions: [] };
 }
 
-function shouldProcessIssue({ issue, localAgentId }) {
+function shouldProcessIssue({ issue, localAgentId, nowIso = new Date().toISOString() }) {
+  if (isProcessorRetryCoolingDown({ issue, nowIso }) && issue.humanReplyStatus !== "pending_processor") return false;
   if (issue.pendingOnAgentId === localAgentId) return true;
   if (issue.humanReplyStatus === "pending_processor") return true;
   return hasActiveFileAccessGrant(issue);
+}
+
+function isProcessorRetryCoolingDown({ issue, nowIso }) {
+  const retryAfterAt = Date.parse(issue.processorRetryAfterAt || "");
+  if (!Number.isFinite(retryAfterAt)) return false;
+  const nowMs = Date.parse(nowIso || "");
+  if (!Number.isFinite(nowMs)) return false;
+  return retryAfterAt > nowMs;
+}
+
+function calculateProcessorRetryAfterAt(nowIso, retryCount) {
+  const nowMs = Date.parse(nowIso);
+  const baseMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const delaysMs = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000];
+  const index = Math.max(0, Math.min(Number(retryCount || 1) - 1, delaysMs.length - 1));
+  return new Date(baseMs + delaysMs[index]).toISOString();
 }
 
 function hasActiveFileAccessGrant(issue) {
@@ -567,13 +592,17 @@ function validateCodexAnalysis(value) {
   };
 }
 
-function buildCodexFailureAnalysis() {
+function buildCodexFailureAnalysis({ error = "", willRetry = false } = {}) {
+  const reason = classifyProcessorFailure(error);
+  const errorSummary = summarizeProcessorError(error);
   return {
     processorStatus: "failed",
     requiresHumanConfirmation: true,
-    summary: "我收到了新的 AgentRelay 回复，但本地 LLM processor 这次没有成功完成判断。",
+    summary: willRetry
+      ? "本地 LLM processor 处理失败，将自动重试一次。"
+      : "本地 LLM processor 连续两次失败，已停止自动重试。",
     suggestedReply: "",
-    needsHumanReason: "请稍后重试本地处理，或直接告诉我下一步要回复、继续等待，还是确认关闭这个 task。",
+    needsHumanReason: `${reason}报错：${errorSummary || "未捕获到具体错误信息。"}${willRetry ? " 系统会自动重试一次；如果仍失败，会停止并保留错误。" : " 请查看错误后手动重试，或直接告诉我下一步要回复、继续等待，还是确认关闭这个 task。"}`,
     actionIntent: "none",
     actionReason: "",
     terminalReason: "",
@@ -584,6 +613,20 @@ function buildCodexFailureAnalysis() {
     amendmentReason: "",
     newMaxTurns: null
   };
+}
+
+function classifyProcessorFailure(error) {
+  const message = String(error || "");
+  if (/\b429\b|rate limit|too many requests/i.test(message)) return "原因：本地 LLM processor 被限流。";
+  if (/502|503|504|bad gateway|upstream/i.test(message)) return "原因：本地 LLM provider 临时不可用。";
+  if (/timeout|timed out/i.test(message)) return "原因：本地 LLM processor 执行超时。";
+  return "原因：本地 LLM processor 执行失败。";
+}
+
+function summarizeProcessorError(error) {
+  const message = String(error || "").replace(/\s+/g, " ").trim();
+  if (message.length <= 600) return message;
+  return `${message.slice(0, 600)}...`;
 }
 
 async function readTaskSnapshotForIssue({ inbox, issue }) {
