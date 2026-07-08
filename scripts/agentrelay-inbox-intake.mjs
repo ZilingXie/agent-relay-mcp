@@ -150,6 +150,7 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
     subject: task.subject || previousIssue.subject || "",
     requesterAgentId: task.requester_agent_id || previousIssue.requesterAgentId || "",
     targetAgentId: task.target_agent_id || previousIssue.targetAgentId || "",
+    doneCriteria: task.done_criteria || previousIssue.doneCriteria || "",
     completionOwnerAgentId: task.completion_owner_agent_id || previousIssue.completionOwnerAgentId || "",
     pendingOnAgentId,
     pendingOnHumanId: task.pending_on_human_id || previousIssue.pendingOnHumanId || null,

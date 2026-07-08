@@ -19,15 +19,28 @@ test("buildLocalInboxEnvBlock configures listener hook and local inbox state", (
   });
 
   assert.match(block, /BEGIN AgentRelay Local Inbox managed block/);
+  assert.match(block, /AGENTRELAY_AGENT_ROLE="personal_agent"/);
+  assert.match(block, /AGENTRELAY_EXECUTION_MODE="notify_only"/);
   assert.match(block, /AGENTRELAY_INBOX_DIR="\/Users\/zac\/project\/agentRelay\/\.agentrelay\/inbox"/);
   assert.match(block, /AGENTRELAY_STATE_DIR="\/Users\/zac\/project\/agentRelay\/state"/);
   assert.match(block, /AGENTRELAY_LISTENER_HOOK="\/usr\/local\/bin\/node \/Users\/zac\/project\/agentRelay\/scripts\/agentrelay-inbox-intake\.mjs"/);
   assert.match(block, /AGENTRELAY_ACK_ON_INBOX_RECEIVED=1/);
-  assert.match(block, /AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=1/);
-  assert.match(block, /AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=1/);
+  assert.match(block, /AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0/);
+  assert.match(block, /AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0/);
   assert.match(block, /AGENTRELAY_LOCAL_AGENT_RUNNER="codex"/);
   assert.match(block, /AGENTRELAY_INBOX_UI_HOST="127\.0\.0\.1"/);
   assert.match(block, /AGENTRELAY_INBOX_UI_PORT="8787"/);
+});
+
+test("buildLocalInboxEnvBlock can explicitly opt into automatic processing", () => {
+  const block = buildLocalInboxEnvBlock({
+    repoRoot: "/repo",
+    processOnReceive: true,
+    executeOnReceive: true
+  });
+
+  assert.match(block, /AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=1/);
+  assert.match(block, /AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=1/);
 });
 
 test("upsertLocalInboxEnvBlock preserves existing credentials", () => {

@@ -1,12 +1,12 @@
 # Codex MCP + Local Inbox Install Guide
 
-This is the default install path for Codex users. It installs AgentRelay MCP and the local inbox workbench at:
+This is the default install path for Codex users. It installs AgentRelay MCP and the personal-agent local inbox/notifier at:
 
 ```text
 http://127.0.0.1:8787/
 ```
 
-Incoming Relay events are delivered to the local inbox source of truth first. The local agent does not need to poll the server for normal receive flow, and new installs should not create Codex App threads for every task.
+Incoming Relay events are delivered to the local inbox source of truth first. The local agent does not need to poll the server for normal receive flow, new installs should not create Codex App threads for every task, and the default install does not automatically invoke the user's local agent.
 
 ## Install From GitHub
 
@@ -16,7 +16,7 @@ Run the one-command installer:
 npx github:ZilingXie/agent-relay-mcp install
 ```
 
-The command installs or updates a stable checkout at `~/agentRelay`, installs dependencies, configures Codex MCP, and installs the local inbox workbench.
+The command installs or updates a stable checkout at `~/agentRelay`, installs dependencies, configures Codex MCP, and installs the local inbox/notifier.
 
 To choose another stable install path:
 
@@ -37,6 +37,8 @@ The installer:
 - configures AgentRelay MCP in `~/.codex/config.toml`
 - preserves any existing `.env`
 - creates or updates only the local inbox managed block in `.env`
+- writes `AGENTRELAY_AGENT_ROLE="personal_agent"` and `AGENTRELAY_EXECUTION_MODE="notify_only"`
+- keeps `AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0` and `AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0`
 - creates local inbox state directories
 - installs the inbox UI service
 - configures the listener hook to call `scripts/agentrelay-inbox-intake.mjs`
@@ -112,7 +114,7 @@ The expected flow is:
 5. `agentrelay-inbox-intake.mjs` writes the event into local inbox state with a `localWorkflowBinding`.
 6. The script sees the task in `state/issues.json` and closes the health check task.
 
-When `npm run health:install` passes, tell the user installation is complete and explain that the local inbox UI is now the central place to publish tasks, provide missing information, approve final work, and review history.
+When `npm run health:install` passes, tell the user installation is complete and explain that the local inbox UI is now the central place to publish tasks, view incoming work, prepare prompts for their chosen local agent, provide missing information, approve final work, and review history.
 
 Optional real-agent E2E: ask the local agent to send a small task to `project-hermes`. If that fails after `health:install` passes, debug Project Hermes or its adapter rather than the MCP install.
 

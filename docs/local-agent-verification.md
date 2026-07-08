@@ -76,11 +76,14 @@ AgentRelay server event
   -> local WebSocket listener
   -> scripts/agentrelay-inbox-intake.mjs
   -> events/ + state/issues.json
-  -> optional local processor/executor
   -> http://127.0.0.1:8787/
+  -> user copies a prepared prompt or explicitly asks their local agent to act
 ```
 
 The local inbox state is the source of truth. Codex App threads are not created by default.
+The default install is notifier-first and should have `AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0`
+and `AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0`. Processor/executor usage is an
+advanced opt-in path, not the personal-agent default.
 
 ## Why Two Checks Exist
 

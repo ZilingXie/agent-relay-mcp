@@ -31,9 +31,11 @@
    `.agentrelay/`, `node_modules/`, `.DS_Store`, and temporary planning/tool
    artifacts unless the user explicitly wants them committed.
 6. Do not use Codex App thread delivery as the default inbox path. The local
-   inbox UI at `http://127.0.0.1:8787/` is the primary workbench.
+   inbox UI at `http://127.0.0.1:8787/` is the primary notifier/workbench.
 7. Durable inbox writes must happen before ACK. Do not change listener/intake
    behavior in a way that ACKs server events before local persistence succeeds.
+8. Personal-agent installs are notifier-first. Do not enable automatic local
+   processor/executor behavior by default; require explicit opt-in.
 
 ## Local Layout
 
