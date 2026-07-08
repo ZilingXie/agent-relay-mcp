@@ -1759,7 +1759,7 @@ test("generateTaskDraftWithResponses validates the Responses API draft output", 
     text: "让 project-hermes 修改 dashboard title",
     localAgentId: "zac-agent",
     responsesRunner: async ({ prompt, schemaPath }) => {
-      assert.match(prompt, /Follow this workspace AGENTS\.md exactly/);
+      assert.match(prompt, /Follow these product Local Inbox agent rules exactly/);
       assert.match(prompt, /让 project-hermes 修改 dashboard title/);
       assert.match(schemaPath, /task-draft\.schema\.json/);
       return JSON.stringify({

@@ -96,7 +96,7 @@ The user should only need to:
 - publish tasks
 - provide more information when the local agent asks
 - approve or accept completed tasks
-- tune `AGENTS.md`
+- tune `templates/local-inbox/AGENTS.md` when product local-agent behavior should change
 
 The local agent should:
 

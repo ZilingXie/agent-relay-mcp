@@ -17,6 +17,7 @@ loadDotEnv(envPath);
 
 const DEFAULT_CODEX_CLI = "/Applications/Codex.app/Contents/Resources/codex";
 const PROCESSOR_SCHEMA_PATH = resolve(PROJECT_ROOT, "schemas/processor-output.schema.json");
+const LOCAL_INBOX_AGENTS_TEMPLATE_PATH = resolve(PROJECT_ROOT, "templates/local-inbox/AGENTS.md");
 
 export async function processInbox({
   stateRoot = process.env.AGENTRELAY_STATE_DIR || join(PROJECT_ROOT, "state"),
@@ -206,7 +207,7 @@ export async function runCodexAnalysis({
   humanReplies = [],
   fileAccessGrants = [],
   codexRunner = runDefaultLlmRunner,
-  agentsMdPath = resolve(PROJECT_ROOT, "AGENTS.md"),
+  agentsMdPath = process.env.AGENTRELAY_AGENTS_MD_PATH || LOCAL_INBOX_AGENTS_TEMPLATE_PATH,
   stateRoot = process.env.AGENTRELAY_STATE_DIR || join(PROJECT_ROOT, "state"),
   fileAccessWhitelistPath = join(stateRoot, "file-access-whitelist.json"),
   schemaPath = PROCESSOR_SCHEMA_PATH,
@@ -251,9 +252,9 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
   return [
     "You are the LLM agent behind Zac's local AgentRelay inbox processor.",
     "",
-    "Follow this workspace AGENTS.md exactly:",
+    "Follow these product Local Inbox agent rules exactly:",
     "```markdown",
-    agentsMd || "(AGENTS.md unavailable)",
+    agentsMd || "(Local Inbox agent rules unavailable)",
     "```",
     "",
     "Automatic processor constraints:",
@@ -263,7 +264,7 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "- Any AgentRelay state-changing reply must be returned as a structured outbox JSON action; the local guardrail will validate and send it.",
     "- You may inspect and modify files inside the allowed filesystem roots when needed to complete the task.",
     "- Respect the file access whitelist. If the task requires reading or writing outside these roots, do not claim access and do not guess file contents; set requiresHumanConfirmation=true, actionIntent=none, and ask Zac to approve adding that folder to the whitelist.",
-    "- Analyze the task snapshot, Local Zac replies, allowed files you can access, and AGENTS.md.",
+    "- Analyze the task snapshot, Local Zac replies, allowed files you can access, and the Local Inbox agent rules.",
     "- You are the only component allowed to interpret Zac's intent from Local Zac replies; wrapper code will not infer intent.",
     "- Before asking Zac to close or confirm, actively decide whether the remote agent can make progress within the original task scope.",
     "- If the remote agent's artifact is incomplete, contradicts the task intent, or reveals unresolved work that the remote agent can fix within the original task, ask the remote agent to continue by setting actionIntent=request_revision, requiresHumanConfirmation=false, artifactKind=revision_request, and artifactText to the concrete revision request.",

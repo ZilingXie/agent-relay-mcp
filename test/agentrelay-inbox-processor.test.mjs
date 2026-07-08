@@ -139,7 +139,7 @@ test("processInbox passes task snapshots and Zac replies to the LLM processor", 
 
   assert.equal(result.processed, 1);
   assert.equal(calls.length, 1);
-  assert.match(calls[0].prompt, /AGENTS.md/);
+  assert.match(calls[0].prompt, /product Local Inbox agent rules/);
   assert.match(calls[0].prompt, /task_llm_submit/);
   assert.match(calls[0].prompt, /Local Zac replies/);
   assert.match(calls[0].prompt, /确认，可以把这个结果回复给 Frank/);
@@ -654,6 +654,34 @@ test("runCodexAnalysis validates the action allowlist and payload requirements",
   assert.equal(revision.actionIntent, "request_revision");
   assert.equal(revision.artifactKind, "revision_request");
   assert.match(revision.artifactText, /visible heading/);
+});
+
+test("runCodexAnalysis reads the product Local Inbox template by default", async () => {
+  let promptText = "";
+  const analysis = await runCodexAnalysis({
+    task: incomingTask({ taskId: "task_template_rules" }),
+    event: { eventId: "evt_template_rules" },
+    localAgentId: "zac-agent",
+    codexRunner: async ({ prompt }) => {
+      promptText = prompt;
+      return JSON.stringify({
+        processorStatus: "waiting",
+        summary: "Waiting for the remote completion owner.",
+        suggestedReply: "",
+        needsHumanReason: "",
+        requiresHumanConfirmation: false,
+        actionIntent: "none",
+        actionReason: "",
+        artifactKind: "",
+        artifactText: "",
+        terminalReason: ""
+      });
+    }
+  });
+
+  assert.equal(analysis.processorStatus, "waiting");
+  assert.match(promptText, /AgentRelay Local Inbox Template/);
+  assert.doesNotMatch(promptText, /AgentRelay Development Rules/);
 });
 
 test("runCodexAnalysis accepts local file access requests from the local agent", async () => {

@@ -20,6 +20,7 @@ const DEFAULT_RESPONSES_BASE_URL = "https://sub2api.la3.agoralab.co";
 const DEFAULT_CODEX_CLI = "/Applications/Codex.app/Contents/Resources/codex";
 const PROTOCOL_VERSION = "agent-collab-v0.3";
 const TASK_DRAFT_SCHEMA_PATH = resolve(PROJECT_ROOT, "schemas/task-draft.schema.json");
+const LOCAL_INBOX_AGENTS_TEMPLATE_PATH = resolve(PROJECT_ROOT, "templates/local-inbox/AGENTS.md");
 const TASK_DRAFT_SUBJECT_MAX_LENGTH = 32;
 const backgroundProcessingByStateRoot = new Map();
 const envPath = process.env.AGENTRELAY_ENV_PATH || resolve(PROJECT_ROOT, ".env");
@@ -1737,7 +1738,7 @@ export async function generateTaskDraftWithResponses({
   text,
   subject = "",
   localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent",
-  agentsMdPath = resolve(PROJECT_ROOT, "AGENTS.md"),
+  agentsMdPath = process.env.AGENTRELAY_AGENTS_MD_PATH || LOCAL_INBOX_AGENTS_TEMPLATE_PATH,
   schemaPath = TASK_DRAFT_SCHEMA_PATH,
   responsesRunner = runTaskDraftResponsesApi
 }) {
@@ -1752,7 +1753,7 @@ export async function generateTaskDraftWithCodex({
   text,
   subject = "",
   localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent",
-  agentsMdPath = resolve(PROJECT_ROOT, "AGENTS.md"),
+  agentsMdPath = process.env.AGENTRELAY_AGENTS_MD_PATH || LOCAL_INBOX_AGENTS_TEMPLATE_PATH,
   schemaPath = TASK_DRAFT_SCHEMA_PATH,
   codexCli = process.env.CODEX_CLI || DEFAULT_CODEX_CLI,
   cwd = PROJECT_ROOT,
@@ -1769,9 +1770,9 @@ function buildTaskDraftPrompt({ agentsMd, to, text, subject, localAgentId }) {
   return [
     "You are Zac's local AgentRelay task draft generator.",
     "",
-    "Follow this workspace AGENTS.md exactly:",
+    "Follow these product Local Inbox agent rules exactly:",
     "```markdown",
-    agentsMd || "(AGENTS.md unavailable)",
+    agentsMd || "(Local Inbox agent rules unavailable)",
     "```",
     "",
     "Constraints:",
