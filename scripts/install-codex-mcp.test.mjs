@@ -83,6 +83,26 @@ test("installer overwrites an existing env file only when explicitly requested",
   assert.match(env, /AGENTRELAY_TOKEN="new-token"/);
 });
 
+test("installer quiet mode suppresses final guidance output", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-codex-install-"));
+  const envPath = join(root, ".env");
+  const configPath = join(root, "config.toml");
+
+  const result = await runNode([
+    installer,
+    "--write",
+    "--quiet",
+    "--config", configPath,
+    "--env", envPath,
+    "--agent-id", "quiet-agent",
+    "--username", "quiet-user"
+  ]);
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, "");
+  assert.doesNotMatch(result.stderr, /Next steps/);
+});
+
 function runNode(args) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(process.execPath, args, {
