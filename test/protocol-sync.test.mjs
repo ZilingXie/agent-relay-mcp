@@ -6,6 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  buildAutoRedraftedPayload,
+  inferProtocolOperation,
   maybeHandleProtocolNegotiation,
   resolveProtocolDir,
   syncCurrentProtocol,
@@ -56,9 +58,10 @@ test("syncCurrentProtocol follows the server manifest bundle URL", async () => {
   assert.equal(result.version, "agent-collab-v0.4");
 });
 
-test("maybeHandleProtocolNegotiation syncs patchable protocol bundle and returns redraft guidance", async () => {
+test("maybeHandleProtocolNegotiation auto-redrafts safe task create payloads and retries", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-"));
-  const recovery = await maybeHandleProtocolNegotiation({
+  const retryPayloads = [];
+  const result = await maybeHandleProtocolNegotiation({
     responseData: {
       ok: false,
       error: {
@@ -66,10 +69,37 @@ test("maybeHandleProtocolNegotiation syncs patchable protocol bundle and returns
         code: "protocol_patch_required",
         detail: {
           server_protocol: { version: "agent-collab-v0.4", schema_digest: "sha256:test-v04" },
-          upgrade: { bundle_url: "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle" }
+          upgrade: { bundle_url: "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle" },
+          redraft_policy: redraftPolicy()
         }
       }
     },
+    method: "POST",
+    path: "/tasks",
+    payload: { protocol_version: "agent-collab-v0.3", idempotency_key: "same-key" },
+    cacheRoot: root,
+    fetchImpl: fakeFetch({
+      "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle": fakeBundle()
+    }),
+    retryRequest: async (redraftedPayload) => {
+      retryPayloads.push(redraftedPayload);
+      return { ok: true, data: { task_id: "task-1" } };
+    },
+    log: null
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data.task_id, "task-1");
+  assert.deepEqual(retryPayloads, [{
+    protocol_version: "agent-collab-v0.4",
+    idempotency_key: "same-key"
+  }]);
+});
+
+test("maybeHandleProtocolNegotiation still returns guidance when no retry hook is provided", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-"));
+  const recovery = await maybeHandleProtocolNegotiation({
+    responseData: protocolPatchRequiredResponse(),
     method: "POST",
     path: "/tasks",
     payload: { protocol_version: "agent-collab-v0.3", idempotency_key: "same-key" },
@@ -87,7 +117,18 @@ test("maybeHandleProtocolNegotiation syncs patchable protocol bundle and returns
     protocol_version: "agent-collab-v0.3",
     idempotency_key: "same-key"
   });
-  assert.match(recovery.protocol_recovery.next_action, /redraft/);
+  assert.match(recovery.protocol_recovery.next_action, /automatic retry hook/);
+});
+
+test("buildAutoRedraftedPayload refuses task close payloads that need local review", () => {
+  assert.equal(inferProtocolOperation("POST", "/tasks/task-1/close"), "task_close");
+  const redrafted = buildAutoRedraftedPayload({
+    payload: { protocol_version: "agent-collab-v0.3", idempotency_key: "close-key" },
+    targetProtocolVersion: "agent-collab-v0.4",
+    operation: "task_close",
+    redraftPolicy: redraftPolicy()
+  });
+  assert.equal(redrafted, null);
 });
 
 test("maybeHandleProtocolNegotiation reports client upgrade without pretending schema sync is enough", async () => {
@@ -117,6 +158,7 @@ function fakeBundle() {
       protocol: "agent-collab",
       version: "agent-collab-v0.4",
       schema_digest: "sha256:test-v04",
+      redraft_policy: redraftPolicy(),
       urls: {
         bundle: "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle"
       }
@@ -130,6 +172,28 @@ function fakeBundle() {
     docs: {
       "README.md": "# AgentRelay Protocol v0.4"
     }
+  };
+}
+
+function protocolPatchRequiredResponse() {
+  return {
+    ok: false,
+    error: {
+      type: "protocol_negotiation",
+      code: "protocol_patch_required",
+      detail: {
+        server_protocol: { version: "agent-collab-v0.4", schema_digest: "sha256:test-v04" },
+        upgrade: { bundle_url: "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle" },
+        redraft_policy: redraftPolicy()
+      }
+    }
+  };
+}
+
+function redraftPolicy() {
+  return {
+    safe_to_auto_redraft: ["task_create", "artifact_submit"],
+    requires_local_agent_review: ["task_amend", "task_close"]
   };
 }
 

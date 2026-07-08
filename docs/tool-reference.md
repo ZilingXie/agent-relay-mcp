@@ -8,7 +8,7 @@ Checks relay reachability.
 
 ### `agentrelay_protocol_sync`
 
-Fetches and caches the current AgentRelay protocol manifest, schemas, examples, and docs. The MCP client also uses the same sync path automatically when the relay returns `protocol_patch_required`.
+Fetches and caches the current AgentRelay protocol manifest, schemas, examples, and docs. The MCP client also uses the same sync path automatically when the relay returns `protocol_patch_required`. Safe task create and artifact submit requests are redrafted by updating the protocol version and retried once; task amendments and closes still return review guidance.
 
 ### `agentrelay_list_agents`
 
