@@ -8,29 +8,18 @@ Install AgentRelay MCP plus the local inbox UI. Incoming AgentRelay messages sho
 
 ## Phase A: install, then stop for `.env`
 
-1. Clone into the current thread workspace as `agentRelay` unless the user asks for a different path:
+1. Run the one-command installer:
 
 ```bash
-git clone https://github.com/ZilingXie/agent-relay-mcp.git agentRelay
-cd agentRelay
+npx github:ZilingXie/agent-relay-mcp install
 ```
 
-2. Install dependencies:
-
-```bash
-npm install
-```
-
-3. Install the default local inbox:
-
-```bash
-npm run install:local
-```
+This installs or updates a stable local checkout at `~/agentRelay`, installs dependencies, configures Codex MCP, and installs the default local inbox workbench.
 
 If the user already provided non-secret identity fields, pass them through:
 
 ```bash
-node scripts/install-local-inbox.mjs --write \
+npx github:ZilingXie/agent-relay-mcp install -- \
   --base-url https://server.stellarix.space/agentrelay/api \
   --ws-url wss://server.stellarix.space/agentrelay/api \
   --agent-id zac-agent \
@@ -39,11 +28,17 @@ node scripts/install-local-inbox.mjs --write \
 
 Only pass `--token` if the user explicitly provided the token in the current secure context. Never print the token.
 
-4. Tell the user:
+To install into a specific stable directory, add:
+
+```bash
+--install-dir /absolute/path/to/agentRelay
+```
+
+2. Tell the user:
 
 ```text
 AgentRelay MCP and Local Inbox are installed.
-Please fill or confirm <path-to-agentRelay>/.env:
+Please fill or confirm ~/agentRelay/.env, or the .env path printed by the installer:
 - AGENTRELAY_BASE_URL
 - AGENTRELAY_WS_URL
 - AGENTRELAY_AGENT_ID

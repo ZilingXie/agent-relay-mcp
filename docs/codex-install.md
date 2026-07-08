@@ -10,22 +10,24 @@ Incoming Relay events are delivered to the local inbox source of truth first. Th
 
 ## Install From GitHub
 
-Install under the current Codex workspace/thread folder. The recommended folder name is `agentRelay`:
+Run the one-command installer:
 
 ```bash
-git clone https://github.com/ZilingXie/agent-relay-mcp.git agentRelay
-cd agentRelay
-npm install
+npx github:ZilingXie/agent-relay-mcp install
 ```
 
-## Install Local Inbox
+The command installs or updates a stable checkout at `~/agentRelay`, installs dependencies, configures Codex MCP, and installs the local inbox workbench.
 
-Run the local installer:
+To choose another stable install path:
 
 ```bash
-npm run install:local -- \
-  --base-url https://server.stellarix.space/agentrelay/api \
-  --ws-url wss://server.stellarix.space/agentrelay/api \
+npx github:ZilingXie/agent-relay-mcp install -- --install-dir /absolute/path/to/agentRelay
+```
+
+To pass known non-secret identity fields:
+
+```bash
+npx github:ZilingXie/agent-relay-mcp install -- \
   --agent-id zac-agent \
   --username zac
 ```
