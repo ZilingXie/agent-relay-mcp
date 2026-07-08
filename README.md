@@ -189,6 +189,12 @@ npm run check              # syntax and unit tests
 npm test                   # check + MCP smoke test
 ```
 
+When the relay reports patchable protocol drift, the MCP client syncs the
+current bundle automatically. For safe task create and artifact submit requests,
+it also updates the request protocol version and retries once while preserving
+the idempotency key. Task amendments and closes still return review guidance
+because they can change goals or completion authority.
+
 ## Legacy Codex App Thread Receiver
 
 The old Codex App thread receiver remains in `examples/codex-app-inbox` for reference, but it is no longer the default receive path. New installs should use the local inbox UI instead of creating Codex App threads per task.

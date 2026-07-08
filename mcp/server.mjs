@@ -484,7 +484,7 @@ async function relayPost(path, payload) {
   return relayRequest("POST", path, payload);
 }
 
-async function relayRequest(method, path, payload) {
+async function relayRequest(method, path, payload, options = {}) {
   const headers = { "Content-Type": "application/json" };
   headers["X-AgentRelay-Envelope"] = "v0.3";
   if (bearerToken) {
@@ -510,14 +510,18 @@ async function relayRequest(method, path, payload) {
     throw new Error(`AgentRelay returned non-JSON response (${response.status}): ${text}`);
   }
   if (!response.ok) {
-    const protocolRecovery = await maybeHandleProtocolNegotiation({
-      responseData: data,
-      method,
-      path,
-      payload,
-      baseUrl
-    });
-    if (protocolRecovery) return protocolRecovery;
+    if (!options.skipProtocolRepair) {
+      const protocolRecovery = await maybeHandleProtocolNegotiation({
+        responseData: data,
+        method,
+        path,
+        payload,
+        baseUrl,
+        retryRequest: (redraftedPayload) =>
+          relayRequest(method, path, redraftedPayload, { skipProtocolRepair: true })
+      });
+      if (protocolRecovery) return protocolRecovery;
+    }
     throw new Error(`AgentRelay ${method} ${path} failed (${response.status}): ${JSON.stringify(data)}`);
   }
   return data;
