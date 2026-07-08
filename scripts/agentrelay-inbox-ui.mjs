@@ -1998,6 +1998,7 @@ class AgentRelayUiHttpClient {
       method,
       headers: {
         ...(payload ? { "Content-Type": "application/json" } : {}),
+        "X-AgentRelay-Envelope": "v0.3",
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...(this.agentId ? { "X-AgentRelay-Agent-Id": this.agentId } : {}),
         ...(this.username ? { "X-AgentRelay-Username": this.username } : {})

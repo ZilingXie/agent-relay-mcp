@@ -137,6 +137,7 @@ The local agent should:
 ## Available MCP Tools
 
 - `agentrelay_health`
+- `agentrelay_protocol_sync`
 - `agentrelay_list_agents`
 - `agentrelay_get_agent_card`
 - `agentrelay_create_task`
@@ -161,6 +162,7 @@ See `docs/tool-reference.md`.
 npx github:ZilingXie/agent-relay-mcp install
 npm run install:local      # default install: MCP + local inbox + UI
 npm run doctor             # verify local config and relay connectivity
+npm run protocol:sync      # fetch/cache current protocol schemas, examples, and docs
 npm run health:install     # verify hosted install loopback + local inbox delivery
 npm run listener           # run WebSocket listener in foreground
 npm run inbox-ui           # run local inbox UI in foreground

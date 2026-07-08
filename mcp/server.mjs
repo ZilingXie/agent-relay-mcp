@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
+import { maybeHandleProtocolNegotiation, syncCurrentProtocol } from "../scripts/protocol-sync.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -38,6 +39,18 @@ function registerTools(mcpServer) {
       inputSchema: {}
     },
     async () => jsonResult(await relayGet("/health"))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_protocol_sync",
+    {
+      title: "Sync AgentRelay protocol bundle",
+      description: "Fetch and cache the current AgentRelay protocol manifest, schemas, examples, and docs.",
+      inputSchema: {}
+    },
+    async () => {
+      return jsonResult(await syncCurrentProtocol({ baseUrl }));
+    }
   );
 
   mcpServer.registerTool(
@@ -473,6 +486,7 @@ async function relayPost(path, payload) {
 
 async function relayRequest(method, path, payload) {
   const headers = { "Content-Type": "application/json" };
+  headers["X-AgentRelay-Envelope"] = "v0.3";
   if (bearerToken) {
     headers.Authorization = `Bearer ${bearerToken}`;
   }
@@ -496,6 +510,14 @@ async function relayRequest(method, path, payload) {
     throw new Error(`AgentRelay returned non-JSON response (${response.status}): ${text}`);
   }
   if (!response.ok) {
+    const protocolRecovery = await maybeHandleProtocolNegotiation({
+      responseData: data,
+      method,
+      path,
+      payload,
+      baseUrl
+    });
+    if (protocolRecovery) return protocolRecovery;
     throw new Error(`AgentRelay ${method} ${path} failed (${response.status}): ${JSON.stringify(data)}`);
   }
   return data;
