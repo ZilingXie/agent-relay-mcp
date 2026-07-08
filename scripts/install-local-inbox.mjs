@@ -165,6 +165,7 @@ async function installCodexMcpConfig({ root, configPath, envPath, baseUrl, wsUrl
     resolve(root, "scripts/install-codex-mcp.mjs"),
     "--write",
     "--skip-env",
+    "--quiet",
     "--config",
     configPath,
     "--env",

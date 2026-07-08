@@ -70,18 +70,20 @@ if (!skipEnv) {
   }
 }
 
-console.log(`Installed AgentRelay MCP server '${serverName}' into ${configPath}`);
-console.log(`Env file: ${envStatus}`);
-console.log(`Base URL: ${baseUrl}`);
-console.log(`WebSocket URL: ${wsUrl}`);
-console.log("Next steps for the local agent:");
-console.log("1. Tell the user that Codex MCP config is installed.");
-console.log("2. Tell the user to fill or confirm AGENTRELAY_BASE_URL, AGENTRELAY_WS_URL, AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, and AGENTRELAY_TOKEN in the .env file.");
-console.log("3. Do not print AGENTRELAY_TOKEN in chat or logs.");
-console.log("4. For the default local inbox UI, run `npm run install:local` instead of using manual polling or Codex App thread delivery.");
-console.log("5. Tell the user to restart Codex App or open a new Codex session, then tell the agent when that is done.");
-console.log("6. Only after the user says .env is filled and Codex is restarted/new-sessioned, run `npm run doctor`.");
-console.log("7. If doctor passes, verify MCP by calling `agentrelay_health` and `agentrelay_list_agents` in the restarted/new Codex session.");
+if (!args.quiet) {
+  console.log(`Installed AgentRelay MCP server '${serverName}' into ${configPath}`);
+  console.log(`Env file: ${envStatus}`);
+  console.log(`Base URL: ${baseUrl}`);
+  console.log(`WebSocket URL: ${wsUrl}`);
+  console.log("Next steps for the local agent:");
+  console.log("1. Tell the user that Codex MCP config is installed.");
+  console.log("2. Tell the user to fill or confirm AGENTRELAY_BASE_URL, AGENTRELAY_WS_URL, AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, and AGENTRELAY_TOKEN in the .env file.");
+  console.log("3. Do not print AGENTRELAY_TOKEN in chat or logs.");
+  console.log("4. For the default local inbox UI, run `npm run install:local` instead of using manual polling or Codex App thread delivery.");
+  console.log("5. Tell the user to restart Codex App or open a new Codex session, then tell the agent when that is done.");
+  console.log("6. Only after the user says .env is filled and Codex is restarted/new-sessioned, run `npm run doctor`.");
+  console.log("7. If doctor passes, verify MCP by calling `agentrelay_health` and `agentrelay_list_agents` in the restarted/new Codex session.");
+}
 
 function buildBlock({ serverName, repoRoot, mcpServerPath, envPath }) {
   return `# BEGIN AgentRelay MCP managed block\n[mcp_servers.${serverName}]\ncommand = "node"\nargs = [${tomlString(mcpServerPath)}]\ncwd = ${tomlString(repoRoot)}\nstartup_timeout_sec = 10\ntool_timeout_sec = 60\n\n[mcp_servers.${serverName}.env]\nAGENTRELAY_ENV_PATH = ${tomlString(envPath)}\n# END AgentRelay MCP managed block\n`;
@@ -108,7 +110,7 @@ function parseArgs(argv) {
       fail(`Unexpected positional argument: ${entry}`);
     }
     const [rawKey, inlineValue] = entry.slice(2).split("=", 2);
-    if (["write", "help", "skip-env", "overwrite-env"].includes(rawKey)) {
+    if (["write", "help", "skip-env", "overwrite-env", "quiet"].includes(rawKey)) {
       parsed[rawKey] = true;
       continue;
     }
@@ -129,7 +131,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage:\n  node scripts/install-codex-mcp.mjs --write [--agent-id zac-agent] [--username zac] [--token TOKEN] [--base-url URL]\n\nOptions:\n  --base-url URL      Relay HTTP URL. Default: ${DEFAULT_BASE_URL}\n  --ws-url URL        Relay WebSocket URL. Default: derived from --base-url\n  --agent-id ID       Agent identity issued by the relay admin, for example zac-agent\n  --username NAME     Human/user identity issued by the relay admin, for example zac\n  --token TOKEN       Cloud-issued relay token. If omitted, the .env file contains a placeholder for the user to fill.\n  --env PATH          Local .env path. Default: <repo>/.env\n  --config PATH       Codex config path. Default: ~/.codex/config.toml\n  --skip-env          Only write Codex config; do not write .env\n  --overwrite-env     Replace an existing .env after writing a timestamped backup. Default: preserve existing .env.\n  --name NAME         MCP server name in Codex config. Default: agentrelay\n\nWithout --write, prints the config block and .env preview only.`);
+  console.log(`Usage:\n  node scripts/install-codex-mcp.mjs --write [--agent-id zac-agent] [--username zac] [--token TOKEN] [--base-url URL]\n\nOptions:\n  --base-url URL      Relay HTTP URL. Default: ${DEFAULT_BASE_URL}\n  --ws-url URL        Relay WebSocket URL. Default: derived from --base-url\n  --agent-id ID       Agent identity issued by the relay admin, for example zac-agent\n  --username NAME     Human/user identity issued by the relay admin, for example zac\n  --token TOKEN       Cloud-issued relay token. If omitted, the .env file contains a placeholder for the user to fill.\n  --env PATH          Local .env path. Default: <repo>/.env\n  --config PATH       Codex config path. Default: ~/.codex/config.toml\n  --skip-env          Only write Codex config; do not write .env\n  --overwrite-env     Replace an existing .env after writing a timestamped backup. Default: preserve existing .env.\n  --quiet             Suppress final guidance output after writing config.\n  --name NAME         MCP server name in Codex config. Default: agentrelay\n\nWithout --write, prints the config block and .env preview only.`);
 }
 
 function resolveHome(path) {
