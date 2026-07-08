@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
+import { syncCurrentProtocol } from "./protocol-sync.mjs";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -45,9 +46,19 @@ if (existsSync(configPath)) {
 
 try {
   const response = await fetch(`${baseUrl}/health`, { headers: relayHeaders() });
+  const health = await readJsonResponse(response);
   check("AgentRelay HTTP health", response.ok, `${response.status} ${response.statusText} at ${baseUrl}`);
+  const protocol = health.protocol || {};
+  check("AgentRelay protocol published", Boolean(protocol.version && protocol.schema_digest), `${protocol.version || "missing"} ${protocol.schema_digest || ""}`.trim());
 } catch (error) {
   check("AgentRelay HTTP health", false, `${error.message} at ${baseUrl}`);
+}
+
+try {
+  const result = await syncCurrentProtocol({ baseUrl, log: null });
+  check("AgentRelay protocol bundle sync", true, `${result.version} ${result.schema_digest} -> ${result.cache_dir}`);
+} catch (error) {
+  check("AgentRelay protocol bundle sync", false, error.message);
 }
 
 try {
@@ -80,7 +91,14 @@ function relayHeaders() {
   if (process.env.AGENTRELAY_TOKEN) headers.Authorization = `Bearer ${process.env.AGENTRELAY_TOKEN}`;
   if (process.env.AGENTRELAY_AGENT_ID) headers["X-AgentRelay-Agent-Id"] = process.env.AGENTRELAY_AGENT_ID;
   if (process.env.AGENTRELAY_USERNAME) headers["X-AgentRelay-Username"] = process.env.AGENTRELAY_USERNAME;
+  headers["X-AgentRelay-Envelope"] = "v0.3";
   return headers;
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  if (!text) return {};
+  return JSON.parse(text);
 }
 
 function websocketHello(url) {

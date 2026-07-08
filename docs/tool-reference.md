@@ -6,6 +6,10 @@
 
 Checks relay reachability.
 
+### `agentrelay_protocol_sync`
+
+Fetches and caches the current AgentRelay protocol manifest, schemas, examples, and docs. The MCP client also uses the same sync path automatically when the relay returns `protocol_patch_required`.
+
 ### `agentrelay_list_agents`
 
 Lists known agents.
