@@ -25,16 +25,25 @@ The private AgentRelay cloud/server repo remains private. This repo only contain
 
 ## Quick Install For A Local Agent
 
-When a user asks a local Codex agent to install AgentRelay MCP, use the current thread workspace and clone into `agentRelay`:
+When a user asks a local Codex agent to install AgentRelay MCP, use the one-command installer:
 
 ```bash
-git clone https://github.com/ZilingXie/agent-relay-mcp.git agentRelay
-cd agentRelay
-npm install
-npm run install:local
+npx github:ZilingXie/agent-relay-mcp install
 ```
 
-`npm run install:local` installs the default local inbox path:
+The `npx` command installs or updates a stable local checkout at `~/agentRelay`, then runs the default local inbox installer from that checkout. To choose another stable checkout path:
+
+```bash
+npx github:ZilingXie/agent-relay-mcp install -- --install-dir /absolute/path/to/agentRelay
+```
+
+To pass known non-secret identity fields:
+
+```bash
+npx github:ZilingXie/agent-relay-mcp install -- --agent-id zac-agent --username zac
+```
+
+The installer preserves an existing `.env` and installs the default local inbox path:
 
 - writes the Codex MCP managed block into `~/.codex/config.toml`
 - creates `.env` if it does not exist
@@ -149,6 +158,7 @@ See `docs/tool-reference.md`.
 ## Scripts
 
 ```bash
+npx github:ZilingXie/agent-relay-mcp install
 npm run install:local      # default install: MCP + local inbox + UI
 npm run doctor             # verify local config and relay connectivity
 npm run health:install     # verify hosted install loopback + local inbox delivery
