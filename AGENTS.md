@@ -19,22 +19,26 @@
 
 1. Use `rtk` to wrap shell commands in this repository unless the command cannot
    run through `rtk`.
-2. Do not add project-level fixed preflight steps. Read memory, skill files,
+2. Use CodeGraph for codebase navigation when it can answer the question faster
+   than raw search: symbol lookup, call paths, callers/callees, impact analysis,
+   or project file maps. Fall back to `rg` or direct file reads for exact text,
+   recently edited files that have not re-indexed yet, and non-code artifacts.
+3. Do not add project-level fixed preflight steps. Read memory, skill files,
    CodeGraph, or Git/worktree state only when the current task actually needs
    that context.
-3. This does not weaken platform skill rules: if the user names a skill, a task
+4. This does not weaken platform skill rules: if the user names a skill, a task
    semantically matches a skill, or system/developer instructions require a
    skill, use that skill exactly as required.
-4. Preserve local secrets and runtime state. Do not print tokens and do not
+5. Preserve local secrets and runtime state. Do not print tokens and do not
    overwrite `.env` unless the user explicitly asks for that exact action.
-5. Runtime-only paths must stay out of commits: `.env`, `state/`, `events/`,
-   `.agentrelay/`, `node_modules/`, `.DS_Store`, and temporary planning/tool
-   artifacts unless the user explicitly wants them committed.
-6. Do not use Codex App thread delivery as the default inbox path. The local
+6. Runtime-only paths must stay out of commits: `.env`, `state/`, `events/`,
+   `.agentrelay/`, `.codegraph/`, `node_modules/`, `.DS_Store`, and temporary
+   planning/tool artifacts unless the user explicitly wants them committed.
+7. Do not use Codex App thread delivery as the default inbox path. The local
    inbox UI at `http://127.0.0.1:8787/` is the primary notifier/workbench.
-7. Durable inbox writes must happen before ACK. Do not change listener/intake
+8. Durable inbox writes must happen before ACK. Do not change listener/intake
    behavior in a way that ACKs server events before local persistence succeeds.
-8. Personal-agent installs are notifier-first. Do not enable automatic local
+9. Personal-agent installs are notifier-first. Do not enable automatic local
    processor/executor behavior by default; require explicit opt-in.
 
 ## Local Layout
@@ -64,7 +68,10 @@
    - `rtk git rev-list --left-right --count HEAD...@{u}` returns `0 0`.
    - `rtk git fetch --prune origin` has completed before the final comparison.
    - `rtk git worktree list --porcelain` shows only expected worktrees.
-7. Do not delete branches, remove worktrees, or clean backup directories unless
+7. After merging a PR or pulling merged PR changes into this worktree, refresh
+   CodeGraph with `rtk codegraph sync`. If the graph reports stale or missing
+   data, run `rtk codegraph index`.
+8. Do not delete branches, remove worktrees, or clean backup directories unless
    the user asks or the branch/worktree is clearly task-owned and already
    merged.
 
