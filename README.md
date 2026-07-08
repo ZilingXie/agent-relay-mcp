@@ -124,7 +124,7 @@ The user should only need to:
 - create tasks
 - provide extra information when the local agent asks
 - approve/accept completed work
-- tune `AGENTS.md` when behavior should change
+- tune `templates/local-inbox/AGENTS.md` when product local-agent behavior should change
 
 The local agent should:
 
@@ -185,3 +185,4 @@ The old Codex App thread receiver remains in `examples/codex-app-inbox` for refe
 - `docs/tool-reference.md`: MCP tool reference.
 - `docs/completion-decision-workflow.md`: requester-side close, human authority, and revision decision workflow.
 - `docs/security.md`: security notes.
+- `templates/local-inbox/AGENTS.md`: shipped product Local Inbox agent behavior template.
