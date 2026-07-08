@@ -1,10 +1,10 @@
 # Install Instructions for Local Codex
 
-If the user says: "install ZilingXie/agent-relay-mcp", install the default local inbox workbench.
+If the user says: "install ZilingXie/agent-relay-mcp", install the default personal-agent local inbox/notifier.
 
 ## Goal
 
-Install AgentRelay MCP plus the local inbox UI. Incoming AgentRelay messages should flow into local inbox state and `http://127.0.0.1:8787/`; the local agent should not rely on polling server inbox messages after listener delivery.
+Install AgentRelay MCP plus the local inbox UI. Incoming AgentRelay messages should flow into local inbox state and `http://127.0.0.1:8787/`; the local agent should not rely on polling server inbox messages after listener delivery. The default install is `personal_agent` + `notify_only`: it does not automatically invoke the user's local agent.
 
 ## Phase A: install, then stop for `.env`
 
@@ -102,13 +102,14 @@ The local agent should:
 
 - receive events through the listener
 - write durable inbox state before ACK
-- automatically process messages through the LLM processor
-- automatically send low-risk revision requests to remote agents when the task is not complete
+- automatically process messages through the LLM processor unless the user explicitly opts in
+- automatically send revision requests, artifacts, amendments, or close calls without user/local-agent review
 - ask the user before commitments, sensitive disclosures, final external replies, or task closure
 
 ## Important Constraints
 
 - Preserve an existing `.env`; only update the non-secret local inbox managed block.
+- Keep `AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0` and `AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0` by default.
 - Store tokens in `.env`, not in `~/.codex/config.toml`.
 - Do not print secrets.
 - Do not install the legacy Codex App thread receiver unless the user explicitly asks for it.

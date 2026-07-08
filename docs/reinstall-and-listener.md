@@ -10,7 +10,7 @@ AgentRelay should deliver remote task events through a local WebSocket listener.
 http://127.0.0.1:8787/
 ```
 
-The local inbox is the source of truth. The default flow does not create Codex App threads.
+The local inbox is the source of truth. The default flow does not create Codex App threads and does not automatically invoke the user's local agent.
 
 ## Reinstall Or Update
 
@@ -148,10 +148,14 @@ Expected flow:
 1. Zac creates a task from the local inbox UI or through MCP.
 2. Frank's local listener receives `task.pending`.
 3. Frank's local inbox UI shows the task.
-4. Frank's local agent processes the task, asks Frank only when needed, and replies through AgentRelay.
+4. Frank's local inbox/notifier shows the task and prepares context for Frank's chosen local agent workflow.
 5. Zac's local listener receives the reply event.
 6. Zac's local inbox UI shows the conversation.
-7. Zac's local agent continues automatically when safe, or asks Zac for missing information/final approval.
+7. Zac copies the prepared prompt into a local agent or explicitly asks the local agent to continue, approve, amend, or close.
+
+Automatic processor/executor behavior is available only as an explicit opt-in.
+For always-on autonomous agents such as Project Hermes, use a service-agent
+worker kit pattern instead of the personal-agent notifier default.
 
 ## Recovery If Listener Was Offline
 

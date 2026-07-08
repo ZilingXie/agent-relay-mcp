@@ -32,17 +32,23 @@ export function buildLocalInboxEnvBlock({
   stateDir = resolve(repoRoot, "state"),
   hookCommand = `${process.execPath} ${resolve(repoRoot, "scripts/agentrelay-inbox-intake.mjs")}`,
   localAgentRunner = "codex",
+  agentRole = "personal_agent",
+  executionMode = "notify_only",
+  processOnReceive = false,
+  executeOnReceive = false,
   host = "127.0.0.1",
   port = 8787
 }) {
   return [
     "# BEGIN AgentRelay Local Inbox managed block",
+    `AGENTRELAY_AGENT_ROLE=${envValue(agentRole)}`,
+    `AGENTRELAY_EXECUTION_MODE=${envValue(executionMode)}`,
     `AGENTRELAY_INBOX_DIR=${envValue(inboxDir)}`,
     `AGENTRELAY_STATE_DIR=${envValue(stateDir)}`,
     `AGENTRELAY_LISTENER_HOOK=${envValue(hookCommand)}`,
     "AGENTRELAY_ACK_ON_INBOX_RECEIVED=1",
-    "AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=1",
-    "AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=1",
+    `AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=${processOnReceive ? "1" : "0"}`,
+    `AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=${executeOnReceive ? "1" : "0"}`,
     `AGENTRELAY_LOCAL_AGENT_RUNNER=${envValue(localAgentRunner)}`,
     `AGENTRELAY_INBOX_UI_HOST=${envValue(host)}`,
     `AGENTRELAY_INBOX_UI_PORT=${envValue(String(port))}`,
@@ -89,11 +95,15 @@ async function installLocalInbox({
   const stateDir = resolve(root, "state");
   const host = args.host || process.env.AGENTRELAY_INBOX_UI_HOST || "127.0.0.1";
   const port = Number.parseInt(args.port || process.env.AGENTRELAY_INBOX_UI_PORT || "8787", 10);
+  const processOnReceive = Boolean(args["enable-auto-processor"]);
+  const executeOnReceive = Boolean(args["enable-auto-executor"]);
   const localBlock = buildLocalInboxEnvBlock({
     repoRoot: root,
     inboxDir,
     stateDir,
     hookCommand: `${shellQuote(nodePath)} ${shellQuote(resolve(root, "scripts/agentrelay-inbox-intake.mjs"))}`,
+    processOnReceive,
+    executeOnReceive,
     host,
     port
   });
@@ -153,11 +163,13 @@ async function installLocalInbox({
   console.log(`Installed AgentRelay Local Inbox in ${root}`);
   console.log(`Env file: ${envPath}`);
   console.log(`Inbox UI: http://${host}:${port}/`);
+  console.log("Default receive mode: personal_agent notify_only. Incoming tasks are saved and shown; no local agent is auto-run.");
   console.log("Next steps:");
   console.log("1. Fill AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, and AGENTRELAY_TOKEN in .env without sharing the token.");
   console.log("2. Restart Codex App or open a new Codex session.");
   console.log("3. Ask the local agent to run npm run doctor and verify AgentRelay MCP health/list_agents.");
   console.log("4. Run npm run health:install and confirm the synthetic health check appears in the local inbox UI.");
+  console.log("5. To opt into automatic local processing later, explicitly set AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=1 and only enable AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=1 after reviewing the safety policy.");
 }
 
 async function installCodexMcpConfig({ root, configPath, envPath, baseUrl, wsUrl, agentId, username, token }) {
@@ -208,7 +220,14 @@ function parseArgs(argv) {
     const entry = argv[index];
     if (!entry.startsWith("--")) throw new Error(`Unexpected positional argument: ${entry}`);
     const [rawKey, inlineValue] = entry.slice(2).split("=", 2);
-    if (["write", "skip-ui-service", "skip-listener-service", "help"].includes(rawKey)) {
+    if ([
+      "write",
+      "skip-ui-service",
+      "skip-listener-service",
+      "enable-auto-processor",
+      "enable-auto-executor",
+      "help"
+    ].includes(rawKey)) {
       parsed[rawKey] = true;
       continue;
     }
@@ -238,6 +257,8 @@ Options:
   --config PATH               Codex config path. Default: ~/.codex/config.toml
   --host HOST                 Inbox UI host. Default: 127.0.0.1
   --port PORT                 Inbox UI port. Default: 8787
+  --enable-auto-processor     Opt in to running the local LLM processor when a message arrives
+  --enable-auto-executor      Opt in to running the structured action executor after processor output
   --skip-ui-service           Do not install/start the inbox UI service
   --skip-listener-service     Do not install/start the listener service
 `);
