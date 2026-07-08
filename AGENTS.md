@@ -11,7 +11,10 @@
    template. New default receive-path work should prefer the local inbox UI.
 4. Use `README.md` for public overview, `INSTALL_FOR_CODEX.md` for direct agent
    install flow, and `docs/*.md` for focused user or protocol documentation.
-5. The private AgentRelay server is out of scope for this repo. This repo owns
+5. The active project plan lives at
+   `https://server.stellarix.space/agentrelay/plan.html#intro`. Treat it as the
+   planning source of truth, and update future plans there.
+6. The private AgentRelay server is out of scope for this repo. This repo owns
    the public MCP client, local inbox UI, listener, processor, executor, install
    scripts, templates, and tests.
 
