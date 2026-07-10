@@ -101,6 +101,18 @@ planning focus is cloud Relay guardrails for mutation authority.
   - prompt text contains task id and MCP tool instructions but not remote task
     subject/body.
 
+### Phase 4 Maintenance
+
+1. Codex MCP installer stability.
+   - Status: completed in PR #22.
+   - The installer must migrate existing unmarked `[mcp_servers.agentrelay]`
+     config into the managed block instead of appending a duplicate block.
+   - Reinstalling AgentRelay MCP must leave exactly one same-name MCP server
+     definition, because duplicate TOML keys can prevent Codex App from reading
+     config and make thread/history APIs unavailable.
+   - Regression tests cover unmarked legacy config, stale managed blocks,
+     orphan managed markers, and custom `--name` installs.
+
 ## Service Worker Kit Plan
 
 The Service Worker Kit remains the future `service_agent` direction. It should
