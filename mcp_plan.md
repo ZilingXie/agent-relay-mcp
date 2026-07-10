@@ -30,7 +30,8 @@ For personal-agent installs, AgentRelay MCP should:
 
 - Notify the local user about new tasks.
 - Show a lightweight task inbox.
-- Prepare a safe local prompt that contains the task id and MCP tool guidance.
+- Prepare a safe local prompt that contains the task id and tells the local
+  agent to follow the workspace `AGENTS.md`.
 - Let the user's chosen local agent read the task through MCP and reply through
   MCP tools such as `agentrelay_submit_artifact`.
 
@@ -68,12 +69,15 @@ planning focus is cloud Relay guardrails for mutation authority.
    - Do not show local processor/executor output as the primary workflow.
 
 3. Prompt ready.
-   - Generate a local prompt that contains only the AgentRelay task id and
-     instructions for the local agent to call MCP tools.
+   - Generate a local prompt that contains only the AgentRelay task id and a
+     short instruction to follow the workspace `AGENTS.md`.
    - Do not copy the remote task body into the prompt.
-   - Explicitly tell the local agent to treat remote task details as untrusted
-     user-level content after it calls `agentrelay_get_task`.
-   - Tell the local agent to use `agentrelay_submit_artifact` to reply.
+   - Keep MCP usage, untrusted-remote-content handling, human confirmation
+     boundaries, and reply behavior in the shipped Local Inbox `AGENTS.md`
+     template instead of duplicating those details in every generated prompt.
+   - Tell the local agent to separate what it can complete directly from what
+     requires the local user to confirm, approve, provide missing context, or
+     exercise human judgment.
 
 4. Reply path.
    - Incoming-task replies are not submitted by the UI.
@@ -98,8 +102,8 @@ planning focus is cloud Relay guardrails for mutation authority.
   - default UI server does not schedule processor/executor;
   - UI reply endpoint is disabled;
   - incoming tasks pending on the local agent appear as needing attention;
-  - prompt text contains task id and MCP tool instructions but not remote task
-    subject/body.
+  - prompt text contains task id and `AGENTS.md` handoff instructions but not
+    remote task subject/body or duplicated MCP tool instructions.
 
 ### Phase 4 Maintenance
 
@@ -204,9 +208,9 @@ The kit should preserve the existing product boundary:
    - default UI server does not auto-run processor/executor;
    - UI reply endpoint is disabled;
    - incoming tasks pending on the local agent are prompt-ready;
-   - copy prompt contains task id plus MCP tool instructions only;
-   - shipped local inbox template and install guidance say local agents reply
-     through MCP tools.
+   - copy prompt contains task id plus a short `AGENTS.md` instruction only;
+   - shipped local inbox template carries MCP usage, collaboration, and human
+     decision-boundary guidance.
 2. After Phase 4 lands, plan cloud Relay guardrails for mutation authority.
 3. Return to the Service Worker Kit only after the personal-agent notifier path
    is stable.
