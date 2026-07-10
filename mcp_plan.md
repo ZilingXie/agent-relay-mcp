@@ -113,6 +113,15 @@ planning focus is cloud Relay guardrails for mutation authority.
    - Regression tests cover unmarked legacy config, stale managed blocks,
      orphan managed markers, and custom `--name` installs.
 
+2. Local executor artifact status normalization.
+   - Status: completed in the blocked artifact submission fix.
+   - Local inbox executor-generated artifact submissions must send
+     `next_status=delivery_pending` instead of echoing the fetched task's
+     current status. A task can be locally actionable while the Relay status is
+     `blocked`, but the artifact endpoint validates transition status values.
+   - Regression coverage verifies that a blocked task pending on the local
+     agent submits with `nextStatus: "delivery_pending"`.
+
 ## Service Worker Kit Plan
 
 The Service Worker Kit remains the future `service_agent` direction. It should
