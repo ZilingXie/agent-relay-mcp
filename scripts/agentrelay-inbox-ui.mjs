@@ -2638,10 +2638,35 @@ button.list-header:focus-visible {
   color: var(--text);
 }
 
+.detail-section {
+  min-width: 0;
+  background: var(--surface);
+}
+
+.conversation-section {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-section-title {
+  margin: 0;
+  padding: 11px 22px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
 .messages {
   min-height: 0;
   overflow-y: auto;
   padding: 22px;
+}
+
+.conversation-section .messages {
+  padding-top: 10px;
 }
 
 .message {
@@ -2856,10 +2881,14 @@ button.list-header:focus-visible {
 }
 
 .handoff-prompt {
-  margin: 0 22px 14px;
+  margin: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.prompt-section {
+  padding: 12px 22px 16px;
 }
 
 .handoff-prompt summary {
@@ -3617,13 +3646,18 @@ function renderChat({ issue, timeline }) {
     '</div>' +
     (issue.needsHuman ? '<div class="attention-strip">' + escapeHtml(humanAttentionText(issue)) + '</div>' : "") +
   '</header>' +
-  '<section class="messages">' + renderMessages(timeline || []) + renderPendingMarker(issue) + '</section>' +
-  renderHandoffPrompt(issue);
+  '<section class="detail-section conversation-section" aria-label="交流历史">' +
+    '<h3 class="detail-section-title">交流历史</h3>' +
+    '<div class="messages">' + renderMessages(timeline || []) + renderPendingMarker(issue) + '</div>' +
+  '</section>' +
+  '<section class="detail-section prompt-section" aria-label="Prompt ready for your local agent">' +
+    renderHandoffPrompt(issue) +
+  '</section>';
 }
 
 function renderHandoffPrompt(issue) {
   const prompt = buildPersonalAgentHandoffPrompt(issue);
-  return '<details class="handoff-prompt">' +
+  return '<details class="handoff-prompt" open>' +
     '<summary>Prompt ready for your local agent</summary>' +
     '<textarea readonly spellcheck="false" data-handoff-prompt>' + escapeHtml(prompt) + '</textarea>' +
     '<button class="copy-prompt-button" type="button" data-copy-handoff-prompt>Copy prompt</button>' +

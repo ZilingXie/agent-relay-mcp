@@ -1899,6 +1899,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.doesNotMatch(js, /function restoreComposerDraft/);
     assert.doesNotMatch(js, /function isComposerEditing/);
     assert.match(js, /function bindHandoffPromptControls/);
+    assert.match(js, /class="detail-section conversation-section"/);
+    assert.match(js, /交流历史/);
+    assert.match(js, /class="detail-section prompt-section"/);
+    assert.match(js, /<details class="handoff-prompt" open>/);
     assert.match(js, /data-copy-handoff-prompt/);
     assert.match(js, /agentrelay_get_task/);
     assert.match(js, /agentrelay_submit_artifact/);
@@ -1967,6 +1971,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(css, /\.delivery-indicator\.delivered/);
     assert.match(css, /\.message-error/);
     assert.match(css, /\.pending-marker/);
+    assert.match(css, /\.detail-section/);
+    assert.match(css, /\.conversation-section/);
+    assert.match(css, /\.detail-section-title/);
+    assert.match(css, /\.prompt-section/);
     assert.match(css, /\.message-line/);
     assert.doesNotMatch(css, /top: 12px/);
     assert.doesNotMatch(css, /position: absolute;\n  right: 10px;\n  top: 12px/);
