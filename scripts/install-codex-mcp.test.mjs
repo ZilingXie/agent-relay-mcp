@@ -103,6 +103,91 @@ test("installer quiet mode suppresses final guidance output", async () => {
   assert.doesNotMatch(result.stderr, /Next steps/);
 });
 
+test("installer migrates an unmarked existing agentrelay MCP server instead of duplicating it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-codex-install-"));
+  const envPath = join(root, ".env");
+  const configPath = join(root, "config.toml");
+  await writeFile(configPath, [
+    'model = "gpt-5"',
+    "",
+    "[mcp_servers.agentrelay]",
+    'command = "node"',
+    'args = ["/old/vendor_imports/agentrelay/mcp/server.mjs"]',
+    'cwd = "/old/vendor_imports/agentrelay"',
+    "",
+    "[mcp_servers.agentrelay.env]",
+    'AGENTRELAY_ENV_PATH = "/old/vendor_imports/agentrelay/.env"',
+    "",
+    "[mcp_servers.other]",
+    'command = "node"',
+    ""
+  ].join("\n"));
+
+  const result = await runNode([
+    installer,
+    "--write",
+    "--quiet",
+    "--config", configPath,
+    "--env", envPath,
+    "--agent-id", "dedupe-agent",
+    "--username", "dedupe-user"
+  ]);
+
+  assert.equal(result.code, 0);
+  const config = await readFile(configPath, "utf8");
+  assert.equal((config.match(/\[mcp_servers\.agentrelay\]/g) || []).length, 1);
+  assert.equal((config.match(/BEGIN AgentRelay MCP managed block/g) || []).length, 1);
+  assert.equal((config.match(/END AgentRelay MCP managed block/g) || []).length, 1);
+  assert.doesNotMatch(config, /vendor_imports/);
+  assert.match(config, /AGENTRELAY_ENV_PATH = /);
+  assert.match(config, /\[mcp_servers\.other\]/);
+  assert.match(config, /model = "gpt-5"/);
+});
+
+test("installer removes stale managed and unmarked blocks for the selected server name", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-codex-install-"));
+  const envPath = join(root, ".env");
+  const configPath = join(root, "config.toml");
+  await writeFile(configPath, [
+    "# BEGIN AgentRelay MCP managed block",
+    "[mcp_servers.customrelay]",
+    'command = "node"',
+    'cwd = "/stale/managed"',
+    "# END AgentRelay MCP managed block",
+    "# END AgentRelay MCP managed block",
+    "",
+    "[mcp_servers.customrelay]",
+    'command = "node"',
+    'cwd = "/stale/unmarked"',
+    "",
+    "[mcp_servers.agentrelay]",
+    'command = "node"',
+    'cwd = "/keep/default-agentrelay"',
+    ""
+  ].join("\n"));
+
+  const result = await runNode([
+    installer,
+    "--write",
+    "--quiet",
+    "--name", "customrelay",
+    "--config", configPath,
+    "--env", envPath,
+    "--agent-id", "custom-agent",
+    "--username", "custom-user"
+  ]);
+
+  assert.equal(result.code, 0);
+  const config = await readFile(configPath, "utf8");
+  assert.equal((config.match(/\[mcp_servers\.customrelay\]/g) || []).length, 1);
+  assert.equal((config.match(/BEGIN AgentRelay MCP managed block/g) || []).length, 1);
+  assert.equal((config.match(/END AgentRelay MCP managed block/g) || []).length, 1);
+  assert.doesNotMatch(config, /stale\/managed/);
+  assert.doesNotMatch(config, /stale\/unmarked/);
+  assert.match(config, /\[mcp_servers\.agentrelay\]/);
+  assert.match(config, /keep\/default-agentrelay/);
+});
+
 function runNode(args) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(process.execPath, args, {

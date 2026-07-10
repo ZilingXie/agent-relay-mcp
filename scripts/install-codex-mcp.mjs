@@ -48,7 +48,7 @@ if (existsSync(configPath)) {
   console.error(`Backup written: ${backupPath}`);
 }
 
-const next = upsertManagedBlock(current, block);
+const next = upsertManagedBlock(current, block, { serverName });
 await writeFile(configPath, next);
 
 let envStatus = skipEnv ? "not written" : envPath;
@@ -93,13 +93,53 @@ function buildEnv({ baseUrl, wsUrl, agentId, username, token }) {
   return `# AgentRelay MCP local credentials. Keep this file private.\n# Fill all values, then restart Codex App or open a new Codex session.\nAGENTRELAY_BASE_URL=${envValue(baseUrl)}\nAGENTRELAY_WS_URL=${envValue(wsUrl)}\nAGENTRELAY_AGENT_ID=${envValue(agentId || "replace-with-agent-id")}\nAGENTRELAY_USERNAME=${envValue(username || "replace-with-username")}\nAGENTRELAY_TOKEN=${envValue(token || "replace-with-cloud-token")}\n\n# Local listener writes received task.pending events here.\nAGENTRELAY_INBOX_DIR=${envValue(resolve(repoRoot, ".agentrelay", "inbox"))}\n\n# Optional local hook/thread adapter command. It receives the inbox event JSON path as argv[1].\n# This is user-owned: Codex App, Codex CLI, chat apps, and custom workflows can each use a different adapter.\n# AGENTRELAY_LISTENER_HOOK=""\n`;
 }
 
-function upsertManagedBlock(current, block) {
-  const pattern = /# BEGIN AgentRelay MCP managed block\n[\s\S]*?# END AgentRelay MCP managed block\n?/m;
+function upsertManagedBlock(current, block, { serverName }) {
   const normalized = current.endsWith("\n") || current.length === 0 ? current : `${current}\n`;
-  if (pattern.test(normalized)) {
-    return normalized.replace(pattern, block);
+  const cleaned = removeExistingServerBlocks(normalized, serverName).trimEnd();
+  return `${cleaned}${cleaned ? "\n\n" : ""}${block}`;
+}
+
+function removeExistingServerBlocks(current, serverName) {
+  const lines = current.split("\n");
+  const kept = [];
+  let inManagedBlock = false;
+  let inTargetSection = false;
+
+  for (const line of lines) {
+    if (line === "# BEGIN AgentRelay MCP managed block") {
+      inManagedBlock = true;
+      continue;
+    }
+    if (line === "# END AgentRelay MCP managed block") {
+      inManagedBlock = false;
+      continue;
+    }
+    if (inManagedBlock) continue;
+
+    const sectionName = parseTomlSectionName(line);
+    if (sectionName) {
+      inTargetSection = isMcpServerSection(sectionName, serverName);
+      if (inTargetSection) continue;
+    }
+    if (inTargetSection) continue;
+    kept.push(line);
   }
-  return `${normalized}${normalized ? "\n" : ""}${block}`;
+
+  return kept.join("\n");
+}
+
+function parseTomlSectionName(line) {
+  const match = line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/);
+  return match ? match[1].trim() : "";
+}
+
+function isMcpServerSection(sectionName, serverName) {
+  const unquoted = `mcp_servers.${serverName}`;
+  const quoted = `mcp_servers.${tomlString(serverName)}`;
+  return sectionName === unquoted ||
+    sectionName.startsWith(`${unquoted}.`) ||
+    sectionName === quoted ||
+    sectionName.startsWith(`${quoted}.`);
 }
 
 function parseArgs(argv) {
