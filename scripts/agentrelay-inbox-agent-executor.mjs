@@ -9,6 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const PROTOCOL_VERSION = "agent-collab-v0.3";
+const ARTIFACT_NEXT_STATUS = "delivery_pending";
 const envPath = process.env.AGENTRELAY_ENV_PATH || resolve(PROJECT_ROOT, ".env");
 loadDotEnv(envPath);
 
@@ -432,7 +433,7 @@ function buildSubmitArtifactParams({ task, issue, localAgentId }) {
     text: issue.processorArtifactText,
     pendingOnAgentId,
     responseToGoalVersion: task.goal_version || issue.goalVersion || undefined,
-    nextStatus: task.status || issue.relayStatus || "delivery_pending",
+    nextStatus: ARTIFACT_NEXT_STATUS,
     nextAction: isRevisionRequest
       ? "Remote agent should address the local revision request and return an updated artifact."
       : undefined

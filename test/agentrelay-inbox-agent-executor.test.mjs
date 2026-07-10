@@ -415,6 +415,76 @@ test("executeInboxAgent submits an artifact from explicit LLM action intent", as
   assert.equal(issue.executorLastHumanReplyId, "hr_submit");
 });
 
+test("executeInboxAgent normalizes blocked task status when submitting an artifact", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_blocked_submit: {
+        taskId: "task_blocked_submit",
+        requesterAgentId: "frank-agent",
+        targetAgentId: "zac-agent",
+        completionOwnerAgentId: "frank-agent",
+        pendingOnAgentId: "zac-agent",
+        relayStatus: "blocked",
+        localStatus: "received",
+        processorActionIntent: "submit_artifact",
+        processorActionReason: "Zac approved sending the blocked result.",
+        processorArtifactKind: "text",
+        processorArtifactText: "Frank, Zac has the requested result now.",
+        requiresHumanConfirmation: false,
+        latestHumanReplyId: "hr_blocked_submit",
+        processorLastHumanReplyId: "hr_blocked_submit",
+        humanReplies: [{ replyId: "hr_blocked_submit", text: "可以回复。" }]
+      }
+    },
+    events: {}
+  });
+  const calls = [];
+  const relayClient = {
+    async getTask({ taskId }) {
+      calls.push({ method: "getTask", taskId });
+      return {
+        task: {
+          task_id: taskId,
+          requester_agent_id: "frank-agent",
+          target_agent_id: "zac-agent",
+          completion_owner_agent_id: "frank-agent",
+          pending_on_agent_id: "zac-agent",
+          status: "blocked"
+        }
+      };
+    },
+    async submitArtifact(params) {
+      calls.push({ method: "submitArtifact", ...params });
+      return {
+        task: {
+          task_id: params.taskId,
+          requester_agent_id: "frank-agent",
+          target_agent_id: "zac-agent",
+          completion_owner_agent_id: "frank-agent",
+          pending_on_agent_id: "frank-agent",
+          pending_on_human_id: null,
+          status: "delivery_pending"
+        },
+        artifact: { artifact_id: "art_blocked_submit" }
+      };
+    }
+  };
+
+  const result = await executeInboxAgent({
+    stateRoot,
+    localAgentId: "zac-agent",
+    relayClient,
+    now: () => "2026-07-03T03:25:00.000Z"
+  });
+
+  assert.equal(result.executed, 1);
+  assert.deepEqual(calls.map((call) => call.method), ["getTask", "submitArtifact"]);
+  assert.equal(calls[1].nextStatus, "delivery_pending");
+});
+
 test("executeInboxAgent sends a revision request back to the remote agent without human confirmation", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
   const stateRoot = join(root, "state");
