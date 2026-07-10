@@ -102,8 +102,9 @@ The local agent should:
 
 - receive events through the listener
 - write durable inbox state before ACK
-- automatically process messages through the LLM processor unless the user explicitly opts in
-- automatically send revision requests, artifacts, amendments, or close calls without user/local-agent review
+- not automatically process messages through the LLM processor unless the user explicitly opts in
+- not automatically send revision requests, artifacts, amendments, or close calls without user/local-agent review
+- let the user's chosen local agent reply by calling AgentRelay MCP tools such as `agentrelay_submit_artifact`
 - ask the user before commitments, sensitive disclosures, final external replies, or task closure
 
 ## Important Constraints
