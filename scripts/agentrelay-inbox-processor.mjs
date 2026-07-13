@@ -266,10 +266,11 @@ export function buildCodexProcessorPrompt({ agentsMd, localAgentId, task, event,
     "- Respect the file access whitelist. If the task requires reading or writing outside these roots, do not claim access and do not guess file contents; set requiresHumanConfirmation=true, actionIntent=none, and ask Zac to approve adding that folder to the whitelist.",
     "- Analyze the task snapshot, Local Zac replies, allowed files you can access, and the Local Inbox agent rules.",
     "- You are the only component allowed to interpret Zac's intent from Local Zac replies; wrapper code will not infer intent.",
-    "- Before asking Zac to close or confirm, actively decide whether the remote agent can make progress within the original task scope.",
-    "- If the remote agent's artifact is incomplete, contradicts the task intent, or reveals unresolved work that the remote agent can fix within the original task, ask the remote agent to continue by setting actionIntent=request_revision, requiresHumanConfirmation=false, artifactKind=revision_request, and artifactText to the concrete revision request.",
-    "- If a title/page/dashboard-title task response says one title field is correct but also reports a related visible heading or user-facing title is still different, treat that as unresolved unless the task explicitly forbids changing it; use request_revision to ask the remote agent to align or justify the remaining mismatch.",
-    "- Use request_revision only for low-risk follow-up needed to complete the original task; do not use it to expand scope, make commitments, share sensitive data, or close the task.",
+    "- Before asking Zac to confirm an action, actively decide whether the remote agent can make progress within the original task scope and prepare the exact proposed reply.",
+    "- If the remote agent's artifact is incomplete, contradicts the task intent, or reveals unresolved work that the remote agent can fix within the original scope, draft a concrete revision request in suggestedReply, set requiresHumanConfirmation=true, and keep actionIntent=none until Zac explicitly confirms sending it.",
+    "- If a title/page/dashboard-title task response says one title field is correct but a related visible heading or user-facing title is still different, treat that as unresolved unless the task explicitly forbids changing it; draft a revision request asking the remote agent to align or justify the mismatch.",
+    "- Set actionIntent=request_revision, requiresHumanConfirmation=false, artifactKind=revision_request, and artifactText to the exact confirmed request only when a fresh Local Zac reply explicitly approves sending that revision request.",
+    "- Use request_revision only for a human-confirmed follow-up needed to complete the original task; do not use it to expand scope, make commitments, share sensitive data, or close the task.",
     "- If fresh Zac input changes or clarifies the task goal/done criteria rather than merely asking the remote agent to fix the current goal, set actionIntent=amend_task. Provide amendedDoneCriteria, previousGoalDisposition, amendmentReason, and optionally newMaxTurns. This records a human-authorized goal_version change and starts a new agent-agent exchange.",
     "- If more Zac input is needed, set requiresHumanConfirmation=true and actionIntent=none.",
     "- If you determine Zac has approved submitting a reply/artifact, set actionIntent=submit_artifact and provide artifactKind plus artifactText.",
@@ -725,7 +726,9 @@ function buildProcessorRun({ issue, localAgentSession, inputFingerprint, updated
 
 function buildOutboxEntries({ issue, analysis, localAgentId, inputFingerprint, createdAt }) {
   const actionIntent = analysis.actionIntent || "none";
+  const humanReplyId = issue.latestHumanReplyId || issue.processorLastHumanReplyId || "";
   if (analysis.requiresHumanConfirmation || actionIntent === "none") return [];
+  if (!humanReplyId) return [];
   if (!new Set(["submit_artifact", "close_task", "request_revision"]).has(actionIntent)) return [];
   return [{
     outboxId: `out_${hashText(`${issue.taskId}:${inputFingerprint}:${actionIntent}:${analysis.artifactText || analysis.terminalReason || ""}`)}`,
@@ -735,6 +738,7 @@ function buildOutboxEntries({ issue, analysis, localAgentId, inputFingerprint, c
     status: "pending_guardrail",
     actionIntent,
     actionReason: analysis.actionReason || "",
+    humanReplyId,
     fromAgentId: localAgentId,
     artifactKind: analysis.artifactKind || "",
     artifactText: analysis.artifactText || "",

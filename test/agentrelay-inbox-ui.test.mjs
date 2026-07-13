@@ -38,6 +38,15 @@ test("loadInboxSnapshot returns an empty inbox when issues.json is missing", asy
   });
 });
 
+test("local inbox template requires explicit human confirmation before Relay mutations", async () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const template = await readFile(join(repoRoot, "templates/local-inbox/AGENTS.md"), "utf8");
+
+  assert.match(template, /waits for the user's explicit confirmation/);
+  assert.match(template, /Do not claim[\s\S]*until the local user confirms/);
+  assert.match(template, /including `claim_task`, `submit_artifact`, `request_revision`, `amend_task`,[\s\S]*`update_status`, and `close_task`/);
+});
+
 test("loadInboxSnapshot normalizes and sorts issues from issues.json", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
@@ -484,7 +493,8 @@ test("inbox UI detail syncs live Relay snapshots without running the local proce
     relayClient: {
       listAgents: async () => ({ agents: [] }),
       getTask: async (taskId) => ({
-        task: {
+        data: {
+          task: {
           task_id: taskId,
           subject: "Live outgoing task",
           status: "delivery_pending",
@@ -501,6 +511,7 @@ test("inbox UI detail syncs live Relay snapshots without running the local proce
             created_at: 1782979300,
             parts: [{ kind: "text", text: "Hermes finished the title update." }]
           }]
+          }
         }
       }),
       createTask: async () => {
@@ -1907,6 +1918,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /<details class="handoff-prompt" open>/);
     assert.match(js, /data-copy-handoff-prompt/);
     assert.match(js, /Please handle AgentRelay task id: /);
+    assert.match(js, /wait for my explicit confirmation before any AgentRelay mutation/);
     assert.match(js, /Read and follow the AgentRelay Local Inbox AGENTS\.md before completing the task:/);
     assert.match(js, /AGENTS_MD_PATH/);
     assert.doesNotMatch(js, /Use the local AgentRelay MCP tools:/);
