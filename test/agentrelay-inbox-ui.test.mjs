@@ -1773,6 +1773,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
   const stateRoot = join(root, "state");
   const server = createInboxUiServer({
     stateRoot,
+    installRoot: root,
     now: () => "2026-07-02T08:05:00.000Z",
     relayClient: {
       listAgents: async () => ({ agents: [] }),
@@ -1829,6 +1830,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
 
     const jsResponse = await fetch(`http://127.0.0.1:${port}/app.js`);
     const js = await jsResponse.text();
+    assert.match(js, new RegExp(`const AGENTS_MD_PATH = ${JSON.stringify(join(root, "templates/local-inbox/AGENTS.md"))}`));
     assert.match(js, /localStorage\.setItem\("agentrelay-theme"/);
     assert.match(js, /const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width"/);
     assert.match(js, /function initSidebarResize/);
@@ -1905,7 +1907,8 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /<details class="handoff-prompt" open>/);
     assert.match(js, /data-copy-handoff-prompt/);
     assert.match(js, /Please handle AgentRelay task id: /);
-    assert.match(js, /Follow this workspace's AGENTS\.md to complete the task\./);
+    assert.match(js, /Read and follow the AgentRelay Local Inbox AGENTS\.md before completing the task:/);
+    assert.match(js, /AGENTS_MD_PATH/);
     assert.doesNotMatch(js, /Use the local AgentRelay MCP tools:/);
     assert.doesNotMatch(js, /agentrelay_get_task/);
     assert.doesNotMatch(js, /agentrelay_submit_artifact/);

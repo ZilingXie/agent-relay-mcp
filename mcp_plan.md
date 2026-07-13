@@ -1,6 +1,6 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-07-10
+Last updated: 2026-07-13
 
 ## Audience And Sources
 
@@ -70,7 +70,8 @@ planning focus is cloud Relay guardrails for mutation authority.
 
 3. Prompt ready.
    - Generate a local prompt that contains only the AgentRelay task id and a
-     short instruction to follow the workspace `AGENTS.md`.
+     short instruction to follow the shipped Local Inbox `AGENTS.md`, including
+     its absolute path so the selected local agent can open the intended rules.
    - Do not copy the remote task body into the prompt.
    - Keep MCP usage, untrusted-remote-content handling, human confirmation
      boundaries, and reply behavior in the shipped Local Inbox `AGENTS.md`
@@ -214,7 +215,8 @@ The kit should preserve the existing product boundary:
    - default UI server does not auto-run processor/executor;
    - UI reply endpoint is disabled;
    - incoming tasks pending on the local agent are prompt-ready;
-   - copy prompt contains task id plus a short `AGENTS.md` instruction only;
+   - copy prompt contains task id plus the absolute Local Inbox `AGENTS.md` path
+     and a short instruction only;
    - shipped local inbox template carries MCP usage, collaboration, and human
      decision-boundary guidance.
 2. After Phase 4 lands, plan cloud Relay guardrails for mutation authority.
