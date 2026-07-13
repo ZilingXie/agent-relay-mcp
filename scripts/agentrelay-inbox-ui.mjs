@@ -260,7 +260,10 @@ export function createInboxUiServer({
       }
 
       if (url.pathname === "/app.js") {
-        sendText(res, 200, APP_JS, "application/javascript; charset=utf-8");
+        const agentsMdPath = resolve(
+          process.env.AGENTRELAY_AGENTS_MD_PATH || join(installRoot, "templates/local-inbox/AGENTS.md")
+        );
+        sendText(res, 200, buildAppJs({ agentsMdPath }), "application/javascript; charset=utf-8");
         return;
       }
 
@@ -3223,6 +3226,7 @@ const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width";
 const FOLDER_COLLAPSE_KEY = "agentrelay-collapsed-folders";
 const FOLDER_COLLAPSE_MIGRATION_KEY = "agentrelay-collapsed-folders-migration";
 const ARCHIVE_FOLDER_KEY = "archive";
+const AGENTS_MD_PATH = __AGENTRELAY_AGENTS_MD_PATH__;
 const SIDEBAR_MIN_WIDTH = 280;
 const SIDEBAR_MAX_WIDTH = 720;
 let collapsedFolders = loadCollapsedFolders();
@@ -3668,7 +3672,8 @@ function buildPersonalAgentHandoffPrompt(issue) {
   return [
     "Please handle AgentRelay task id: " + (issue.taskId || ""),
     "",
-    "Follow this workspace's AGENTS.md to complete the task."
+    "Read and follow the AgentRelay Local Inbox AGENTS.md before completing the task:",
+    AGENTS_MD_PATH
   ].join("\n");
 }
 
@@ -4051,6 +4056,10 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/\`/g, "&#96;");
 }
 `;
+
+function buildAppJs({ agentsMdPath }) {
+  return APP_JS.replace("__AGENTRELAY_AGENTS_MD_PATH__", JSON.stringify(agentsMdPath));
+}
 
 if (isMainModulePath(import.meta.url)) {
   const port = Number.parseInt(process.env.PORT || String(DEFAULT_PORT), 10);
