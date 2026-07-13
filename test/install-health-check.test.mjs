@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runInstallHealthCheck } from "../scripts/install-health-check.mjs";
+import { readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
 test("install health check creates loopback task, waits for local inbox, and closes", async () => {
   const root = await makeTempState();
@@ -32,6 +33,9 @@ test("install health check creates loopback task, waits for local inbox, and clo
     assert.equal(server.state.closed, true);
     assert.equal(server.state.createPayload.requester_agent_id, undefined);
     assert.equal(server.state.closePayload.closed_by_agent_id, "zac-agent");
+    const workspace = await readTaskWorkspace({ stateRoot: root.stateRoot, taskId: result.taskId });
+    assert.equal(workspace.task.status, "completed");
+    assert.equal(workspace.sync.source, "install_health_close");
   } finally {
     await server.close();
   }

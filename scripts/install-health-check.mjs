@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { persistTaskWorkspace } from "./agentrelay-task-workspace.mjs";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const DEFAULT_INBOX_UI_URL = "http://127.0.0.1:8787/";
@@ -68,6 +69,18 @@ export async function runInstallHealthCheck({
   if (closedTask?.status !== "completed") {
     throw new Error(`Install health check close did not complete task ${taskId}: ${JSON.stringify(closeResponse)}`);
   }
+  await persistTaskWorkspace({
+    stateRoot: config.stateDir,
+    task: {
+      ...task,
+      ...closedTask,
+      messages: Array.isArray(closedTask.messages) ? closedTask.messages : (Array.isArray(task.messages) ? task.messages : []),
+      artifacts: Array.isArray(closedTask.artifacts) ? closedTask.artifacts : (Array.isArray(task.artifacts) ? task.artifacts : [])
+    },
+    localAgentId: config.agentId,
+    source: "install_health_close",
+    syncedAt: now()
+  });
   log(`Health check task closed: ${taskId}.`);
   log(`Open local inbox: ${config.inboxUiUrl}`);
 
