@@ -2,6 +2,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import crypto from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,12 +32,14 @@ export async function processInboxEvent({
   const taskId = task.task_id || event.taskId || event.task_id;
   if (!taskId) throw new Error(`Inbox event is missing task id: ${eventPath}`);
   const eventId = event.eventId || event.event_id || `${taskId}:${task.updated_at || payload.receivedAt || event.type || "event"}`;
+  const relaySnapshotKey = buildRelaySnapshotKey(taskId, task);
   const stateDir = stateRoot || process.env.AGENTRELAY_STATE_DIR || join(projectPath, "state");
 
   const inboxBefore = await readIssueInbox(join(stateDir, "issues.json"));
   const previousEvent = inboxBefore.events?.[eventId];
-  if (previousEvent?.status === "received") {
-    if (ackReceived) {
+  const shouldAck = ackReceived && !event.recovery;
+  if (previousEvent?.status === "received" || previousEvent?.status === "duplicate") {
+    if (shouldAck) {
       if (!agentId) throw new Error("Missing AGENTRELAY_AGENT_ID");
       relayClient ||= new AgentRelayHttpClient({
         baseUrl: normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL),
@@ -58,7 +61,23 @@ export async function processInboxEvent({
         now
       });
     }
-    return { status: "duplicate", eventId, taskId, acked: Boolean(ackReceived) };
+    return { status: "duplicate", eventId, taskId, acked: shouldAck };
+  }
+
+  if (relaySnapshotKey && inboxBefore.issues?.[taskId]?.relaySnapshotKey === relaySnapshotKey) {
+    await recordDuplicateSnapshotEvent({ stateDir, payload, eventPath, taskId, eventId, now });
+    if (shouldAck) {
+      if (!agentId) throw new Error("Missing AGENTRELAY_AGENT_ID");
+      relayClient ||= new AgentRelayHttpClient({
+        baseUrl: normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL),
+        token: process.env.AGENTRELAY_TOKEN || "",
+        agentId,
+        username: process.env.AGENTRELAY_USERNAME || ""
+      });
+      await relayClient.ackEvent({ agentId, eventId, taskId, status: "received", projectPath });
+      await markIssueEventAcked({ stateDir, eventId, status: "received", now });
+    }
+    return { status: "duplicate_snapshot", eventId, taskId, acked: shouldAck };
   }
 
   await recordIssueInboxEvent({
@@ -67,11 +86,12 @@ export async function processInboxEvent({
     eventPath,
     taskId,
     eventId,
+    relaySnapshotKey,
     projectPath,
     now
   });
 
-  if (ackReceived) {
+  if (shouldAck) {
     if (!agentId) throw new Error("Missing AGENTRELAY_AGENT_ID");
     relayClient ||= new AgentRelayHttpClient({
       baseUrl: normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL),
@@ -130,7 +150,7 @@ async function runInboxExecutor({ executor, stateRoot, localAgentId, now }) {
   return executor({ stateRoot, localAgentId, now });
 }
 
-async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eventId, projectPath, now }) {
+async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eventId, relaySnapshotKey, projectPath, now }) {
   const inboxPath = join(stateDir, "issues.json");
   const inbox = await readIssueInbox(inboxPath);
   const task = payload.task || {};
@@ -155,6 +175,7 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
     pendingOnAgentId,
     pendingOnHumanId: task.pending_on_human_id || previousIssue.pendingOnHumanId || null,
     relayStatus: task.status || previousIssue.relayStatus || "",
+    relaySnapshotKey: relaySnapshotKey || previousIssue.relaySnapshotKey || "",
     localStatus: mergeRelayLocalStatus(previousIssue.localStatus),
     direction: inferIssueDirection(task, event),
     counterpartAgentId: inferCounterpartAgentId(task, event),
@@ -184,6 +205,44 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
   };
   await writeJsonAtomic(inboxPath, inbox);
   return inbox;
+}
+
+async function recordDuplicateSnapshotEvent({ stateDir, payload, eventPath, taskId, eventId, now }) {
+  const inboxPath = join(stateDir, "issues.json");
+  const inbox = await readIssueInbox(inboxPath);
+  const issue = inbox.issues[taskId];
+  if (!issue) throw new Error(`Cannot record duplicate snapshot for missing issue: ${taskId}`);
+  const recordedAt = now();
+  inbox.issues[taskId] = {
+    ...issue,
+    eventIds: Array.from(new Set([...(issue.eventIds || []), eventId]))
+  };
+  inbox.events[eventId] = {
+    eventId,
+    taskId,
+    type: payload.event?.type || payload.event?.eventType || payload.event?.event_type || "",
+    status: "duplicate",
+    sourcePath: eventPath,
+    receivedAt: payload.receivedAt || recordedAt,
+    recordedAt
+  };
+  await writeJsonAtomic(inboxPath, inbox);
+}
+
+function buildRelaySnapshotKey(taskId, task) {
+  const goalVersion = task.goal_version ?? task.goalVersion;
+  const updatedAt = task.updated_at ?? task.updatedAt;
+  if (goalVersion === undefined && updatedAt === undefined) return "";
+  const digest = crypto.createHash("sha256").update(stableJson(task)).digest("hex");
+  return `${taskId}:${digest}`;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function buildLocalWorkflowBinding({ previousBinding, stateDir, taskId, eventId, projectPath, recordedAt }) {

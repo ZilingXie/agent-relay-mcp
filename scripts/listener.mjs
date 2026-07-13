@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
+import { readJsonFrame, reconcilePendingTasks, unwrapTask } from "./agentrelay-listener-core.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -23,13 +24,25 @@ const token = process.env.AGENTRELAY_TOKEN || "";
 const inboxDir = resolveHome(process.env.AGENTRELAY_INBOX_DIR || resolve(repoRoot, ".agentrelay", "inbox"));
 const hookCommand = process.env.AGENTRELAY_LISTENER_HOOK || "";
 const reconnectMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_RECONNECT_MS || "5000", 10);
+const inactivityMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_INACTIVITY_MS || "90000", 10);
+const reconcileIntervalMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_RECONCILE_MS || "300000", 10);
+const statusPath = resolveHome(process.env.AGENTRELAY_LISTENER_STATUS_PATH || resolve(inboxDir, "..", "listener-status.json"));
 const once = process.argv.includes("--once");
+let lastReconciledAt = 0;
+const listenerStatus = {
+  version: 1,
+  agentId,
+  state: "starting",
+  startedAt: new Date().toISOString()
+};
 
 if (!agentId || !username || !token) {
   fail("Missing AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, or AGENTRELAY_TOKEN in .env");
 }
 
 await mkdir(inboxDir, { recursive: true });
+await mkdir(dirname(statusPath), { recursive: true });
+await updateListenerStatus({ state: "connecting" });
 console.error(`[agentrelay-listener] inbox: ${inboxDir}`);
 console.error(`[agentrelay-listener] connecting as ${agentId} to ${wsBaseUrl}`);
 
@@ -38,22 +51,28 @@ while (true) {
     await listenOnce();
   } catch (error) {
     console.error(`[agentrelay-listener] disconnected: ${error.message}`);
+    await updateListenerStatus({ state: "disconnected", disconnectedAt: new Date().toISOString(), lastError: error.message });
   }
   if (once) break;
   await delay(reconnectMs);
 }
 
 async function listenOnce() {
+  await updateListenerStatus({ state: "connecting", connectionStartedAt: new Date().toISOString() });
   const socket = await connectWebSocket(`${wsBaseUrl}/workers/${encodeURIComponent(agentId)}/events/ws`, relayHeaders());
   try {
     while (true) {
-      const frame = await readJsonFrame(socket);
+      const frame = await readJsonFrame(socket, { inactivityMs });
       if (frame.type === "hello") {
         console.error(`[agentrelay-listener] hello ${frame.agentId}`);
+        await updateListenerStatus({ state: "connected", connectedAt: new Date().toISOString(), lastError: null });
+        await tryReconcilePending();
         continue;
       }
       if (frame.type === "heartbeat") {
         console.error(`[agentrelay-listener] heartbeat ${frame.serverTime}`);
+        await updateListenerStatus({ state: "connected", lastHeartbeatAt: new Date().toISOString(), serverTime: frame.serverTime });
+        if (Date.now() - lastReconciledAt >= reconcileIntervalMs) await tryReconcilePending();
         continue;
       }
       if (frame.type === "task.pending") {
@@ -76,12 +95,63 @@ async function listenOnce() {
 
 async function enrichPendingEvent(event) {
   const taskResponse = await relayRequest("GET", `/tasks/${encodeURIComponent(event.taskId)}`);
-  return { event, task: taskResponse.task };
+  const task = unwrapTask(taskResponse);
+  if (!task) throw new Error("Task response is missing task snapshot");
+  return { event, task };
 }
 
-async function writeInboxEvent(payload) {
+async function tryReconcilePending() {
+  try {
+    const result = await reconcilePendingTasks({
+      agentId,
+      relayGet: (path) => relayRequest("GET", path),
+      persist: async (payload) => {
+        const eventPath = await writeInboxEvent(payload, { stableName: true });
+        console.log(JSON.stringify({
+          ok: true,
+          received: "task.pending",
+          recovered: true,
+          taskId: payload.event.taskId,
+          eventId: payload.event.eventId,
+          path: eventPath
+        }));
+        if (hookCommand) await runHook(eventPath);
+      }
+    });
+    lastReconciledAt = Date.now();
+    await updateListenerStatus({
+      lastReconciliationAt: new Date().toISOString(),
+      reconciliationDiscovered: result.discovered,
+      reconciliationPersisted: result.persisted,
+      reconciliationFailed: result.failures.length,
+      lastReconciliationError: null
+    });
+    console.error(`[agentrelay-listener] reconciliation discovered=${result.discovered} persisted=${result.persisted} failed=${result.failures.length}`);
+    for (const failure of result.failures) {
+      console.error(`[agentrelay-listener] recovery failed task=${failure.taskId || "(missing)"}: ${failure.error}`);
+    }
+  } catch (error) {
+    console.error(`[agentrelay-listener] reconciliation failed: ${error.message}`);
+    await updateListenerStatus({ lastReconciliationError: error.message });
+  }
+}
+
+async function updateListenerStatus(patch) {
+  Object.assign(listenerStatus, patch, { updatedAt: new Date().toISOString() });
+  const temporaryPath = `${statusPath}.${process.pid}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(listenerStatus, null, 2)}\n`, { mode: 0o600 });
+    await rename(temporaryPath, statusPath);
+  } catch (error) {
+    console.error(`[agentrelay-listener] status write failed: ${error.message}`);
+  }
+}
+
+async function writeInboxEvent(payload, { stableName = false } = {}) {
   const safeEventId = String(payload.event?.eventId || crypto.randomUUID()).replace(/[^a-zA-Z0-9_.-]/g, "_");
-  const fileName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeEventId}.json`;
+  const fileName = stableName
+    ? `${safeEventId}.json`
+    : `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeEventId}.json`;
   const eventPath = resolve(inboxDir, fileName);
   await writeFile(eventPath, `${JSON.stringify({ receivedAt: new Date().toISOString(), ...payload }, null, 2)}\n`, { mode: 0o600 });
   return eventPath;
@@ -158,65 +228,6 @@ function connectWebSocket(url, headers) {
       resolveConnect(socket);
     };
     socket.on("data", onData);
-  });
-}
-
-async function readJsonFrame(socket) {
-  const header = await readExact(socket, 2);
-  const opcode = header[0] & 0x0f;
-  const masked = Boolean(header[1] & 0x80);
-  let length = header[1] & 0x7f;
-  if (length === 126) length = (await readExact(socket, 2)).readUInt16BE(0);
-  if (length === 127) length = Number((await readExact(socket, 8)).readBigUInt64BE(0));
-  const mask = masked ? await readExact(socket, 4) : null;
-  const payload = Buffer.from(await readExact(socket, length));
-  if (mask) {
-    for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
-  }
-  if (opcode === 8) throw new Error("received close frame");
-  if (opcode !== 1) throw new Error(`expected text frame, got opcode ${opcode}`);
-  return JSON.parse(payload.toString("utf8"));
-}
-
-function readExact(socket, size) {
-  const buffered = socket.agentRelayReadBuffer || Buffer.alloc(0);
-  if (buffered.length >= size) {
-    const needed = buffered.subarray(0, size);
-    socket.agentRelayReadBuffer = buffered.subarray(size);
-    return Promise.resolve(needed);
-  }
-  const initial = buffered.length ? [buffered] : [];
-  socket.agentRelayReadBuffer = Buffer.alloc(0);
-  return new Promise((resolveRead, rejectRead) => {
-    const chunks = [...initial];
-    let total = buffered.length;
-    const cleanup = () => {
-      socket.off("data", onData);
-      socket.off("end", onEnd);
-      socket.off("error", onError);
-    };
-    const onData = (chunk) => {
-      chunks.push(chunk);
-      total += chunk.length;
-      if (total < size) return;
-      cleanup();
-      const data = Buffer.concat(chunks, total);
-      const needed = data.subarray(0, size);
-      const rest = data.subarray(size);
-      socket.agentRelayReadBuffer = rest;
-      resolveRead(needed);
-    };
-    const onEnd = () => {
-      cleanup();
-      rejectRead(new Error("socket closed"));
-    };
-    const onError = (error) => {
-      cleanup();
-      rejectRead(error);
-    };
-    socket.on("data", onData);
-    socket.once("end", onEnd);
-    socket.once("error", onError);
   });
 }
 

@@ -159,6 +159,12 @@ The kit should preserve the existing product boundary:
    - Persist event payload or payload reference before ACK.
    - Deduplicate event ids and keep lease/claim state visible.
    - Normalize reconnect, stale protocol, and unavailable-agent recovery.
+   - Current MCP baseline (2026-07-13): the personal-agent listener detects
+     inactive half-open sockets, reconnects after sleep/network transitions,
+     reconciles server-side pending work after hello and periodically, handles
+     current and legacy response envelopes, and suppresses duplicate task
+     snapshots across push/recovery event ids. Listener health is exposed to
+     `doctor` through an atomic local status file.
 
 3. Standardize the worker loop.
    - Read durable inbox/outbox state, claim eligible work, run a handler, record
