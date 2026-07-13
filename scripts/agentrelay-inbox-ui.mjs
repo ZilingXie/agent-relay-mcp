@@ -2304,7 +2304,6 @@ p {
 .list-tools input,
 .draft-form input,
 .draft-form textarea,
-.handoff-prompt textarea,
 .composer textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -2323,7 +2322,6 @@ p {
 .list-tools input:focus,
 .draft-form input:focus,
 .draft-form textarea:focus,
-.handoff-prompt textarea:focus,
 .composer textarea:focus {
   border-color: var(--accent);
 }
@@ -2884,41 +2882,45 @@ button.list-header:focus-visible {
 }
 
 .handoff-prompt {
+  width: 100%;
+  min-height: 44px;
   margin: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
+  padding: 10px 12px;
   background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.handoff-prompt::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--muted);
+}
+
+.handoff-prompt:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.handoff-prompt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.handoff-prompt.copied {
+  color: var(--accent-2);
 }
 
 .prompt-section {
   padding: 12px 22px 16px;
-}
-
-.handoff-prompt summary {
-  cursor: pointer;
-  padding: 10px 12px;
-  color: var(--muted);
-  font-weight: 700;
-}
-
-.handoff-prompt textarea {
-  min-height: 220px;
-  border-width: 1px 0 0;
-  border-radius: 0;
-  padding: 12px;
-  resize: vertical;
-  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  white-space: pre-wrap;
-}
-
-.copy-prompt-button {
-  min-height: 36px;
-  margin: 10px 12px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 7px 12px;
-  background: var(--surface-2);
-  color: var(--text);
 }
 
 .composer {
@@ -3661,11 +3663,9 @@ function renderChat({ issue, timeline }) {
 
 function renderHandoffPrompt(issue) {
   const prompt = buildPersonalAgentHandoffPrompt(issue);
-  return '<details class="handoff-prompt" open>' +
-    '<summary>Prompt ready for your local agent</summary>' +
-    '<textarea readonly spellcheck="false" data-handoff-prompt>' + escapeHtml(prompt) + '</textarea>' +
-    '<button class="copy-prompt-button" type="button" data-copy-handoff-prompt>Copy prompt</button>' +
-  '</details>';
+  return '<button class="handoff-prompt" type="button" data-copy-handoff-prompt data-prompt="' + escapeAttr(prompt) + '" aria-label="Copy prompt for agent">' +
+    '<span data-copy-prompt-label aria-live="polite">copy prompt for agent</span>' +
+  '</button>';
 }
 
 function buildPersonalAgentHandoffPrompt(issue) {
@@ -3785,20 +3785,30 @@ function isWaitingForRemoteCompletionOwnerClient(issue) {
 function bindHandoffPromptControls() {
   for (const button of document.querySelectorAll("[data-copy-handoff-prompt]")) {
     button.addEventListener("click", async () => {
-      const textarea = button.parentElement?.querySelector("[data-handoff-prompt]");
-      const prompt = textarea?.value || "";
+      const prompt = button.dataset.prompt || "";
       if (!prompt) return;
       try {
+        if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
         await navigator.clipboard.writeText(prompt);
-        button.textContent = "Copied";
       } catch {
+        const textarea = document.createElement("textarea");
+        textarea.value = prompt;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
         textarea.focus();
         textarea.select();
         document.execCommand("copy");
-        button.textContent = "Copied";
+        textarea.remove();
       }
+      const label = button.querySelector("[data-copy-prompt-label]");
+      if (!label) return;
+      label.textContent = "copied";
+      button.classList.add("copied");
       setTimeout(() => {
-        button.textContent = "Copy prompt";
+        label.textContent = "copy prompt for agent";
+        button.classList.remove("copied");
       }, 1500);
     });
   }

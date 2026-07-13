@@ -1915,8 +1915,13 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /class="detail-section conversation-section"/);
     assert.match(js, /交流历史/);
     assert.match(js, /class="detail-section prompt-section"/);
-    assert.match(js, /<details class="handoff-prompt" open>/);
+    assert.match(js, /<button class="handoff-prompt" type="button"/);
     assert.match(js, /data-copy-handoff-prompt/);
+    assert.match(js, /data-prompt=/);
+    assert.match(js, /data-copy-prompt-label aria-live="polite">copy prompt for agent/);
+    assert.doesNotMatch(js, /data-handoff-prompt/);
+    assert.doesNotMatch(js, /<details class="handoff-prompt"/);
+    assert.doesNotMatch(js, /copy-prompt-button/);
     assert.match(js, /Please handle AgentRelay task id: /);
     assert.match(js, /wait for my explicit confirmation before any AgentRelay mutation/);
     assert.match(js, /Read and follow the AgentRelay Local Inbox AGENTS\.md before completing the task:/);
@@ -1941,7 +1946,11 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /status: "sent"/);
     assert.match(js, /pendingOn: body\.task\?\.pending_on_agent_id \|\| body\.draft\?\.to \|\| "remote agent"/);
     assert.match(js, /el\.draftForm\.requestSubmit\(\)/);
-    assert.match(js, /copy-prompt-button/);
+    assert.match(js, /button\.dataset\.prompt/);
+    assert.match(js, /label\.textContent = "copied"/);
+    assert.match(js, /label\.textContent = "copy prompt for agent"/);
+    assert.match(js, /navigator\.clipboard\?\.writeText/);
+    assert.match(js, /document\.createElement\("textarea"\)/);
     assert.doesNotMatch(js, /function renderComposer/);
     assert.doesNotMatch(js, /function bindReplyForm/);
     assert.doesNotMatch(js, /id="reply-form"/);
@@ -1993,6 +2002,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(css, /\.conversation-section/);
     assert.match(css, /\.detail-section-title/);
     assert.match(css, /\.prompt-section/);
+    assert.match(css, /\.handoff-prompt::before/);
+    assert.match(css, /\.handoff-prompt\.copied/);
+    assert.doesNotMatch(css, /\.handoff-prompt textarea/);
+    assert.doesNotMatch(css, /\.copy-prompt-button/);
     assert.match(css, /\.message-line/);
     assert.doesNotMatch(css, /top: 12px/);
     assert.doesNotMatch(css, /position: absolute;\n  right: 10px;\n  top: 12px/);
