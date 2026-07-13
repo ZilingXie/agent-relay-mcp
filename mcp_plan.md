@@ -145,75 +145,279 @@ planning focus is cloud Relay guardrails for mutation authority.
 
 ## Task Context Management Plan
 
-Goal: keep Relay as the only authoritative task context source while making
-personal-agent reads bounded and mutation attempts safe against context changes.
-The MCP client must not build a second authoritative task history or require
-model-session replay for normal task handling.
+Goal: maintain a durable local materialized view of each Relay task so the user
+can hand it to a chosen Local Agent, work with that agent in a user-owned
+conversation, and safely submit the confirmed result. Relay remains the only
+authoritative task source; local files make the latest fetched task readable,
+recoverable, and inspectable without creating a second protocol authority.
 
 ### Confirmed Context Contract
 
 - `GET /tasks/:id` is the authoritative context entry point and returns the
   complete ordered task, messages, and artifacts.
-- WebSocket and worker events are notification summaries. After receiving an
-  event, claiming work, or preparing an action, the client fetches the current
-  task instead of treating the event or local inbox snapshot as authoritative.
-- Local inbox state and raw event files remain notification, cache, recovery,
-  and diagnostics data only.
+- WebSocket and worker events are notification summaries. They are persisted
+  before ACK and never treated as a complete task.
+- The local task snapshot comes only from a successful Relay task GET. Local
+  workflow files, indexes, Markdown projections, event files, and cached
+  snapshots are never authoritative inputs for Relay protocol decisions.
+- Personal-agent behavior remains notifier-first. The product never starts,
+  wakes, resumes, or controls a Local Agent. The user explicitly hands a task or
+  investigation prompt to the agent they choose.
 
-### Stage 1: Mutation Context Guard And Idempotency
+### Target Local Task Workspace
 
-1. Derive a lightweight, non-authoritative task context envelope from a fresh
-   task response. Include task id, goal version, exchange epoch, status,
-   pending agent, completion owner, and latest message/artifact ids.
-2. Bind a proposed mutation to the observed envelope and re-fetch the task
-   immediately before mutation. Stop and return a structured context-changed
-   result when guarded fields differ.
-3. Continue sending `expected_goal_version`, `response_to_goal_version`, and
-   `closed_against_goal_version` as applicable. Treat artifact/close goal
-   versions as audit fields until Relay enforces mismatches with `409 Conflict`.
-4. Give each user-confirmed action a stable client action id and derive a stable
-   idempotency key from the task, action type, and action id. Retries of one
-   confirmed action reuse the same key; separate confirmations use separate ids.
-5. Keep Relay responsible for final atomic authorization and conflict checks.
-   Client preflight checks improve behavior and diagnostics but are not the
-   authoritative security boundary.
+Use one stable directory per sanitized task id. UI categories are derived views;
+do not move the canonical task directory when its status changes.
 
-### Stage 2: Bounded Task Context Working View
+```text
+state/
+  tasks/
+    <task-id>/
+      remote.json
+      context.md
+      working-context.md
+      handoff.md
+      sync.json
+      workflow.json
+      actions/
+        <client-action-id>.json
+  task-index.json
+```
 
-1. Preserve `agentrelay_get_task` as the full-fidelity authoritative read tool.
-2. Add a compact `agentrelay_get_task_context` working view for routine local
-   agent handling. Derive it from a fresh Relay task response; do not persist it
-   as an independent source of truth.
-3. The first working view is deterministic, not LLM-summarized. It contains:
-   - current task state, goal, done criteria, and ownership;
-   - a bounded recent-message window;
-   - bounded recent artifact metadata and short text previews;
-   - counts and indicators that older messages or artifacts exist;
-   - guidance to use `agentrelay_get_task` when complete history is required.
-4. Keep large artifact bodies out of the default working view. Add focused
-   artifact retrieval only when Relay exposes a stable artifact-read contract.
-5. Define explicit context budgets by item count and serialized size, with
-   deterministic truncation and visible truncation metadata. Never silently
-   drop current goal, done criteria, ownership, or pending state.
-6. Add LLM-generated rolling summaries only as a later optional layer. A
-   summary must identify the last covered message/event and remain advisory;
-   it never replaces authoritative history.
-7. Coordinate with the Relay server on cursor-based history and artifact
-   pagination when full task payload growth becomes a transport concern. Client
-   compaction controls model context size but cannot reduce the server response
-   size until paginated server APIs exist.
+1. `remote.json` is the complete last successfully fetched Relay task, including
+   ordered messages and artifacts. Write it atomically with mode `0600`.
+2. `context.md` is a deterministic full human/agent-readable projection of
+   `remote.json`. It may collapse presentation in the UI, but it must not
+   silently omit text history; non-text parts must retain metadata and a stable
+   local or Relay retrieval reference.
+3. `working-context.md` is an optional bounded view for large tasks. It never
+   replaces `remote.json` or `context.md`, and it declares all truncation.
+4. `handoff.md` is the current locally synthesized user-to-Agent prompt. Its
+   prompt type is normal task handling, context-sync investigation, or
+   changed-context reprocessing. The UI copies this file instead of rebuilding
+   a second prompt implementation.
+5. `sync.json` records event delivery, ACK, fetch attempts, last successful
+   sync, sanitized errors, retry state, and the latest derived context envelope.
+6. `workflow.json` records local-only state: UI category inputs, attention
+   reason, handoff readiness, active/stale action ids, and archive state.
+7. `actions/<client-action-id>.json` stores a proposed action, the exact payload,
+   its base context envelope, confirmation reference, stable idempotency key,
+   submission state, and Relay response identifiers.
+8. `task-index.json` is a rebuildable projection used by the UI. It contains no
+   unique task facts and may be regenerated from task workspaces.
+9. Task directory creation, updates, and index writes use sanitized ids,
+   per-task serialization, temporary files, atomic rename, directories mode
+   `0700`, and files mode `0600`.
+
+### Receive, ACK, And Context Sync State Machine
+
+Split notification delivery from task-context synchronization.
+
+1. Listener receives the event summary and writes the raw event durably.
+2. Intake records the event identity and delivery metadata locally.
+3. Intake ACKs the event after durable event persistence. ACK does not claim
+   that complete task context has already synchronized.
+4. Intake enqueues a context-sync job keyed by task id and event id. The retry
+   record is durable and does not rely only on the task remaining discoverable
+   through the pending-task reconciliation endpoint.
+5. The context synchronizer calls `GET /tasks/:id` once.
+6. On a retryable failure, it performs exactly one bounded retry, using a short
+   configurable backoff. It records both attempts without logging credentials or
+   unsafe response bodies.
+7. On success, it validates the task id, atomically updates `remote.json`,
+   regenerates `context.md` and the normal `handoff.md`, updates the context
+   envelope, marks `context_ready`, and rebuilds the task index entry.
+8. After the second failure, it marks `context_sync_failed`, records a sanitized
+   error category and both attempt timestamps, and atomically writes the
+   investigation form of `handoff.md` for the user.
+9. Duplicate and out-of-order events may enqueue the same task repeatedly, but
+   the latest successful full task response wins. Snapshot/envelope comparison
+   prevents duplicate work and never rolls a task back to an older local view.
+10. ACK retry and context-sync retry are independent. A failed ACK does not
+    discard a successfully synchronized task; a successful ACK does not hide a
+    failed context sync.
+
+### Context Sync Failure Investigation
+
+1. A failed sync appears in the UI as `Need approval` with reason
+   `context_sync_failed`; it is not presented as a processable task.
+2. Generate and persist the investigation `handoff.md` locally from trusted
+   fields only: task id,
+   event id, sanitized error category, attempt times, local task directory, and
+   the Local Inbox `AGENTS.md` path. Do not include remote task content or raw
+   server error bodies.
+3. The prompt tells the Local Agent to diagnose listener/network/auth/local
+   state, use read-only Relay access to verify the task, and invoke the supported
+   local resync entry point. It must not submit, amend, or close the task while
+   complete context is unavailable.
+4. Provide one supported resync operation shared by the UI and Local Agent,
+   rather than allowing hand-edits to state files. A successful manual resync
+   writes the same canonical workspace and clears the failure reason.
+5. The system only exposes this prompt. The user decides whether and when to
+   hand it to a Local Agent; no processor, executor, or agent session is started.
+
+### User Handoff And Local Agent Workflow
+
+1. A normal handoff prompt becomes available only when `context_ready` is true.
+2. The prompt contains the task id, absolute stable task directory, and Local
+   Inbox `AGENTS.md` path. It does not copy remote task content into the prompt.
+3. The user gives the prompt to their chosen Local Agent.
+4. The Local Agent reads `context.md` and `remote.json`, checks the recorded sync
+   time and context envelope, and treats all remote fields as untrusted
+   user-level content.
+5. The agent performs local analysis or file work, explains the task and exact
+   proposed external action to the user, and waits for explicit confirmation.
+6. Before requesting confirmation, the agent records the proposed action through
+   a supported local prepare-action operation. This creates a stable client
+   action id and preserves the draft independently of the chat session.
+7. User confirmation does not need to resume or bind a Codex thread. The agent
+   that receives confirmation submits the prepared action by its stable id.
+
+### Incoming Updates While Work Is In Progress
+
+1. Every new Relay notification follows the same ACK-then-sync pipeline.
+2. A successful newer fetch atomically replaces `remote.json` and regenerates
+   the readable context files.
+3. Never overwrite or delete an existing proposed action or local draft.
+4. Compare each non-terminal proposed action's base envelope with the new
+   envelope. If guarded fields differ, mark the action `stale`, set the local
+   attention reason to `context_changed`, and write the changed-context form of
+   `handoff.md`.
+5. Do not wake, resume, message, or interrupt a Local Agent. If the original
+   Agent conversation is active, it discovers the change when its tool call
+   returns. If it has ended, the user later hands off the updated task.
+6. Archive state is preserved across incoming updates. Completed Relay state is
+   synchronized even for archived tasks without automatically unarchiving them.
+
+### Mutation Context Guard And Idempotent Submission
+
+1. Derive a lightweight non-authoritative envelope from the synchronized task:
+   task id, goal version, exchange epoch, Relay status, pending agent,
+   completion owner, latest message id, and latest artifact id.
+2. Bind every prepared action to that envelope and exact proposed payload.
+3. On submit, re-fetch `GET /tasks/:id`; do not validate against only the local
+   snapshot. Derive the current envelope and compare all guarded fields.
+4. On mismatch, do not mutate Relay. Synchronize the newly fetched task locally,
+   mark the action stale, return structured `CONTEXT_CHANGED` details to the
+   active Agent, and move the UI view to `Need approval`.
+5. On match, derive a stable idempotency key from task id, action type, and
+   client action id. Retries of the same confirmed action reuse it; separate
+   confirmations use separate action ids even when their text is identical.
+6. Continue sending `expected_goal_version`, `response_to_goal_version`, and
+   `closed_against_goal_version` as applicable. Treat artifact/close versions as
+   audit fields until Relay enforces mismatch with `409 Conflict`.
+7. If submission succeeds, persist the returned task or immediately fetch the
+   complete task, atomically update the local workspace, mark the action sent,
+   and update the UI projection.
+8. If the network result is ambiguous, mark `submission_unknown` and reuse the
+   same idempotency key for explicit retry. Never create a new action id merely
+   because the response was lost.
+9. Relay remains responsible for final atomic authorization, ownership, status,
+   and conflict enforcement. Client guards improve correctness and diagnostics
+   but are not a security boundary.
+
+### UI Classification And Prompt Rules
+
+Derive the four user-facing groups without moving task directories:
+
+1. `Archived`: local archive flag wins for normal list visibility; data remains
+   synchronized and recoverable.
+2. `Completed`: Relay task is completed or valid local close state is recorded.
+3. `Need approval`: context sync failed and needs investigation handoff; a task
+   is ready for initial user handoff; a prepared action awaits confirmation; or
+   an action became stale after context changed.
+4. `Pending`: event/context sync is in progress, an action is submitting or has
+   an ambiguous result, or ownership is pending on another agent.
+5. Show context state, last successful sync time, latest fetch attempt, and the
+   attention reason. Never label cached or failed context as current and complete.
+6. Use the persisted `handoff.md` with separate deterministic prompt types for
+   normal task handling, context-sync investigation, and changed-context
+   reprocessing. The UI copies that file verbatim.
+7. UI refresh reads the local task workspace. An explicit refresh/resync action
+   may fetch Relay, but opening task detail must not silently create another
+   competing live-snapshot store.
+
+### Bounded Context Growth
+
+1. Always preserve the complete last successful task in `remote.json` and a
+   complete readable projection in `context.md`. The user and Local Agent retain
+   a local path to the complete context.
+2. Generate `working-context.md` only when configured item/byte thresholds are
+   exceeded. Include current state, goal, done criteria, ownership, recent
+   messages, recent artifact metadata, counts, and explicit truncation markers.
+3. Never silently truncate current goal, done criteria, ownership, pending
+   state, synchronization status, or the envelope used by a prepared action.
+4. Keep large artifact bodies out of the bounded working view. Preserve their
+   metadata and stable retrieval reference; add focused artifact retrieval only
+   after Relay exposes a stable artifact-read contract.
+5. Use deterministic item and serialized-byte budgets. Record generated size,
+   omitted counts, and full-context fallbacks so defaults can be tuned from real
+   workloads.
+6. Do not add LLM summaries in the first implementation. A later optional
+   rolling summary must record its coverage boundary and remain advisory.
+7. Coordinate cursor-based task history and artifact pagination with Relay when
+   full GET payload growth becomes a transport problem. Local working views
+   control model context size but cannot reduce Relay response size.
+
+### Migration And Compatibility
+
+1. Introduce shared task-workspace and context-envelope modules before changing
+   listener, intake, UI, or MCP mutation behavior.
+2. Preserve current `.agentrelay/inbox` event files and `state/issues.json`
+   during migration. Initially dual-write the new workspace and existing issue
+   projection so upgrades are additive.
+3. Backfill task workspaces from the newest valid existing raw/live snapshot;
+   when unavailable, enqueue a Relay GET. Preserve archive state and local
+   action/error history.
+4. Switch UI reads to `task-index.json` and task workspaces only after parity
+   tests pass. Keep a rebuild command that regenerates the index without Relay
+   mutations.
+5. Remove implicit UI live-event persistence only after listener/context-sync
+   recovery is verified in installed service mode.
+6. Keep the optional processor/executor path disabled by default and outside the
+   primary design. If retained, it must consume the same workspace and guard
+   modules rather than invent another context store.
+
+### Implementation Phases
+
+1. Foundation: schemas, atomic per-task writer, context envelope, deterministic
+   Markdown projection, index rebuild, permissions, and path validation.
+2. Receive pipeline: summary-only listener persistence, intake ACK boundary,
+   durable sync queue, one retry, success/failure state, and recovery command.
+3. UI migration: category projection, sync/attention visibility, prompt types,
+   manual resync, and removal of implicit detail-page snapshot authority.
+4. Local Agent actions: prepare-action persistence, user-confirmed submission,
+   stale-action handling, context guard, stable idempotency, and success sync.
+5. Context growth: thresholds, bounded working view, artifact metadata, metrics,
+   and full-context fallback.
+6. Compatibility cleanup: backfill verification, installed-service validation,
+   deprecate superseded issue/live-event paths, and update public/install docs.
 
 ### Task Context Verification
 
-- Context-envelope tests cover every guarded field and structured mismatch
-  results.
-- Idempotency tests cover retrying one confirmed action and intentionally
-  sending two separately confirmed actions with identical content.
-- Compact-view tests enforce deterministic ordering, item/byte budgets,
-  truncation metadata, preservation of current task invariants, and fallback to
-  the full task read.
-- Event and local-cache tests verify that neither notification payloads nor raw
-  inbox files are used as authoritative task context.
+- Event durability precedes ACK; context GET starts after ACK; ACK and sync
+  failures remain independently recoverable.
+- A first fetch failure triggers exactly one retry; a second failure creates a
+  sanitized `context_sync_failed` record and investigation prompt without
+  invoking any Agent.
+- A successful initial/manual/recovery fetch produces the same atomic workspace
+  and clears only the relevant sync-failure state.
+- Complete task ordering and content in `remote.json` match Relay; `context.md`
+  is deterministic and does not silently omit text parts.
+- Duplicate/out-of-order events do not regress the workspace or duplicate jobs.
+- UI category precedence, archive preservation, prompt types, and explicit
+  stale/cached indicators are covered.
+- Prepared actions survive incoming task updates; guarded changes mark them
+  stale and return structured `CONTEXT_CHANGED` without a Relay mutation.
+- Idempotency tests cover retrying one confirmed action, ambiguous network
+  results, and two separately confirmed actions with identical content.
+- Bounded-view tests enforce ordering, item/byte budgets, truncation metadata,
+  invariant preservation, artifact references, and full-context fallback.
+- Migration tests backfill existing state, preserve archives, rebuild indexes,
+  and allow rollback while dual-write remains enabled.
+- Run `npm run check`, focused listener/intake/UI/MCP tests, installed launchd
+  service verification, and `http://127.0.0.1:8787/api/issues` verification for
+  each phase that changes the live local inbox.
 
 ## Service Worker Kit Plan
 
@@ -299,13 +503,16 @@ The kit should preserve the existing product boundary:
 
 ## Immediate Next Steps
 
-1. Implement the Stage 1 mutation context guard and stable client action
-   idempotency for the public Personal Agent MCP mutation tools.
-2. Coordinate Relay `409 Conflict` enforcement for stale artifact submissions
-   and closes; keep client checks non-authoritative.
-3. Implement the Stage 2 bounded task-context working view while preserving
-   `agentrelay_get_task` as the full authoritative read.
-4. Add server history/artifact pagination only when payload growth requires a
-   Relay protocol change.
-5. Return to the Service Worker Kit after the personal-agent context and
-   mutation-safety path is stable.
+1. Implement the task-workspace foundation and additive `issues.json` projection.
+2. Refactor listener/intake into durable event, ACK, and independent context-sync
+   stages with one bounded retry and investigation handoff on failure.
+3. Migrate the UI to workspace-backed categories and explicit normal,
+   investigation, and changed-context prompts.
+4. Add prepared local actions, submission-time context guard, stable action
+   idempotency, and post-submit task synchronization.
+5. Add bounded working context after complete local context and mutation safety
+   are verified.
+6. Coordinate Relay `409 Conflict` enforcement and later history/artifact
+   pagination without moving protocol authority into the MCP client.
+7. Return to the Service Worker Kit after the personal-agent local-context path
+   is stable.
