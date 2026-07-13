@@ -534,7 +534,9 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
   const taskId = String(task?.task_id || task?.taskId || sync?.taskId || workflow?.taskId || existingIssue.taskId || paths.taskId);
   const requesterAgentId = String(task?.requester_agent_id || existingIssue.requesterAgentId || "");
   const targetAgentId = String(task?.target_agent_id || existingIssue.targetAgentId || "");
-  const pendingOnAgentId = String(task?.pending_on_agent_id || existingIssue.pendingOnAgentId || "");
+  const pendingOnAgentId = task && (Object.hasOwn(task, "pending_on_agent_id") || Object.hasOwn(task, "pendingOnAgentId"))
+    ? String(task.pending_on_agent_id ?? task.pendingOnAgentId ?? "")
+    : String(existingIssue.pendingOnAgentId || "");
   const localStatus = workflow?.localStatus || existingIssue.localStatus || (task ? "received" : "sync_pending");
   const direction = requesterAgentId === localAgentId
     ? "outgoing"

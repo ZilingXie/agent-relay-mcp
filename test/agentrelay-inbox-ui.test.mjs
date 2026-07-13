@@ -435,8 +435,9 @@ test("inbox UI server exposes issue list and per-task details", async () => {
     assert.equal(detailResponse.status, 200);
     const detail = await detailResponse.json();
     assert.equal(detail.issue.taskId, "task_detail");
-    assert.equal(detail.events[0].eventId, "evt_detail");
-    assert.equal(detail.events[0].raw.task.subject, "Inspect detail");
+    const recordedEvent = detail.events.find((event) => event.eventId === "evt_detail");
+    assert.equal(recordedEvent.raw.task.subject, "Inspect detail");
+    assert.equal(detail.contextSource, "local_workspace");
     assert.deepEqual(detail.timeline.map((item) => item.type), [
       "relay_message",
       "artifact",
@@ -455,7 +456,7 @@ test("inbox UI server exposes issue list and per-task details", async () => {
   }
 });
 
-test("inbox UI detail syncs live Relay snapshots without running the local processor", async () => {
+test("inbox UI detail reads local workspace and explicit resync fetches Relay without running the processor", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
   await writeIssues(stateRoot, {
@@ -482,6 +483,7 @@ test("inbox UI detail syncs live Relay snapshots without running the local proce
     events: {}
   });
   const processorCalls = [];
+  const getTaskCalls = [];
   const server = createInboxUiServer({
     stateRoot,
     now: () => "2026-07-02T08:05:00.000Z",
@@ -492,7 +494,9 @@ test("inbox UI detail syncs live Relay snapshots without running the local proce
     executeInboxAgent: null,
     relayClient: {
       listAgents: async () => ({ agents: [] }),
-      getTask: async (taskId) => ({
+      getTask: async (taskId) => {
+        getTaskCalls.push(taskId);
+        return {
         data: {
           task: {
           task_id: taskId,
@@ -513,7 +517,8 @@ test("inbox UI detail syncs live Relay snapshots without running the local proce
           }]
           }
         }
-      }),
+      };
+      },
       createTask: async () => {
         throw new Error("not used");
       }
@@ -524,8 +529,16 @@ test("inbox UI detail syncs live Relay snapshots without running the local proce
     const { port } = server.address();
     const detailResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_live`);
     assert.equal(detailResponse.status, 200);
-    const detail = await detailResponse.json();
-    assert.match(detail.events.at(-1).eventId, /^relay-live-task_live-/);
+    const before = await detailResponse.json();
+    assert.equal(before.contextSource, "event_cache");
+    assert.equal(getTaskCalls.length, 0);
+
+    const resyncResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_live/resync`, { method: "POST" });
+    assert.equal(resyncResponse.status, 200);
+    assert.deepEqual(getTaskCalls, ["task_live"]);
+    const detailAfterResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_live`);
+    const detail = await detailAfterResponse.json();
+    assert.equal(detail.contextSource, "local_workspace");
     assert.deepEqual(detail.timeline.map((item) => item.type), ["local_request", "artifact"]);
     assert.equal(detail.timeline[1].speaker, "project-hermes");
     assert.equal(detail.timeline[1].text, "Hermes finished the title update.");
@@ -537,16 +550,15 @@ test("inbox UI detail syncs live Relay snapshots without running the local proce
     assert.equal(issue.pendingOnAgentId, "zac-agent");
     assert.equal(issue.relayStatus, "delivery_pending");
     assert.equal(issue.localStatus, "created_from_ui");
-    assert.equal(issue.lastEventId, detail.events.at(-1).eventId);
-    assert.equal(issue.eventIds.length, 1);
-    assert.equal(inbox.events[issue.lastEventId].type, "relay.snapshot");
-    assert.match(inbox.events[issue.lastEventId].sourcePath, /live-events/);
+    assert.equal(issue.contextSyncStatus, "context_ready");
+    assert.match(issue.taskRemotePath, /tasks\/task_live\/remote\.json$/);
+    assert.deepEqual(issue.eventIds || [], []);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
 
-test("inbox UI live Relay sync clears pending owner when the task is completed", async () => {
+test("inbox UI explicit resync updates completed task ownership from Relay", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
   await writeIssues(stateRoot, {
@@ -599,8 +611,9 @@ test("inbox UI live Relay sync clears pending owner when the task is completed",
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address();
+    const resyncResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_completed_live/resync`, { method: "POST" });
+    assert.equal(resyncResponse.status, 200);
     const detailResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_completed_live`);
-    assert.equal(detailResponse.status, 200);
     const detail = await detailResponse.json();
     assert.equal(detail.issue.relayStatus, "completed");
     assert.equal(detail.issue.pendingOnAgentId, "");
@@ -612,18 +625,13 @@ test("inbox UI live Relay sync clears pending owner when the task is completed",
     assert.equal(inbox.issues.task_completed_live.pendingOnAgentId, "");
     assert.equal(inbox.issues.task_completed_live.pendingOnHumanId, null);
 
-    inbox.issues.task_completed_live.pendingOnAgentId = "zac-agent";
-    await writeFile(join(stateRoot, "issues.json"), JSON.stringify(inbox, null, 2));
-    const repeatResponse = await fetch(`http://127.0.0.1:${port}/api/issues/task_completed_live`);
-    assert.equal(repeatResponse.status, 200);
-    const repeated = await repeatResponse.json();
-    assert.equal(repeated.issue.pendingOnAgentId, "");
+    assert.equal(inbox.issues.task_completed_live.contextSyncStatus, "context_ready");
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
 
-test("inbox UI live Relay sync does not unarchive a local thread", async () => {
+test("inbox UI detail does not fetch Relay or unarchive a local thread", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
   await writeIssues(stateRoot, {
@@ -645,6 +653,7 @@ test("inbox UI live Relay sync does not unarchive a local thread", async () => {
     events: {}
   });
   const processorCalls = [];
+  const getTaskCalls = [];
   const server = createInboxUiServer({
     stateRoot,
     now: () => "2026-07-02T08:07:00.000Z",
@@ -655,7 +664,9 @@ test("inbox UI live Relay sync does not unarchive a local thread", async () => {
     executeInboxAgent: null,
     relayClient: {
       listAgents: async () => ({ agents: [] }),
-      getTask: async (taskId) => ({
+      getTask: async (taskId) => {
+        getTaskCalls.push(taskId);
+        return {
         task: {
           task_id: taskId,
           subject: "Archived outgoing task",
@@ -674,7 +685,8 @@ test("inbox UI live Relay sync does not unarchive a local thread", async () => {
             parts: [{ kind: "text", text: "Archived task received another result." }]
           }]
         }
-      }),
+      };
+      },
       createTask: async () => {
         throw new Error("not used");
       }
@@ -687,13 +699,14 @@ test("inbox UI live Relay sync does not unarchive a local thread", async () => {
     assert.equal(detailResponse.status, 200);
     const detail = await detailResponse.json();
     assert.equal(detail.issue.localStatus, "archived");
+    assert.equal(getTaskCalls.length, 0);
 
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(processorCalls.length, 0);
     const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
     assert.equal(inbox.issues.task_archived_live.localStatus, "archived");
     assert.equal(inbox.issues.task_archived_live.archivedAt, "2026-07-02T08:01:00.000Z");
-    assert.match(inbox.issues.task_archived_live.lastEventId, /^relay-live-task_archived_live-/);
+    assert.equal(inbox.issues.task_archived_live.lastEventId, undefined);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -1922,9 +1935,12 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.doesNotMatch(js, /data-handoff-prompt/);
     assert.doesNotMatch(js, /<details class="handoff-prompt"/);
     assert.doesNotMatch(js, /copy-prompt-button/);
-    assert.match(js, /Please handle AgentRelay task id: /);
-    assert.match(js, /wait for my explicit confirmation before any AgentRelay mutation/);
-    assert.match(js, /Read and follow the AgentRelay Local Inbox AGENTS\.md before completing the task:/);
+    assert.match(js, /const prompt = issue\.handoffPrompt/);
+    assert.match(js, /issue\.contextSyncStatus === "context_sync_pending"/);
+    assert.match(js, /issue\.contextSyncStatus === "context_sync_failed"/);
+    assert.match(js, /data-resync-task/);
+    assert.match(js, /function bindContextSyncControls/);
+    assert.match(js, /\/resync/);
     assert.match(js, /AGENTS_MD_PATH/);
     assert.doesNotMatch(js, /Use the local AgentRelay MCP tools:/);
     assert.doesNotMatch(js, /agentrelay_get_task/);
