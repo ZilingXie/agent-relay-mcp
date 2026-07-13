@@ -2,7 +2,9 @@
 
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -17,12 +19,14 @@ const smokeAuth = {
 let fakeRelay;
 let client;
 let transport;
+let localStateRoot;
 
 try {
   fakeRelay = await startFakeRelay();
   const { port } = fakeRelay.address();
   const relayBaseUrl = `http://127.0.0.1:${port}/agentrelay`;
-  ({ client, transport } = await startMcpClient(relayBaseUrl));
+  localStateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-smoke-"));
+  ({ client, transport } = await startMcpClient(relayBaseUrl, localStateRoot));
 
   const tools = await client.listTools();
   assert(tools.tools.some((tool) => tool.name === "agentrelay_create_task"), "agentrelay_create_task not found");
@@ -31,6 +35,8 @@ try {
     "agentrelay_prepare_completion_decision not found"
   );
   assert(tools.tools.some((tool) => tool.name === "agentrelay_amend_task"), "agentrelay_amend_task not found");
+  assert(tools.tools.some((tool) => tool.name === "agentrelay_resync_local_task"), "agentrelay_resync_local_task not found");
+  assert(tools.tools.some((tool) => tool.name === "agentrelay_prepare_local_action"), "agentrelay_prepare_local_action not found");
 
   await callJson("agentrelay_health", {});
   await callJson("agentrelay_list_agents", {});
@@ -66,14 +72,28 @@ try {
     threadId: "frank-thread-smoke"
   });
 
-  const afterArtifact = await callJson("agentrelay_submit_artifact", {
+  const artifactArgs = {
     taskId,
     actor_agent_id: "frank-agent",
     target_agent_id: "zac-agent",
     intent: "availability_response",
     kind: "meeting_availability",
     text: "Frank is available Tuesday 10:00-11:00 China time."
+  };
+  await callJson("agentrelay_resync_local_task", { taskId });
+  const preparedArtifact = await callJson("agentrelay_prepare_local_action", {
+    taskId,
+    actionType: "submit_artifact",
+    clientActionId: "smoke_artifact",
+    payloadJson: JSON.stringify(withoutTaskId(artifactArgs))
   });
+  assert(preparedArtifact.action.status === "awaiting_confirmation", "artifact action was not prepared");
+  const afterArtifactResult = await callJson("agentrelay_submit_artifact", {
+    ...artifactArgs,
+    clientActionId: "smoke_artifact",
+    confirmationRef: "smoke-user-confirmed-artifact"
+  });
+  const afterArtifact = afterArtifactResult.relayResponse;
   assert(afterArtifact.task.status === "delivery_pending", "artifact should produce delivery_pending");
 
   const zacClaim = await callJson("agentrelay_claim_task", { agentId: "zac-agent" });
@@ -104,7 +124,7 @@ try {
     "decision helper should recommend human completion authority"
   );
 
-  const closed = await callJson("agentrelay_close_task", {
+  const closeArgs = {
     taskId,
     closedByAgentId: "zac-agent",
     terminalReason: "Requester confirmed the proposed meeting time.",
@@ -112,7 +132,20 @@ try {
     humanOwnerId: "zac",
     humanApprovalRef: "zac-local-smoke-approval",
     humanApprovalSummary: "Zac accepted the proposed meeting time."
+  };
+  await callJson("agentrelay_resync_local_task", { taskId });
+  await callJson("agentrelay_prepare_local_action", {
+    taskId,
+    actionType: "close_task",
+    clientActionId: "smoke_close",
+    payloadJson: JSON.stringify(withoutTaskId(closeArgs))
   });
+  const closedResult = await callJson("agentrelay_close_task", {
+    ...closeArgs,
+    clientActionId: "smoke_close",
+    confirmationRef: "smoke-user-confirmed-close"
+  });
+  const closed = closedResult.relayResponse;
   assert(closed.task.status === "completed", "task did not close");
 
   const events = await callJson("agentrelay_get_events", { taskId });
@@ -132,9 +165,10 @@ try {
   await transport?.close().catch(() => {});
   await client?.close().catch(() => {});
   await new Promise((resolveClose) => fakeRelay?.close(resolveClose));
+  if (localStateRoot) await rm(localStateRoot, { recursive: true, force: true });
 }
 
-async function startMcpClient(relayBaseUrl) {
+async function startMcpClient(relayBaseUrl, stateRoot) {
   const mcpClient = new Client({ name: "agent-relay-mcp-smoke", version: "0.1.0" });
   const mcpTransport = new StdioClientTransport({
     command: "node",
@@ -145,7 +179,8 @@ async function startMcpClient(relayBaseUrl) {
       AGENTRELAY_BASE_URL: relayBaseUrl,
       AGENTRELAY_AGENT_ID: smokeAuth.agentId,
       AGENTRELAY_USERNAME: smokeAuth.username,
-      AGENTRELAY_TOKEN: smokeAuth.token
+      AGENTRELAY_TOKEN: smokeAuth.token,
+      AGENTRELAY_STATE_DIR: stateRoot
     },
     stderr: "pipe"
   });
@@ -193,7 +228,11 @@ function startFakeRelay() {
           target_agent_id: payload.target_agent_id,
           requester_thread_id: payload.requesterThreadId,
           completion_owner_agent_id: payload.completion_owner_agent_id || payload.requester_agent_id,
-          pending_on_agent_id: payload.pending_on_agent_id || payload.target_agent_id
+          pending_on_agent_id: payload.pending_on_agent_id || payload.target_agent_id,
+          goal_version: 1,
+          exchange_epoch: 1,
+          messages: [{ message_id: "msg_smoke", ...payload.message }],
+          artifacts: []
         };
         state.events.push({ event_type: "task.created" });
         return sendJson(response, { task: state.task }, 201);
@@ -293,6 +332,10 @@ function assertRelayAuth(request) {
   if (auth !== `Bearer ${smokeAuth.token}` || agentId !== smokeAuth.agentId || username !== smokeAuth.username) {
     throw new Error("missing or invalid AgentRelay auth headers");
   }
+}
+
+function withoutTaskId({ taskId: _taskId, ...payload }) {
+  return payload;
 }
 
 async function readJson(request) {

@@ -7,21 +7,29 @@ Use this flow when an artifact comes back to the completion owner agent.
 
 ## Decision Order
 
-1. Fetch the full task with `agentrelay_get_task`.
+1. Read the complete local task workspace. Use
+   `agentrelay_resync_local_task` when the user explicitly requests a refresh.
 2. Call `agentrelay_prepare_completion_decision`.
 3. Compare the latest artifact and local observations against `doneCriteria`.
-4. If human judgment, preference, approval, or commitment is involved, ask the
+4. Prepare the exact close, amend, or revision payload with
+   `agentrelay_prepare_local_action`.
+5. If human judgment, preference, approval, or commitment is involved, ask the
    local human owner before closing.
-5. If the human confirms, call `agentrelay_close_task` with
+6. If the human confirms, call `agentrelay_close_task` with the same
+   `clientActionId` and
    `completionAuthorityType: "human"`.
-6. If the agent can fully verify the result without human judgment, close with
+7. If the agent can fully verify the result without human judgment, close with
    `completionAuthorityType: "agent"`.
-7. If the human changes or clarifies the task goal, call `agentrelay_amend_task`
+8. If the human changes or clarifies the task goal, call `agentrelay_amend_task`
    so Relay records a new `goal_version`.
-8. If the artifact is incomplete under the current goal, submit a `revision_request` artifact back to
+9. If the artifact is incomplete under the current goal, submit a `revision_request` artifact back to
    the target agent.
-9. If the task is already terminal or the request changed after close, create a
+10. If the task is already terminal or the request changed after close, create a
    follow-up task instead of reopening the old one.
+
+If guarded context changes before submission, the mutation returns
+`CONTEXT_CHANGED`. Reread the updated local context, prepare a new action, and
+ask the user again; never submit the stale proposal.
 
 ## Helper Tool
 

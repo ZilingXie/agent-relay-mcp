@@ -9,6 +9,12 @@ export function unwrapPendingTasks(response) {
   return Array.isArray(tasks) ? tasks : [];
 }
 
+export function buildPendingEventPayload(event) {
+  const taskId = event?.taskId || event?.task_id;
+  if (!taskId) throw new Error("Pending event is missing task id");
+  return { event };
+}
+
 export function buildRecoveryEvent({ task, agentId }) {
   const taskId = task?.task_id || task?.taskId;
   if (!taskId) throw new Error("Pending task snapshot is missing task id");

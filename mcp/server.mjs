@@ -7,6 +7,9 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
+import { executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
+import { resyncLocalTask } from "../scripts/agentrelay-task-context-sync.mjs";
+import { prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { maybeHandleProtocolNegotiation, syncCurrentProtocol } from "../scripts/protocol-sync.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,6 +22,8 @@ const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
 const bearerToken = process.env.AGENTRELAY_TOKEN || "";
+const stateRoot = resolve(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));
+const localInboxAgentsMdPath = resolve(process.env.AGENTRELAY_AGENTS_MD_PATH || resolve(repoRoot, "templates/local-inbox/AGENTS.md"));
 
 const server = new McpServer({
   name: "agent-relay-mcp",
@@ -158,6 +163,52 @@ function registerTools(mcpServer) {
   );
 
   mcpServer.registerTool(
+    "agentrelay_resync_local_task",
+    {
+      title: "Resync local AgentRelay task context",
+      description: "Read the complete task from Relay and atomically refresh the local task workspace. This tool never mutates Relay or starts a Local Agent.",
+      inputSchema: {
+        taskId: z.string().min(1)
+      }
+    },
+    async ({ taskId }) => jsonResult(await resyncLocalTask({
+      stateRoot,
+      taskId,
+      fetchTask: (id) => relayGet(`/tasks/${encodeURIComponent(id)}`),
+      localAgentId: agentId,
+      source: "agent_resync",
+      maxAttempts: 1,
+      agentsMdPath: localInboxAgentsMdPath
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_prepare_local_action",
+    {
+      title: "Prepare local AgentRelay action",
+      description: "Persist an exact proposed Relay mutation and bind it to the current local task context before asking the user for confirmation. This tool does not mutate Relay.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actionType: z.enum(["submit_artifact", "request_revision", "amend_task", "close_task"]),
+        payloadJson: z.string().min(2).describe("Exact JSON object of mutation arguments excluding taskId, clientActionId, and confirmationRef"),
+        clientActionId: z.string().min(1).optional(),
+        confirmationRef: z.string().optional().describe("Optional local confirmation reference; it may be supplied later during submission")
+      }
+    },
+    async ({ taskId, actionType, payloadJson, clientActionId, confirmationRef }) => {
+      const payload = parseRequiredJsonObject(payloadJson, "payloadJson");
+      return jsonResult(await prepareLocalAction({
+        stateRoot,
+        taskId,
+        actionType,
+        payload,
+        clientActionId,
+        confirmationRef
+      }));
+    }
+  );
+
+  mcpServer.registerTool(
     "agentrelay_get_events",
     {
       title: "Get AgentRelay task events",
@@ -246,7 +297,9 @@ function registerTools(mcpServer) {
         pendingOnHumanId: z.string().optional(),
         nextStatus: z.string().optional(),
         nextAction: z.string().optional(),
-        responseToGoalVersion: z.number().int().positive().optional()
+        responseToGoalVersion: z.number().int().positive().optional(),
+        clientActionId: z.string().min(1).optional().describe("Prepared local action id for context-guarded submission"),
+        confirmationRef: z.string().optional().describe("Local reference to the user's explicit confirmation")
       }
     },
     async (args) => {
@@ -260,7 +313,6 @@ function registerTools(mcpServer) {
       }
       const payload = {
         protocol_version: PROTOCOL_VERSION,
-        idempotency_key: `mcp-artifact-${randomUUID()}`,
         actor_agent_id: actorAgentId,
         intent: args.intent || "work_result",
         target_agent_id: args.target_agent_id || args.to,
@@ -276,7 +328,13 @@ function registerTools(mcpServer) {
           parts: [{ kind: "text", text: args.text }]
         }
       };
-      return jsonResult(await relayPost(`/tasks/${encodeURIComponent(args.taskId)}/artifacts`, compact(payload)));
+      const actionType = args.intent === "request_revision" ? "request_revision" : "submit_artifact";
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType,
+        remotePayload: payload,
+        path: `/tasks/${encodeURIComponent(args.taskId)}/artifacts`
+      }));
     }
   );
 
@@ -305,14 +363,15 @@ function registerTools(mcpServer) {
         newMaxTurns: z.number().int().positive().optional(),
         ttl: z.number().int().positive().optional(),
         nextAction: z.string().optional(),
-        humanAuthorityJson: z.string().optional().describe("Advanced override: JSON object for human_authority.")
+        humanAuthorityJson: z.string().optional().describe("Advanced override: JSON object for human_authority."),
+        clientActionId: z.string().min(1).optional().describe("Prepared local action id for context-guarded submission"),
+        confirmationRef: z.string().optional().describe("Local reference to the user's explicit confirmation")
       }
     },
     async (args) => {
       const humanAuthority = buildHumanAuthority(args);
       const payload = {
         protocol_version: PROTOCOL_VERSION,
-        idempotency_key: `mcp-amend-${randomUUID()}`,
         actor_agent_id: args.actor_agent_id,
         expected_goal_version: args.expected_goal_version,
         new_done_criteria: args.new_done_criteria,
@@ -323,7 +382,12 @@ function registerTools(mcpServer) {
         reason: args.reason,
         next_action: args.nextAction
       };
-      return jsonResult(await relayPost(`/tasks/${encodeURIComponent(args.taskId)}/amend`, compact(payload)));
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "amend_task",
+        remotePayload: payload,
+        path: `/tasks/${encodeURIComponent(args.taskId)}/amend`
+      }));
     }
   );
 
@@ -405,23 +469,27 @@ function registerTools(mcpServer) {
         humanApprovalVisibility: z.enum(["public", "redacted", "private"]).optional(),
         completionAuthorityJson: z.string().optional().describe("Advanced override: JSON object for completion_authority."),
         finalArtifactJson: z.string().optional().describe("Optional JSON object for final_artifact."),
-        closedAgainstGoalVersion: z.number().int().positive().optional()
+        closedAgainstGoalVersion: z.number().int().positive().optional(),
+        clientActionId: z.string().min(1).optional().describe("Prepared local action id for context-guarded submission"),
+        confirmationRef: z.string().optional().describe("Local reference to the user's explicit confirmation")
       }
     },
     async (args) => {
       const completionAuthority = buildCompletionAuthority(args);
       const finalArtifact = parseOptionalJsonObject(args.finalArtifactJson, "finalArtifactJson");
-      return jsonResult(
-        await relayPost(`/tasks/${encodeURIComponent(args.taskId)}/close`, compact({
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "close_task",
+        path: `/tasks/${encodeURIComponent(args.taskId)}/close`,
+        remotePayload: {
           protocol_version: PROTOCOL_VERSION,
-          idempotency_key: `mcp-close-${randomUUID()}`,
           closed_by_agent_id: args.closedByAgentId,
           closed_against_goal_version: args.closedAgainstGoalVersion,
           completion_authority: completionAuthority,
           final_artifact: finalArtifact,
           terminal_reason: args.terminalReason
-        }))
-      );
+        }
+      }));
     }
   );
 
@@ -474,6 +542,44 @@ function registerTools(mcpServer) {
         )
       )
   );
+}
+
+async function executeMcpTaskAction({ args, actionType, remotePayload, path }) {
+  const preparedPayload = preparedActionPayload(args);
+  const mutate = (idempotencyKey) => relayPost(path, compact({
+    ...remotePayload,
+    idempotency_key: idempotencyKey
+  }));
+  if (args.clientActionId) {
+    return executePreparedTaskAction({
+      stateRoot,
+      taskId: args.taskId,
+      clientActionId: args.clientActionId,
+      actionType,
+      payload: preparedPayload,
+      confirmationRef: args.confirmationRef,
+      fetchTask: (taskId) => relayGet(`/tasks/${encodeURIComponent(taskId)}`),
+      mutate,
+      localAgentId: agentId,
+      agentsMdPath: localInboxAgentsMdPath
+    });
+  }
+  const idempotencyKey = legacyActionIdempotencyKey({
+    taskId: args.taskId,
+    actionType,
+    payload: preparedPayload
+  });
+  return mutate(idempotencyKey);
+}
+
+function preparedActionPayload(args) {
+  const {
+    taskId: _taskId,
+    clientActionId: _clientActionId,
+    confirmationRef: _confirmationRef,
+    ...payload
+  } = args;
+  return payload;
 }
 
 async function relayGet(path) {
@@ -624,6 +730,12 @@ function parseOptionalJsonObject(value, fieldName) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${fieldName} must be a JSON object`);
   }
+  return parsed;
+}
+
+function parseRequiredJsonObject(value, fieldName) {
+  const parsed = parseOptionalJsonObject(value, fieldName);
+  if (!parsed) throw new Error(`${fieldName} is required`);
   return parsed;
 }
 

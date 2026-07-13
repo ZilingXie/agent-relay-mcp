@@ -151,6 +151,14 @@ conversation, and safely submit the confirmed result. Relay remains the only
 authoritative task source; local files make the latest fetched task readable,
 recoverable, and inspectable without creating a second protocol authority.
 
+Status (2026-07-13): implemented in the MCP client. The per-task workspace,
+ACK-then-sync pipeline, one-retry recovery, manual resync, workspace-backed UI,
+prepared-action context guard, stable idempotency, post-submit sync,
+monotonic snapshot protection, index rebuild, and legacy opt-in executor
+workspace guard are covered by focused and full-suite tests. Relay-side atomic
+`409 Conflict` enforcement for artifact and close goal-version mismatches
+remains server-owned follow-up work.
+
 ### Confirmed Context Contract
 
 - `GET /tasks/:id` is the authoritative context entry point and returns the
@@ -530,16 +538,7 @@ The kit should preserve the existing product boundary:
 
 ## Immediate Next Steps
 
-1. Implement the task-workspace foundation and additive `issues.json` projection.
-2. Refactor listener/intake into durable event, ACK, and independent context-sync
-   stages with one automatic retry and investigation handoff on failure.
-3. Migrate the UI to workspace-backed categories and explicit normal,
-   investigation, and changed-context prompts.
-4. Add the shared local resync operation and its background, UI, and
-   user-invoked Agent adapters.
-5. Add prepared local actions, submission-time context guard, stable action
-   idempotency, and post-submit task synchronization.
-6. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
+1. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
    into the MCP client.
-7. Return to the Service Worker Kit after the personal-agent local-context path
+2. Return to the Service Worker Kit after the personal-agent local-context path
    is stable.

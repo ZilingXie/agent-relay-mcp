@@ -3,6 +3,7 @@ import { Duplex } from "node:stream";
 import test from "node:test";
 
 import {
+  buildPendingEventPayload,
   buildRecoveryEvent,
   listenerStatusHealth,
   readJsonFrame,
@@ -10,6 +11,13 @@ import {
   unwrapPendingTasks,
   unwrapTask
 } from "../scripts/agentrelay-listener-core.mjs";
+
+test("buildPendingEventPayload persists only the notification summary", () => {
+  const event = { type: "task.pending", eventId: "evt_summary", taskId: "task_summary", payloadRef: "/tasks/task_summary" };
+  assert.deepEqual(buildPendingEventPayload(event), { event });
+  assert.equal(Object.hasOwn(buildPendingEventPayload(event), "task"), false);
+  assert.throws(() => buildPendingEventPayload({ type: "task.pending" }), /missing task id/);
+});
 
 test("listenerStatusHealth rejects a stale connected listener", () => {
   assert.deepEqual(

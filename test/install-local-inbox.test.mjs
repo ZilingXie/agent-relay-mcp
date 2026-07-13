@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   buildInitialFileAccessWhitelist,
   buildInitialEnv,
   buildLocalInboxEnvBlock,
+  initializeLocalInboxState,
   upsertLocalInboxEnvBlock
 } from "../scripts/install-local-inbox.mjs";
 
@@ -97,4 +101,16 @@ test("buildInitialFileAccessWhitelist defaults to the install root", () => {
     source: "install",
     createdAt: "2026-07-06T01:02:03.000Z"
   }]);
+});
+
+test("initializeLocalInboxState creates additive task workspace state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-install-state-"));
+  const stateDir = join(root, "state");
+
+  await initializeLocalInboxState({ stateDir });
+
+  assert.deepEqual(JSON.parse(await readFile(join(stateDir, "task-index.json"), "utf8")), { version: 1, tasks: {} });
+  assert.equal((await stat(join(stateDir, "tasks"))).mode & 0o777, 0o700);
+  assert.equal((await stat(join(stateDir, ".locks"))).mode & 0o777, 0o700);
+  assert.equal((await stat(join(stateDir, "issues.json"))).mode & 0o777, 0o600);
 });

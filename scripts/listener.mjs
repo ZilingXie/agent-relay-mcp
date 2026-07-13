@@ -9,7 +9,8 @@ import { homedir } from "node:os";
 import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
-import { readJsonFrame, reconcilePendingTasks, unwrapTask } from "./agentrelay-listener-core.mjs";
+import { buildPendingEventPayload, readJsonFrame, reconcilePendingTasks } from "./agentrelay-listener-core.mjs";
+import { recoverPendingTaskSyncs } from "./agentrelay-task-context-sync.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -22,6 +23,7 @@ const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
 const token = process.env.AGENTRELAY_TOKEN || "";
 const inboxDir = resolveHome(process.env.AGENTRELAY_INBOX_DIR || resolve(repoRoot, ".agentrelay", "inbox"));
+const stateRoot = resolveHome(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));
 const hookCommand = process.env.AGENTRELAY_LISTENER_HOOK || "";
 const reconnectMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_RECONNECT_MS || "5000", 10);
 const inactivityMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_INACTIVITY_MS || "90000", 10);
@@ -76,8 +78,7 @@ async function listenOnce() {
         continue;
       }
       if (frame.type === "task.pending") {
-        const enriched = await enrichPendingEvent(frame).catch((error) => ({ event: frame, taskFetchError: error.message }));
-        const eventPath = await writeInboxEvent(enriched);
+        const eventPath = await writeInboxEvent(buildPendingEventPayload(frame));
         console.log(JSON.stringify({ ok: true, received: "task.pending", taskId: frame.taskId, eventId: frame.eventId, path: eventPath }));
         if (hookCommand) await runHook(eventPath);
         if (once) return;
@@ -91,13 +92,6 @@ async function listenOnce() {
   } finally {
     socket.destroy();
   }
-}
-
-async function enrichPendingEvent(event) {
-  const taskResponse = await relayRequest("GET", `/tasks/${encodeURIComponent(event.taskId)}`);
-  const task = unwrapTask(taskResponse);
-  if (!task) throw new Error("Task response is missing task snapshot");
-  return { event, task };
 }
 
 async function tryReconcilePending() {
@@ -118,12 +112,22 @@ async function tryReconcilePending() {
         if (hookCommand) await runHook(eventPath);
       }
     });
+    const localRecovery = await recoverPendingTaskSyncs({
+      stateRoot,
+      fetchTask: (taskId) => relayRequest("GET", `/tasks/${encodeURIComponent(taskId)}`),
+      localAgentId: agentId,
+      maxAttempts: 2,
+      retryDelayMs: Number(process.env.AGENTRELAY_CONTEXT_SYNC_RETRY_MS || 250)
+    });
     lastReconciledAt = Date.now();
     await updateListenerStatus({
       lastReconciliationAt: new Date().toISOString(),
       reconciliationDiscovered: result.discovered,
       reconciliationPersisted: result.persisted,
       reconciliationFailed: result.failures.length,
+      localSyncRecoveryDiscovered: localRecovery.discovered,
+      localSyncRecoveryReady: localRecovery.ready,
+      localSyncRecoveryFailed: localRecovery.failed,
       lastReconciliationError: null
     });
     console.error(`[agentrelay-listener] reconciliation discovered=${result.discovered} persisted=${result.persisted} failed=${result.failures.length}`);

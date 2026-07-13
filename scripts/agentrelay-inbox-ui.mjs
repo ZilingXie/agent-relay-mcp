@@ -10,6 +10,14 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
+import { resyncLocalTask } from "./agentrelay-task-context-sync.mjs";
+import {
+  archiveTaskWorkspace,
+  backfillTaskWorkspaces,
+  persistTaskWorkspace,
+  readTaskIndex,
+  readTaskWorkspace
+} from "./agentrelay-task-workspace.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -23,6 +31,7 @@ const TASK_DRAFT_SCHEMA_PATH = resolve(PROJECT_ROOT, "schemas/task-draft.schema.
 const LOCAL_INBOX_AGENTS_TEMPLATE_PATH = resolve(PROJECT_ROOT, "templates/local-inbox/AGENTS.md");
 const TASK_DRAFT_SUBJECT_MAX_LENGTH = 32;
 const backgroundProcessingByStateRoot = new Map();
+const workspaceBackfillByStateRoot = new Map();
 const envPath = process.env.AGENTRELAY_ENV_PATH || resolve(PROJECT_ROOT, ".env");
 loadDotEnv(envPath);
 
@@ -33,11 +42,15 @@ export async function loadInboxSnapshot({
 } = {}) {
   const generatedAt = now();
   const inboxPath = join(stateRoot, "issues.json");
-  if (!existsSync(inboxPath)) return emptySnapshot(generatedAt);
-
-  const parsed = JSON.parse(await readFile(inboxPath, "utf8"));
+  await ensureWorkspaceBackfill({ stateRoot, localAgentId, now });
+  const parsed = existsSync(inboxPath)
+    ? JSON.parse(await readFile(inboxPath, "utf8"))
+    : { version: 1, issues: {}, events: {} };
+  const index = await readTaskIndex({ stateRoot });
   const eventsById = parsed.events || {};
-  const issues = Object.values(parsed.issues || {})
+  const issueIds = new Set([...Object.keys(parsed.issues || {}), ...Object.keys(index.tasks || {})]);
+  const issues = [...issueIds]
+    .map((taskId) => ({ ...(parsed.issues?.[taskId] || {}), ...(index.tasks?.[taskId] || {}), taskId }))
     .map((issue) => normalizeIssue(issue, eventsById, { localAgentId }))
     .sort((a, b) => compareIsoDesc(a.updatedAt || a.createdAt, b.updatedAt || b.createdAt));
 
@@ -47,6 +60,15 @@ export async function loadInboxSnapshot({
     counts: countIssues(issues),
     issues
   };
+}
+
+async function ensureWorkspaceBackfill({ stateRoot, localAgentId, now }) {
+  const key = resolve(stateRoot);
+  if (!workspaceBackfillByStateRoot.has(key)) {
+    workspaceBackfillByStateRoot.set(key, backfillTaskWorkspaces({ stateRoot, localAgentId, now })
+      .catch((error) => ({ error: error.message })));
+  }
+  return workspaceBackfillByStateRoot.get(key);
 }
 
 export function createInboxUiServer({
@@ -208,6 +230,23 @@ export function createInboxUiServer({
         return;
       }
 
+      const resyncMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/resync$/);
+      if (req.method === "POST" && resyncMatch) {
+        const taskId = decodeURIComponent(resyncMatch[1]);
+        const result = await resyncLocalTask({
+          stateRoot,
+          taskId,
+          fetchTask: (id) => relayClient.getTask(id),
+          localAgentId,
+          source: "ui_retry",
+          maxAttempts: 1,
+          now,
+          agentsMdPath: resolve(process.env.AGENTRELAY_AGENTS_MD_PATH || join(installRoot, "templates/local-inbox/AGENTS.md"))
+        });
+        sendJson(res, result.status === "context_ready" ? 200 : 502, result);
+        return;
+      }
+
       const deleteIssueMatch = url.pathname.match(/^\/api\/issues\/([^/]+)$/);
       if (req.method === "DELETE" && deleteIssueMatch) {
         const taskId = decodeURIComponent(deleteIssueMatch[1]);
@@ -244,7 +283,7 @@ export function createInboxUiServer({
           sendJson(res, 404, { error: "issue_not_found", taskId });
           return;
         }
-        const detail = await loadIssueDetail({ stateRoot, taskId, issue, relayClient, localAgentId, now });
+        const detail = await loadIssueDetail({ stateRoot, taskId, issue, localAgentId, now });
         sendJson(res, 200, detail);
         return;
       }
@@ -306,21 +345,13 @@ async function loadIssueDetail({
   stateRoot,
   taskId,
   issue,
-  relayClient,
   localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent",
   now = () => new Date().toISOString()
 }) {
   const inboxPath = join(stateRoot, "issues.json");
-  let parsed = JSON.parse(await readFile(inboxPath, "utf8"));
-  let currentIssue = parsed.issues?.[taskId] || issue;
-  let liveSynced = false;
-  const liveRelayEvent = await fetchLiveRelayEvent({ taskId, relayClient, now });
-  if (liveRelayEvent) {
-    const syncResult = await persistLiveRelayEvent({ stateRoot, inbox: parsed, issue: currentIssue, liveRelayEvent, now });
-    parsed = syncResult.inbox;
-    currentIssue = syncResult.issue;
-    liveSynced = syncResult.synced;
-  }
+  const parsed = JSON.parse(await readFile(inboxPath, "utf8"));
+  const workspace = await readTaskWorkspace({ stateRoot, taskId });
+  const currentIssue = { ...(parsed.issues?.[taskId] || {}), ...issue };
   const eventsById = parsed.events || {};
   const eventIds = currentIssue.eventIds?.length ? currentIssue.eventIds : Object.values(eventsById)
     .filter((event) => event.taskId === taskId)
@@ -334,108 +365,28 @@ async function loadIssueDetail({
       raw: await readEventRaw(event.sourcePath)
     });
   }
+  if (workspace.task) {
+    events.push({
+      eventId: `workspace-${hashRelayTask(workspace.task)}`,
+      taskId,
+      type: "local.context",
+      status: workspace.sync.status,
+      ackStatus: "not_applicable",
+      receivedAt: workspace.sync.lastSuccessAt || now(),
+      recordedAt: workspace.sync.lastSuccessAt || now(),
+      sourcePath: workspace.paths.remotePath,
+      raw: { task: workspace.task }
+    });
+  }
   events.sort((a, b) => compareIsoDesc(a.receivedAt || a.recordedAt, b.receivedAt || b.recordedAt));
   const normalizedIssue = normalizeIssue(currentIssue, eventsById, { localAgentId });
-  return { issue: normalizedIssue, events, timeline: buildChatTimeline({ issue: normalizedIssue, events }), liveSynced };
-}
-
-async function fetchLiveRelayEvent({ taskId, relayClient, now }) {
-  if (!relayClient?.getTask) return null;
-  try {
-    const response = await relayClient.getTask(taskId);
-    const task = response.data?.task || response.task || response;
-    if (!task || !(Array.isArray(task.messages) || Array.isArray(task.artifacts))) return null;
-    const eventId = `relay-live-${taskId}-${hashRelayTask(task)}`;
-    return {
-      eventId,
-      taskId,
-      type: "relay.snapshot",
-      status: "fetched",
-      receivedAt: now(),
-      raw: { task }
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function persistLiveRelayEvent({ stateRoot, inbox, issue, liveRelayEvent, now }) {
-  const eventId = liveRelayEvent.eventId;
-  if (inbox.events?.[eventId]) {
-    const task = liveRelayEvent.raw?.task || {};
-    const updatedIssue = mergeLiveTaskIntoIssue({
-      issue: inbox.issues?.[issue.taskId] || issue,
-      task,
-      eventId,
-      receivedAt: liveRelayEvent.receivedAt || now()
-    });
-    inbox.issues = { ...(inbox.issues || {}), [issue.taskId]: updatedIssue };
-    await writeJsonAtomic(join(stateRoot, "issues.json"), inbox);
-    return { inbox, issue: updatedIssue, synced: true };
-  }
-  const task = liveRelayEvent.raw?.task || {};
-  const eventPath = join(stateRoot, "live-events", `${eventId}.json`);
-  await writeJsonAtomic(eventPath, {
-    receivedAt: liveRelayEvent.receivedAt,
-    event: {
-      eventId,
-      type: liveRelayEvent.type,
-      taskId: issue.taskId,
-      agentId: issue.requesterAgentId || process.env.AGENTRELAY_AGENT_ID || "zac-agent"
-    },
-    task
-  });
-
-  const eventIds = Array.from(new Set([...(issue.eventIds || []), eventId]));
-  const updatedIssue = mergeLiveTaskIntoIssue({
-    issue,
-    task,
-    eventId,
-    eventIds,
-    receivedAt: liveRelayEvent.receivedAt || now()
-  });
-  inbox.version = 1;
-  inbox.issues = { ...(inbox.issues || {}), [issue.taskId]: updatedIssue };
-  inbox.events = {
-    ...(inbox.events || {}),
-    [eventId]: {
-      eventId,
-      taskId: issue.taskId,
-      type: liveRelayEvent.type,
-      status: "received",
-      ackStatus: "not_applicable",
-      sourcePath: eventPath,
-      receivedAt: liveRelayEvent.receivedAt || now(),
-      recordedAt: now()
-    }
-  };
-  await writeJsonAtomic(join(stateRoot, "issues.json"), inbox);
-  return { inbox, issue: updatedIssue, synced: true };
-}
-
-function mergeLiveTaskIntoIssue({ issue, task, eventId, eventIds = issue.eventIds || [], receivedAt }) {
   return {
-    ...issue,
-    taskId: issue.taskId,
-    subject: task.subject || issue.subject || "",
-    requesterAgentId: task.requester_agent_id || issue.requesterAgentId || "",
-    targetAgentId: task.target_agent_id || issue.targetAgentId || "",
-    doneCriteria: task.done_criteria || issue.doneCriteria || "",
-    completionOwnerAgentId: task.completion_owner_agent_id || issue.completionOwnerAgentId || "",
-    pendingOnAgentId: relayTaskField(task, "pending_on_agent_id", issue.pendingOnAgentId || "") || "",
-    pendingOnHumanId: relayTaskField(task, "pending_on_human_id", issue.pendingOnHumanId || null),
-    relayStatus: task.status || issue.relayStatus || "",
-    localStatus: mergeRelayLocalStatus(issue.localStatus),
-    direction: issue.direction || inferIssueDirectionFromIssue(task, issue),
-    counterpartAgentId: issue.counterpartAgentId || inferCounterpartFromIssue(task, issue),
-    lastEventId: eventId,
-    eventIds,
-    updatedAt: receivedAt
+    issue: normalizedIssue,
+    events,
+    timeline: buildChatTimeline({ issue: normalizedIssue, events }),
+    liveSynced: false,
+    contextSource: workspace.task ? "local_workspace" : "event_cache"
   };
-}
-
-function relayTaskField(task, field, fallback) {
-  return Object.hasOwn(task || {}, field) ? task[field] : fallback;
 }
 
 function hashRelayTask(task) {
@@ -451,27 +402,6 @@ function hashText(text) {
     .digest("hex");
 }
 
-function inferCounterpartFromIssue(task, issue) {
-  const localAgentId = issue.requesterAgentId || process.env.AGENTRELAY_AGENT_ID || "zac-agent";
-  if (task.requester_agent_id && task.requester_agent_id !== localAgentId) return task.requester_agent_id;
-  if (task.target_agent_id && task.target_agent_id !== localAgentId) return task.target_agent_id;
-  return task.requester_agent_id || task.target_agent_id || "";
-}
-
-function inferIssueDirectionFromIssue(task, issue) {
-  const localAgentId = issue.requesterAgentId || process.env.AGENTRELAY_AGENT_ID || "zac-agent";
-  if (task.requester_agent_id === localAgentId) return "outgoing";
-  if (task.target_agent_id === localAgentId || task.pending_on_agent_id === localAgentId) return "incoming";
-  return "unknown";
-}
-
-function mergeRelayLocalStatus(localStatus) {
-  if (localStatus === "archived" || localStatus === "closed" || localStatus === "created_from_ui" || localStatus === "create_failed") {
-    return localStatus;
-  }
-  return "received";
-}
-
 async function deleteIssue({ stateRoot, taskId, now }) {
   const inboxPath = join(stateRoot, "issues.json");
   const inbox = await readInboxFile(inboxPath);
@@ -485,6 +415,7 @@ async function deleteIssue({ stateRoot, taskId, now }) {
     updatedAt: archivedAt
   };
   await writeJsonAtomic(inboxPath, inbox);
+  await archiveTaskWorkspace({ stateRoot, taskId, at: archivedAt });
   return { status: "archived", taskId };
 }
 
@@ -554,6 +485,22 @@ function normalizeIssue(issue, eventsById, { localAgentId = process.env.AGENTREL
     pendingOnHumanId: issue.pendingOnHumanId || null,
     relayStatus: issue.relayStatus || "",
     localStatus: issue.localStatus || "",
+    goalVersion: issue.goalVersion ?? null,
+    exchangeEpoch: issue.exchangeEpoch ?? null,
+    contextSyncStatus: issue.contextSyncStatus || "not_synced",
+    contextSyncError: issue.contextSyncError || null,
+    contextLastSyncedAt: issue.contextLastSyncedAt || "",
+    contextLastAttemptAt: issue.contextLastAttemptAt || "",
+    contextEnvelope: issue.contextEnvelope || null,
+    attentionReason: issue.attentionReason || "",
+    handoffType: issue.handoffType || "",
+    handoffReady: Boolean(issue.handoffReady),
+    handoffPrompt: issue.handoffPrompt || "",
+    taskWorkspacePath: issue.taskWorkspacePath || "",
+    taskContextPath: issue.taskContextPath || "",
+    taskRemotePath: issue.taskRemotePath || "",
+    activeActionIds: Array.isArray(issue.activeActionIds) ? issue.activeActionIds : [],
+    staleActionIds: Array.isArray(issue.staleActionIds) ? issue.staleActionIds : [],
     processorStatus: issue.processorStatus || "",
     processorSummary: issue.processorSummary || "",
     processorSuggestedReply: issue.processorSuggestedReply || "",
@@ -726,6 +673,9 @@ function normalizeFileAccessGrants(grants) {
 function needsHumanAttention(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
   if (issue.localStatus === "archived") return false;
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
+  if (issue.contextSyncStatus === "context_sync_failed") return true;
+  if (issue.contextSyncStatus === "context_sync_pending") return false;
+  if (issue.attentionReason === "context_changed" || issue.attentionReason === "awaiting_confirmation") return true;
   if (issue.pendingOnHumanId) return true;
   if (issue.humanReplyStatus === "pending_processor") return true;
   if (issue.executorStatus === "failed") return true;
@@ -1506,6 +1456,19 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
     taskId,
     localAgentId,
     now: () => updatedAt
+  });
+  await persistTaskWorkspace({
+    stateRoot,
+    task: {
+      ...task,
+      task_id: task.task_id || task.taskId || task.id || taskId,
+      messages: Array.isArray(task.messages) ? task.messages : [payload.message],
+      artifacts: Array.isArray(task.artifacts) ? task.artifacts : []
+    },
+    localAgentId,
+    source: "ui_create",
+    syncedAt: updatedAt,
+    agentsMdPath: resolve(process.env.AGENTRELAY_AGENTS_MD_PATH || LOCAL_INBOX_AGENTS_TEMPLATE_PATH)
   });
   return { alreadySent: false, draft: sentDraft, taskId, task };
 }
@@ -3578,6 +3541,7 @@ async function selectIssue(taskId, { keepView = false } = {}) {
   el.detailBody.hidden = false;
   el.detailBody.innerHTML = renderChat(selectedDetail);
   bindHandoffPromptControls();
+  bindContextSyncControls(taskId);
   bindFileAccessRequestControls(taskId);
   restoreMessageScrollState(scrollState);
   renderDashboard();
@@ -3662,21 +3626,21 @@ function renderChat({ issue, timeline }) {
 }
 
 function renderHandoffPrompt(issue) {
-  const prompt = buildPersonalAgentHandoffPrompt(issue);
+  if (issue.contextSyncStatus === "context_sync_pending") {
+    return '<div class="empty-state"><p>Task context is syncing. Handoff will be available when the complete Relay task is stored locally.</p></div>';
+  }
+  if (issue.contextSyncStatus === "context_sync_failed") {
+    return '<button class="handoff-prompt" type="button" data-resync-task aria-label="Retry task context sync">' +
+      '<span data-resync-label>retry context sync</span>' +
+    '</button>';
+  }
+  if (!issue.handoffReady || !issue.handoffPrompt) {
+    return '<div class="empty-state"><p>Complete local task context is not ready for handoff.</p></div>';
+  }
+  const prompt = issue.handoffPrompt;
   return '<button class="handoff-prompt" type="button" data-copy-handoff-prompt data-prompt="' + escapeAttr(prompt) + '" aria-label="Copy prompt for agent">' +
     '<span data-copy-prompt-label aria-live="polite">copy prompt for agent</span>' +
   '</button>';
-}
-
-function buildPersonalAgentHandoffPrompt(issue) {
-  return [
-    "Please handle AgentRelay task id: " + (issue.taskId || ""),
-    "",
-    "First explain what this task asks me to decide or provide, propose the exact external action or reply, and wait for my explicit confirmation before any AgentRelay mutation.",
-    "",
-    "Read and follow the AgentRelay Local Inbox AGENTS.md before completing the task:",
-    AGENTS_MD_PATH
-  ].join("\n");
 }
 
 function renderMessages(timeline) {
@@ -3751,6 +3715,9 @@ function visibleChatItems(timeline) {
 }
 
 function humanAttentionText(issue) {
+  if (issue.contextSyncStatus === "context_sync_failed") return "Complete task context could not be synced. Retry, or hand the investigation prompt to your local agent.";
+  if (issue.attentionReason === "context_changed") return "Task context changed after a local draft was prepared. Hand the task to your local agent again.";
+  if (issue.attentionReason === "awaiting_confirmation") return "A prepared AgentRelay action is waiting for your explicit confirmation.";
   return "New AgentRelay task. Copy the prompt and let your local agent handle it through MCP tools.";
 }
 
@@ -3765,6 +3732,8 @@ function pendingOwnerLabel(issue) {
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "Complete";
   if (issue.pendingOnHumanId) return "Need approval";
   if (issue.localStatus === "create_failed" || issue.relayStatus === "failed") return "Need approval";
+  if (issue.contextSyncStatus === "context_sync_pending") return "Syncing context";
+  if (issue.contextSyncStatus === "context_sync_failed") return "Context sync failed";
   if (isWaitingForRemoteCompletionOwnerClient(issue)) return "Pending completion owner: " + issue.completionOwnerAgentId;
   if (issue.requiresHumanConfirmation) return "Need approval";
   if (issue.pendingOnAgentId === "zac-agent") return "Pending zac-agent";
@@ -3812,6 +3781,27 @@ function bindHandoffPromptControls() {
       }, 1500);
     });
   }
+}
+
+function bindContextSyncControls(taskId) {
+  const button = document.querySelector("[data-resync-task]");
+  if (!button) return;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    const label = button.querySelector("[data-resync-label]");
+    if (label) label.textContent = "syncing...";
+    try {
+      const response = await fetch("/api/issues/" + encodeURIComponent(taskId) + "/resync", { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error?.message || body.message || "Context sync failed");
+      await refresh({ preserveSelection: true });
+      await selectIssue(taskId, { keepView: true });
+    } catch (error) {
+      window.alert(error.message || "Context sync failed");
+      button.disabled = false;
+      if (label) label.textContent = "retry context sync";
+    }
+  });
 }
 
 function bindFileAccessRequestControls(taskId) {

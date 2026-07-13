@@ -4,6 +4,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  compareTaskContextEnvelopes,
+  deriveTaskContextEnvelope,
+  persistTaskWorkspace
+} from "./agentrelay-task-workspace.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -42,6 +47,7 @@ export async function executeInboxAgent({
         try {
           const taskResponse = await relayClient.getTask({ taskId: issue.taskId });
           const task = taskResponse.task || taskResponse;
+          await guardAndSyncExecutorContext({ stateRoot, task, issue, localAgentId, runAt });
           const actionIssue = issueFromOutboxItem({ issue: inbox.issues[issue.taskId] || issue, outboxItem });
           if (actionIntent === "close_task") {
             assertCanCloseTask({ task, issue: actionIssue, localAgentId });
@@ -62,8 +68,10 @@ export async function executeInboxAgent({
               const closeResponse = await relayClient.closeTask({
                 taskId: issue.taskId,
                 closedByAgentId: localAgentId,
-                terminalReason: actionIssue.processorTerminalReason
+                terminalReason: actionIssue.processorTerminalReason,
+                clientActionId: outboxItem.outboxId
               });
+              Object.assign(actionIssue, await syncExecutorMutationResult({ stateRoot, previousTask: task, response: closeResponse, localAgentId, runAt }));
               inbox.issues[issue.taskId] = markOutboxSent({
                 issue: applyClosedTaskToIssue({
                   issue: actionIssue,
@@ -79,7 +87,8 @@ export async function executeInboxAgent({
           } else {
             assertCanSubmitArtifact({ task, issue: actionIssue, localAgentId });
             const submitParams = buildSubmitArtifactParams({ task, issue: actionIssue, localAgentId });
-            const submitResponse = await relayClient.submitArtifact(submitParams);
+            const submitResponse = await relayClient.submitArtifact({ ...submitParams, clientActionId: outboxItem.outboxId });
+            Object.assign(actionIssue, await syncExecutorMutationResult({ stateRoot, previousTask: task, response: submitResponse, localAgentId, runAt }));
             inbox.issues[issue.taskId] = markOutboxSent({
               issue: applySubmittedArtifactToIssue({
                 issue: actionIssue,
@@ -131,6 +140,7 @@ export async function executeInboxAgent({
     try {
       const taskResponse = await relayClient.getTask({ taskId: issue.taskId });
       const task = taskResponse.task || taskResponse;
+      await guardAndSyncExecutorContext({ stateRoot, task, issue, localAgentId, runAt });
       const actionIntent = issue.processorActionIntent;
       if (actionIntent === "close_task") {
         assertCanCloseTask({ task, issue, localAgentId });
@@ -159,8 +169,10 @@ export async function executeInboxAgent({
         const closeResponse = await relayClient.closeTask({
           taskId: issue.taskId,
           closedByAgentId: localAgentId,
-          terminalReason
+          terminalReason,
+          clientActionId: issue.latestHumanReplyId || issue.processorLastHumanReplyId
         });
+        Object.assign(issue, await syncExecutorMutationResult({ stateRoot, previousTask: task, response: closeResponse, localAgentId, runAt }));
         const closedTask = closeResponse.task || closeResponse;
         inbox.issues[issue.taskId] = applyClosedTaskToIssue({
           issue,
@@ -184,7 +196,11 @@ export async function executeInboxAgent({
       if (actionIntent === "amend_task") {
         assertCanAmendTask({ task, issue, localAgentId });
         const amendParams = buildAmendTaskParams({ task, issue, localAgentId });
-        const amendResponse = await relayClient.amendTask(amendParams);
+        const amendResponse = await relayClient.amendTask({
+          ...amendParams,
+          clientActionId: issue.latestHumanReplyId || issue.processorLastHumanReplyId
+        });
+        Object.assign(issue, await syncExecutorMutationResult({ stateRoot, previousTask: task, response: amendResponse, localAgentId, runAt }));
         const amendedTask = amendResponse.task || amendResponse;
         inbox.issues[issue.taskId] = applyAmendedTaskToIssue({
           issue,
@@ -207,7 +223,11 @@ export async function executeInboxAgent({
 
       assertCanSubmitArtifact({ task, issue, localAgentId });
       const submitParams = buildSubmitArtifactParams({ task, issue, localAgentId });
-      const submitResponse = await relayClient.submitArtifact(submitParams);
+      const submitResponse = await relayClient.submitArtifact({
+        ...submitParams,
+        clientActionId: issue.latestHumanReplyId || issue.processorLastHumanReplyId
+      });
+      Object.assign(issue, await syncExecutorMutationResult({ stateRoot, previousTask: task, response: submitResponse, localAgentId, runAt }));
       const updatedTask = submitResponse.task || submitResponse;
       inbox.issues[issue.taskId] = applySubmittedArtifactToIssue({
         issue,
@@ -250,6 +270,61 @@ export async function executeInboxAgent({
 
   if (executed > 0 || failed > 0) await writeJsonAtomic(inboxPath, inbox);
   return { scanned: issues.length, executed, failed, actions };
+}
+
+async function guardAndSyncExecutorContext({ stateRoot, task, issue, localAgentId, runAt }) {
+  const expectedEnvelope = issue.contextEnvelope || null;
+  const currentEnvelope = deriveTaskContextEnvelope(task);
+  const result = await persistTaskWorkspace({
+    stateRoot,
+    task: completeTaskSnapshot(task),
+    localAgentId,
+    source: "legacy_executor_guard",
+    syncedAt: runAt
+  });
+  Object.assign(issue, result.issue);
+  if (!expectedEnvelope) return;
+  const comparison = compareTaskContextEnvelopes(expectedEnvelope, currentEnvelope);
+  if (!comparison.matches) {
+    const error = new Error(`CONTEXT_CHANGED: ${comparison.changedFields.join(", ")}`);
+    error.code = "CONTEXT_CHANGED";
+    error.changedFields = comparison.changedFields;
+    throw error;
+  }
+}
+
+async function syncExecutorMutationResult({ stateRoot, previousTask, response, localAgentId, runAt }) {
+  const returnedTask = response?.task || response?.data?.task || response;
+  if (!returnedTask || typeof returnedTask !== "object") return {};
+  const task = completeTaskSnapshot({
+    ...previousTask,
+    ...returnedTask,
+    messages: Array.isArray(returnedTask.messages) ? returnedTask.messages : previousTask.messages,
+    artifacts: mergeReturnedArtifacts(previousTask.artifacts, returnedTask.artifacts, response?.artifact)
+  });
+  const result = await persistTaskWorkspace({
+    stateRoot,
+    task,
+    localAgentId,
+    source: "legacy_executor_success",
+    syncedAt: runAt
+  });
+  return result.issue;
+}
+
+function completeTaskSnapshot(task) {
+  return {
+    ...task,
+    messages: Array.isArray(task.messages) ? task.messages : [],
+    artifacts: Array.isArray(task.artifacts) ? task.artifacts : []
+  };
+}
+
+function mergeReturnedArtifacts(previous, returned, artifact) {
+  const artifacts = Array.isArray(returned) ? [...returned] : (Array.isArray(previous) ? [...previous] : []);
+  if (!artifact?.artifact_id || artifacts.some((item) => item?.artifact_id === artifact.artifact_id)) return artifacts;
+  artifacts.push(artifact);
+  return artifacts;
 }
 
 function shouldAttemptAction({ issue, localAgentId }) {
@@ -533,10 +608,10 @@ class AgentRelayExecutorHttpClient {
     return this.request("GET", `/tasks/${encodeURIComponent(taskId)}`);
   }
 
-  async closeTask({ taskId, closedByAgentId, terminalReason }) {
+  async closeTask({ taskId, closedByAgentId, terminalReason, clientActionId = "" }) {
     return this.request("POST", `/tasks/${encodeURIComponent(taskId)}/close`, {
       protocol_version: PROTOCOL_VERSION,
-      idempotency_key: `local-executor-close-${taskId}-${hashText(terminalReason)}`,
+      idempotency_key: `local-executor-close-${taskId}-${hashText(`${clientActionId}:${terminalReason}`)}`,
       closed_by_agent_id: closedByAgentId,
       closedByAgentId,
       completion_authority: {
@@ -549,10 +624,10 @@ class AgentRelayExecutorHttpClient {
     });
   }
 
-  async submitArtifact({ taskId, from, to, kind, text, pendingOnAgentId, pendingOnHumanId, nextStatus, nextAction, responseToGoalVersion }) {
+  async submitArtifact({ taskId, from, to, kind, text, pendingOnAgentId, pendingOnHumanId, nextStatus, nextAction, responseToGoalVersion, clientActionId = "" }) {
     return this.request("POST", `/tasks/${encodeURIComponent(taskId)}/artifacts`, {
       protocol_version: PROTOCOL_VERSION,
-      idempotency_key: `local-executor-artifact-${taskId}-${hashText(`${from}:${to}:${kind}:${text}`)}`,
+      idempotency_key: `local-executor-artifact-${taskId}-${hashText(`${clientActionId}:${from}:${to}:${kind}:${text}`)}`,
       actor_agent_id: from,
       target_agent_id: to,
       intent: kind || "work_result",
@@ -586,11 +661,12 @@ class AgentRelayExecutorHttpClient {
     humanApprovalSummary,
     reason,
     newMaxTurns,
-    nextAction
+    nextAction,
+    clientActionId = ""
   }) {
     return this.request("POST", `/tasks/${encodeURIComponent(taskId)}/amend`, {
       protocol_version: PROTOCOL_VERSION,
-      idempotency_key: `local-executor-amend-${taskId}-${hashText(`${expectedGoalVersion}:${newDoneCriteria}:${humanApprovalRef}`)}`,
+      idempotency_key: `local-executor-amend-${taskId}-${hashText(`${clientActionId}:${expectedGoalVersion}:${newDoneCriteria}:${humanApprovalRef}`)}`,
       actor_agent_id: actorAgentId,
       expected_goal_version: expectedGoalVersion,
       new_done_criteria: newDoneCriteria,
