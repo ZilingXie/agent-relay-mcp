@@ -553,7 +553,7 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
     pendingOnAgentId,
     pendingOnHumanId: task && Object.hasOwn(task, "pending_on_human_id") ? task.pending_on_human_id : (existingIssue.pendingOnHumanId || null),
     relayStatus: String(task?.status || existingIssue.relayStatus || ""),
-    relaySnapshotKey: task ? hashStableJson(task) : (existingIssue.relaySnapshotKey || ""),
+    relaySnapshotKey: task ? `${taskId}:${hashStableJson(task)}` : (existingIssue.relaySnapshotKey || ""),
     goalVersion: task?.goal_version ?? task?.goalVersion ?? existingIssue.goalVersion ?? null,
     exchangeEpoch: task?.exchange_epoch ?? task?.exchangeEpoch ?? existingIssue.exchangeEpoch ?? null,
     localStatus,

@@ -2,6 +2,7 @@ import {
   markTaskSyncFailed,
   markTaskSyncPending,
   persistTaskWorkspace,
+  readTaskIndex,
   sanitizeSyncError,
   withTaskWorkspaceLock
 } from "./agentrelay-task-workspace.mjs";
@@ -94,6 +95,42 @@ export async function resyncLocalTask({
 
 export function unwrapTask(response) {
   return response?.data?.task || response?.task || response || null;
+}
+
+export async function recoverPendingTaskSyncs({
+  stateRoot,
+  fetchTask,
+  localAgentId = "",
+  maxAttempts = 2,
+  retryDelayMs = 250,
+  sleep,
+  now = () => new Date().toISOString(),
+  agentsMdPath
+}) {
+  const index = await readTaskIndex({ stateRoot });
+  const pending = Object.values(index.tasks || {}).filter((issue) => issue?.contextSyncStatus === "context_sync_pending");
+  const results = [];
+  for (const issue of pending) {
+    results.push(await resyncLocalTask({
+      stateRoot,
+      taskId: issue.taskId,
+      fetchTask,
+      localAgentId,
+      source: "local_recovery",
+      eventId: issue.lastEventId || "",
+      maxAttempts,
+      retryDelayMs,
+      sleep,
+      now,
+      agentsMdPath
+    }));
+  }
+  return {
+    discovered: pending.length,
+    ready: results.filter((result) => result.status === "context_ready").length,
+    failed: results.filter((result) => result.status === "context_sync_failed").length,
+    results
+  };
 }
 
 function validateTask(task, expectedTaskId) {

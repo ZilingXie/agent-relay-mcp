@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resyncLocalTask } from "../scripts/agentrelay-task-context-sync.mjs";
+import { recoverPendingTaskSyncs, resyncLocalTask } from "../scripts/agentrelay-task-context-sync.mjs";
 import {
   backfillTaskWorkspaces,
   compareTaskContextEnvelopes,
   deriveTaskContextEnvelope,
+  markTaskSyncPending,
   persistTaskWorkspace,
   prepareLocalAction,
   readLocalAction,
@@ -102,6 +103,34 @@ test("resyncLocalTask coalesces concurrent calls for one task", async () => {
   assert.equal(calls, 1);
   assert.equal(a.status, "context_ready");
   assert.deepEqual(b.contextEnvelope, a.contextEnvelope);
+});
+
+test("recoverPendingTaskSyncs resumes durable local jobs without pending-task discovery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  await markTaskSyncPending({
+    stateRoot,
+    taskId: "task_recover_local",
+    eventId: "evt_recover_local",
+    at: "2026-07-13T01:00:00.000Z"
+  });
+  const fetched = [];
+
+  const result = await recoverPendingTaskSyncs({
+    stateRoot,
+    fetchTask: async (taskId) => {
+      fetched.push(taskId);
+      return { task: sampleTask(taskId) };
+    },
+    localAgentId: "zac-agent"
+  });
+
+  assert.deepEqual(fetched, ["task_recover_local"]);
+  assert.equal(result.discovered, 1);
+  assert.equal(result.ready, 1);
+  assert.equal(result.failed, 0);
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_recover_local" });
+  assert.equal(workspace.sync.status, "context_ready");
 });
 
 test("persisting changed task context preserves and stales prepared actions", async () => {

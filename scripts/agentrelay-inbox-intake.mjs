@@ -5,6 +5,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import crypto from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resyncLocalTask } from "./agentrelay-task-context-sync.mjs";
+import { markTaskSyncPending, sanitizeSyncError } from "./agentrelay-task-workspace.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -23,6 +25,11 @@ export async function processInboxEvent({
   executeInboxAfterReceive = process.env.AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE === "1",
   processor,
   executor,
+  syncTaskContext = resyncLocalTask,
+  syncMaxAttempts = 2,
+  syncRetryDelayMs = Number(process.env.AGENTRELAY_CONTEXT_SYNC_RETRY_MS || 250),
+  sleep,
+  agentsMdPath = process.env.AGENTRELAY_AGENTS_MD_PATH,
   now = () => new Date().toISOString()
 } = {}) {
   if (!eventPath) throw new Error("Missing eventPath");
@@ -38,83 +45,64 @@ export async function processInboxEvent({
   const inboxBefore = await readIssueInbox(join(stateDir, "issues.json"));
   const previousEvent = inboxBefore.events?.[eventId];
   const shouldAck = ackReceived && !event.recovery;
+  let intakeStatus = "received";
   if (previousEvent?.status === "received" || previousEvent?.status === "duplicate") {
-    if (shouldAck) {
-      if (!agentId) throw new Error("Missing AGENTRELAY_AGENT_ID");
-      relayClient ||= new AgentRelayHttpClient({
-        baseUrl: normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL),
-        token: process.env.AGENTRELAY_TOKEN || "",
-        agentId,
-        username: process.env.AGENTRELAY_USERNAME || ""
-      });
-      await relayClient.ackEvent({
-        agentId,
-        eventId,
-        taskId,
-        status: "received",
-        projectPath
-      });
-      await markIssueEventAcked({
-        stateDir,
-        eventId,
-        status: "received",
-        now
-      });
-    }
-    return { status: "duplicate", eventId, taskId, acked: shouldAck };
-  }
-
-  if (relaySnapshotKey && inboxBefore.issues?.[taskId]?.relaySnapshotKey === relaySnapshotKey) {
+    intakeStatus = "duplicate";
+  } else if (relaySnapshotKey && inboxBefore.issues?.[taskId]?.relaySnapshotKey === relaySnapshotKey) {
     await recordDuplicateSnapshotEvent({ stateDir, payload, eventPath, taskId, eventId, now });
-    if (shouldAck) {
-      if (!agentId) throw new Error("Missing AGENTRELAY_AGENT_ID");
-      relayClient ||= new AgentRelayHttpClient({
-        baseUrl: normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL),
-        token: process.env.AGENTRELAY_TOKEN || "",
-        agentId,
-        username: process.env.AGENTRELAY_USERNAME || ""
-      });
-      await relayClient.ackEvent({ agentId, eventId, taskId, status: "received", projectPath });
-      await markIssueEventAcked({ stateDir, eventId, status: "received", now });
-    }
-    return { status: "duplicate_snapshot", eventId, taskId, acked: shouldAck };
-  }
-
-  await recordIssueInboxEvent({
-    stateDir,
-    payload,
-    eventPath,
-    taskId,
-    eventId,
-    relaySnapshotKey,
-    projectPath,
-    now
-  });
-
-  if (shouldAck) {
-    if (!agentId) throw new Error("Missing AGENTRELAY_AGENT_ID");
-    relayClient ||= new AgentRelayHttpClient({
-      baseUrl: normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL),
-      token: process.env.AGENTRELAY_TOKEN || "",
-      agentId,
-      username: process.env.AGENTRELAY_USERNAME || ""
-    });
-    await relayClient.ackEvent({
-      agentId,
-      eventId,
-      taskId,
-      status: "received",
-      projectPath
-    });
-    await markIssueEventAcked({
+    intakeStatus = "duplicate_snapshot";
+  } else {
+    await recordIssueInboxEvent({
       stateDir,
+      payload,
+      eventPath,
+      taskId,
       eventId,
-      status: "received",
+      relaySnapshotKey,
+      projectPath,
       now
     });
   }
 
-  const processorResult = processInboxAfterReceive
+  relayClient ||= new AgentRelayHttpClient({
+    baseUrl: normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL),
+    token: process.env.AGENTRELAY_TOKEN || "",
+    agentId,
+    username: process.env.AGENTRELAY_USERNAME || ""
+  });
+  await markTaskSyncPending({
+    stateRoot: stateDir,
+    taskId,
+    eventId,
+    source: event.recovery ? "reconciliation" : "event",
+    at: now()
+  });
+  const ackResult = await ackDurableEvent({
+    shouldAck,
+    relayClient,
+    agentId,
+    eventId,
+    taskId,
+    projectPath,
+    stateDir,
+    now
+  });
+  const contextSync = await syncTaskContext({
+    stateRoot: stateDir,
+    taskId,
+    fetchTask: (id) => relayClient.getTask(id),
+    initialTask: Object.keys(task).length ? task : null,
+    localAgentId: agentId,
+    source: event.recovery ? "reconciliation" : "event",
+    eventId,
+    maxAttempts: Object.keys(task).length ? 1 : syncMaxAttempts,
+    retryDelayMs: syncRetryDelayMs,
+    sleep,
+    now,
+    agentsMdPath
+  });
+
+  const processorResult = processInboxAfterReceive && intakeStatus === "received" && contextSync.status === "context_ready"
     ? await runInboxProcessor({
       processor,
       stateRoot: stateDir,
@@ -122,7 +110,7 @@ export async function processInboxEvent({
       now
     })
     : undefined;
-  const executorResult = executeInboxAfterReceive
+  const executorResult = executeInboxAfterReceive && intakeStatus === "received" && contextSync.status === "context_ready"
     ? await runInboxExecutor({
       executor,
       stateRoot: stateDir,
@@ -131,7 +119,30 @@ export async function processInboxEvent({
     })
     : undefined;
 
-  return { status: "received", eventId, taskId, processor: processorResult, executor: executorResult };
+  return {
+    status: intakeStatus,
+    eventId,
+    taskId,
+    acked: ackResult.acked,
+    ackError: ackResult.error,
+    contextSync,
+    processor: processorResult,
+    executor: executorResult
+  };
+}
+
+async function ackDurableEvent({ shouldAck, relayClient, agentId, eventId, taskId, projectPath, stateDir, now }) {
+  if (!shouldAck) return { acked: false, error: null };
+  if (!agentId) throw new Error("Missing AGENTRELAY_AGENT_ID");
+  try {
+    await relayClient.ackEvent({ agentId, eventId, taskId, status: "received", projectPath });
+    await markIssueEventAcked({ stateDir, eventId, status: "received", now });
+    return { acked: true, error: null };
+  } catch (error) {
+    const safeError = sanitizeSyncError(error);
+    await markIssueEventAckFailed({ stateDir, eventId, error: safeError, now });
+    return { acked: false, error: safeError };
+  }
 }
 
 async function runInboxProcessor({ processor, stateRoot, localAgentId, now }) {
@@ -274,6 +285,19 @@ async function markIssueEventAcked({ stateDir, eventId, status, now }) {
   await writeJsonAtomic(inboxPath, inbox);
 }
 
+async function markIssueEventAckFailed({ stateDir, eventId, error, now }) {
+  const inboxPath = join(stateDir, "issues.json");
+  const inbox = await readIssueInbox(inboxPath);
+  if (!inbox.events[eventId]) return;
+  inbox.events[eventId] = {
+    ...inbox.events[eventId],
+    ackStatus: "failed",
+    ackError: error,
+    ackFailedAt: now()
+  };
+  await writeJsonAtomic(inboxPath, inbox);
+}
+
 function inferCounterpartAgentId(task, event) {
   const localAgentId = event.agentId || event.agent_id || "";
   if (task.requester_agent_id && task.requester_agent_id !== localAgentId) return task.requester_agent_id;
@@ -310,6 +334,10 @@ class AgentRelayHttpClient {
       status,
       projectPath
     });
+  }
+
+  async getTask(taskId) {
+    return this.request("GET", `/tasks/${encodeURIComponent(taskId)}`);
   }
 
   async request(method, path, payload) {

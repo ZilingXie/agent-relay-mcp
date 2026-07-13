@@ -6,6 +6,113 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { processInboxEvent } from "../scripts/agentrelay-inbox-intake.mjs";
+import { readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
+
+test("processInboxEvent ACKs a durable summary before fetching the complete task", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  const payload = sampleEvent("evt_summary", "task_summary");
+  delete payload.task;
+  await writeFile(eventPath, JSON.stringify(payload, null, 2));
+  const calls = [];
+
+  const result = await processInboxEvent({
+    eventPath,
+    stateRoot,
+    projectPath: root,
+    agentId: "zac-agent",
+    ackReceived: true,
+    relayClient: {
+      async ackEvent() {
+        const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+        assert.equal(inbox.events.evt_summary.status, "received");
+        calls.push("ack");
+      },
+      async getTask(taskId) {
+        assert.deepEqual(calls, ["ack"]);
+        calls.push("get");
+        return { data: { task: sampleEvent("unused", taskId).task } };
+      }
+    },
+    sleep: async () => {},
+    now: sequenceNow([
+      "2026-07-13T02:00:00.000Z",
+      "2026-07-13T02:00:01.000Z",
+      "2026-07-13T02:00:02.000Z",
+      "2026-07-13T02:00:03.000Z",
+      "2026-07-13T02:00:04.000Z"
+    ])
+  });
+
+  assert.deepEqual(calls, ["ack", "get"]);
+  assert.equal(result.acked, true);
+  assert.equal(result.contextSync.status, "context_ready");
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_summary" });
+  assert.equal(workspace.task.task_id, "task_summary");
+});
+
+test("processInboxEvent retries task sync once then exposes investigation state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  const payload = sampleEvent("evt_sync_failed", "task_sync_failed");
+  delete payload.task;
+  await writeFile(eventPath, JSON.stringify(payload, null, 2));
+  let fetches = 0;
+
+  const result = await processInboxEvent({
+    eventPath,
+    stateRoot,
+    projectPath: root,
+    agentId: "zac-agent",
+    ackReceived: true,
+    relayClient: {
+      async ackEvent() {},
+      async getTask() {
+        fetches += 1;
+        throw Object.assign(new Error("temporary outage"), { statusCode: 503 });
+      }
+    },
+    sleep: async () => {},
+    now: () => "2026-07-13T02:10:00.000Z"
+  });
+
+  assert.equal(fetches, 2);
+  assert.equal(result.acked, true);
+  assert.equal(result.contextSync.status, "context_sync_failed");
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_sync_failed" });
+  assert.equal(workspace.workflow.attentionReason, "context_sync_failed");
+  assert.match(workspace.handoffPrompt, /explicitly ask you to investigate/);
+});
+
+test("processInboxEvent continues context sync when event ACK fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  const payload = sampleEvent("evt_ack_failed", "task_ack_failed");
+  delete payload.task;
+  await writeFile(eventPath, JSON.stringify(payload, null, 2));
+
+  const result = await processInboxEvent({
+    eventPath,
+    stateRoot,
+    projectPath: root,
+    agentId: "zac-agent",
+    ackReceived: true,
+    relayClient: {
+      async ackEvent() { throw new Error("network unavailable"); },
+      async getTask(taskId) { return { task: sampleEvent("unused", taskId).task }; }
+    },
+    now: () => "2026-07-13T02:20:00.000Z"
+  });
+
+  assert.equal(result.acked, false);
+  assert.equal(result.ackError.category, "network");
+  assert.equal(result.contextSync.status, "context_ready");
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  assert.equal(inbox.events.evt_ack_failed.ackStatus, "failed");
+});
 
 test("processInboxEvent records a durable issue before ACK and does not create Codex queues", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
@@ -193,7 +300,7 @@ test("processInboxEvent never ACKs a synthetic recovery event", async () => {
   });
 
   assert.equal(result.status, "received");
-  assert.equal(result.acked, undefined);
+  assert.equal(result.acked, false);
   assert.equal(ackCount, 0);
 });
 
@@ -298,7 +405,8 @@ function sampleEvent(eventId, taskId) {
         to_agent_id: "zac-agent",
         role: "user",
         parts: [{ kind: "text", text: "Please handle this in the local inbox." }]
-      }]
+      }],
+      artifacts: []
     }
   };
 }
@@ -330,7 +438,13 @@ function expiredEvent(eventId, taskId) {
         to_agent_id: "frank-agent",
         role: "user",
         parts: [{ kind: "text", text: "Please reply before the TTL." }]
-      }]
+      }],
+      artifacts: []
     }
   };
+}
+
+function sequenceNow(values) {
+  let index = 0;
+  return () => values[Math.min(index++, values.length - 1)];
 }
