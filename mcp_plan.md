@@ -143,6 +143,78 @@ planning focus is cloud Relay guardrails for mutation authority.
    - Regression coverage verifies that a blocked task pending on the local
      agent submits with `nextStatus: "delivery_pending"`.
 
+## Task Context Management Plan
+
+Goal: keep Relay as the only authoritative task context source while making
+personal-agent reads bounded and mutation attempts safe against context changes.
+The MCP client must not build a second authoritative task history or require
+model-session replay for normal task handling.
+
+### Confirmed Context Contract
+
+- `GET /tasks/:id` is the authoritative context entry point and returns the
+  complete ordered task, messages, and artifacts.
+- WebSocket and worker events are notification summaries. After receiving an
+  event, claiming work, or preparing an action, the client fetches the current
+  task instead of treating the event or local inbox snapshot as authoritative.
+- Local inbox state and raw event files remain notification, cache, recovery,
+  and diagnostics data only.
+
+### Stage 1: Mutation Context Guard And Idempotency
+
+1. Derive a lightweight, non-authoritative task context envelope from a fresh
+   task response. Include task id, goal version, exchange epoch, status,
+   pending agent, completion owner, and latest message/artifact ids.
+2. Bind a proposed mutation to the observed envelope and re-fetch the task
+   immediately before mutation. Stop and return a structured context-changed
+   result when guarded fields differ.
+3. Continue sending `expected_goal_version`, `response_to_goal_version`, and
+   `closed_against_goal_version` as applicable. Treat artifact/close goal
+   versions as audit fields until Relay enforces mismatches with `409 Conflict`.
+4. Give each user-confirmed action a stable client action id and derive a stable
+   idempotency key from the task, action type, and action id. Retries of one
+   confirmed action reuse the same key; separate confirmations use separate ids.
+5. Keep Relay responsible for final atomic authorization and conflict checks.
+   Client preflight checks improve behavior and diagnostics but are not the
+   authoritative security boundary.
+
+### Stage 2: Bounded Task Context Working View
+
+1. Preserve `agentrelay_get_task` as the full-fidelity authoritative read tool.
+2. Add a compact `agentrelay_get_task_context` working view for routine local
+   agent handling. Derive it from a fresh Relay task response; do not persist it
+   as an independent source of truth.
+3. The first working view is deterministic, not LLM-summarized. It contains:
+   - current task state, goal, done criteria, and ownership;
+   - a bounded recent-message window;
+   - bounded recent artifact metadata and short text previews;
+   - counts and indicators that older messages or artifacts exist;
+   - guidance to use `agentrelay_get_task` when complete history is required.
+4. Keep large artifact bodies out of the default working view. Add focused
+   artifact retrieval only when Relay exposes a stable artifact-read contract.
+5. Define explicit context budgets by item count and serialized size, with
+   deterministic truncation and visible truncation metadata. Never silently
+   drop current goal, done criteria, ownership, or pending state.
+6. Add LLM-generated rolling summaries only as a later optional layer. A
+   summary must identify the last covered message/event and remain advisory;
+   it never replaces authoritative history.
+7. Coordinate with the Relay server on cursor-based history and artifact
+   pagination when full task payload growth becomes a transport concern. Client
+   compaction controls model context size but cannot reduce the server response
+   size until paginated server APIs exist.
+
+### Task Context Verification
+
+- Context-envelope tests cover every guarded field and structured mismatch
+  results.
+- Idempotency tests cover retrying one confirmed action and intentionally
+  sending two separately confirmed actions with identical content.
+- Compact-view tests enforce deterministic ordering, item/byte budgets,
+  truncation metadata, preservation of current task invariants, and fallback to
+  the full task read.
+- Event and local-cache tests verify that neither notification payloads nor raw
+  inbox files are used as authoritative task context.
+
 ## Service Worker Kit Plan
 
 The Service Worker Kit remains the future `service_agent` direction. It should
@@ -227,14 +299,13 @@ The kit should preserve the existing product boundary:
 
 ## Immediate Next Steps
 
-1. Merge and publish the Personal Agent Notifier changes:
-   - default UI server does not auto-run processor/executor;
-   - UI reply endpoint is disabled;
-   - incoming tasks pending on the local agent are prompt-ready;
-   - copy prompt contains task id plus the absolute Local Inbox `AGENTS.md` path
-     and a short instruction only;
-   - shipped local inbox template carries MCP usage, collaboration, and human
-     decision-boundary guidance.
-2. After Phase 4 lands, plan cloud Relay guardrails for mutation authority.
-3. Return to the Service Worker Kit only after the personal-agent notifier path
-   is stable.
+1. Implement the Stage 1 mutation context guard and stable client action
+   idempotency for the public Personal Agent MCP mutation tools.
+2. Coordinate Relay `409 Conflict` enforcement for stale artifact submissions
+   and closes; keep client checks non-authoritative.
+3. Implement the Stage 2 bounded task-context working view while preserving
+   `agentrelay_get_task` as the full authoritative read.
+4. Add server history/artifact pagination only when payload growth requires a
+   Relay protocol change.
+5. Return to the Service Worker Kit after the personal-agent context and
+   mutation-safety path is stable.
