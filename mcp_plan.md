@@ -175,7 +175,6 @@ state/
     <task-id>/
       remote.json
       context.md
-      working-context.md
       handoff.md
       sync.json
       workflow.json
@@ -190,24 +189,38 @@ state/
    `remote.json`. It may collapse presentation in the UI, but it must not
    silently omit text history; non-text parts must retain metadata and a stable
    local or Relay retrieval reference.
-3. `working-context.md` is an optional bounded view for large tasks. It never
-   replaces `remote.json` or `context.md`, and it declares all truncation.
-4. `handoff.md` is the current locally synthesized user-to-Agent prompt. Its
+3. `handoff.md` is the current locally synthesized user-to-Agent prompt. Its
    prompt type is normal task handling, context-sync investigation, or
    changed-context reprocessing. The UI copies this file instead of rebuilding
    a second prompt implementation.
-5. `sync.json` records event delivery, ACK, fetch attempts, last successful
+4. `sync.json` records event delivery, ACK, fetch attempts, last successful
    sync, sanitized errors, retry state, and the latest derived context envelope.
-6. `workflow.json` records local-only state: UI category inputs, attention
+5. `workflow.json` records local-only state: UI category inputs, attention
    reason, handoff readiness, active/stale action ids, and archive state.
-7. `actions/<client-action-id>.json` stores a proposed action, the exact payload,
+6. `actions/<client-action-id>.json` stores a proposed action, the exact payload,
    its base context envelope, confirmation reference, stable idempotency key,
    submission state, and Relay response identifiers.
-8. `task-index.json` is a rebuildable projection used by the UI. It contains no
+7. `task-index.json` is a rebuildable projection used by the UI. It contains no
    unique task facts and may be regenerated from task workspaces.
-9. Task directory creation, updates, and index writes use sanitized ids,
+8. Task directory creation, updates, and index writes use sanitized ids,
    per-task serialization, temporary files, atomic rename, directories mode
    `0700`, and files mode `0600`.
+
+### Deterministic Background Infrastructure
+
+Listener, Intake, reconciliation, and context synchronization are deterministic
+programs, not LLM Agents. They may run automatically and may:
+
+1. Receive and durably persist Relay event summaries.
+2. ACK events after the local durability boundary succeeds.
+3. Fetch complete tasks through authenticated Relay GET requests.
+4. Retry the configured network request once and run pending reconciliation.
+5. Invoke the shared local resync operation for recovery work.
+6. Update `context_sync_status`, task workspace files, and UI projections.
+
+These components do not interpret user intent, prepare or approve external
+replies, invoke mutation tools, or start, wake, resume, monitor through, or
+delegate work to a Local Agent.
 
 ### Receive, ACK, And Context Sync State Machine
 
@@ -221,7 +234,7 @@ Split notification delivery from task-context synchronization.
    record is durable and does not rely only on the task remaining discoverable
    through the pending-task reconciliation endpoint.
 5. The context synchronizer calls `GET /tasks/:id` once.
-6. On a retryable failure, it performs exactly one bounded retry, using a short
+6. On a retryable failure, it performs exactly one automatic retry, using a short
    configurable backoff. It records both attempts without logging credentials or
    unsafe response bodies.
 7. On success, it validates the task id, atomically updates `remote.json`,
@@ -237,6 +250,38 @@ Split notification delivery from task-context synchronization.
     discard a successfully synchronized task; a successful ACK does not hide a
     failed context sync.
 
+### Local Resync Operation
+
+Provide one shared deterministic operation with the product-level contract:
+
+```text
+agentrelay_resync_local_task(taskId)
+```
+
+It performs only:
+
+```text
+GET Relay task
+-> validate task id and response shape
+-> atomically update local remote.json and context.md
+-> regenerate handoff.md and the task index
+-> update context_sync_status
+```
+
+1. It does not submit an artifact, request revision, amend, close, claim, or
+   otherwise mutate the Relay task.
+2. It does not interpret task intent or make a user decision. Its behavior is
+   identical regardless of who triggered it.
+3. Only three entry points may trigger it: deterministic Listener/Intake recovery,
+   an explicit UI retry action, or a Local Agent that the user explicitly asked
+   to diagnose or handle the task.
+4. Concurrent triggers for one task share a per-task lock and coalesce onto one
+   in-flight GET/write result. They must not race atomic workspace replacement.
+5. Return structured success/failure state suitable for both UI display and an
+   active Agent tool result, without exposing credentials or unsafe raw errors.
+6. Implement the MCP tool or Local Inbox API as a thin adapter over this shared
+   operation so multiple entry points cannot drift in behavior.
+
 ### Context Sync Failure Investigation
 
 1. A failed sync appears in the UI as `Need approval` with reason
@@ -246,15 +291,19 @@ Split notification delivery from task-context synchronization.
    event id, sanitized error category, attempt times, local task directory, and
    the Local Inbox `AGENTS.md` path. Do not include remote task content or raw
    server error bodies.
-3. The prompt tells the Local Agent to diagnose listener/network/auth/local
-   state, use read-only Relay access to verify the task, and invoke the supported
-   local resync entry point. It must not submit, amend, or close the task while
-   complete context is unavailable.
-4. Provide one supported resync operation shared by the UI and Local Agent,
-   rather than allowing hand-edits to state files. A successful manual resync
-   writes the same canonical workspace and clears the failure reason.
-5. The system only exposes this prompt. The user decides whether and when to
-   hand it to a Local Agent; no processor, executor, or agent session is started.
+3. The system writes and exposes this prompt but never starts or wakes an Agent.
+   The user decides whether and when to hand it to a Local Agent or to use the UI
+   retry action directly.
+4. Only after the user explicitly asks a Local Agent to investigate may that
+   Agent read Listener status and errors, check whether local task context is
+   complete, call read-only `agentrelay_get_task`, invoke
+   `agentrelay_resync_local_task`, and explain findings and next steps to the
+   user.
+5. The investigation prompt states that the Agent must not submit an artifact,
+   request revision, amend, or close while complete context is unavailable.
+6. Agents and users must use the supported resync operation rather than
+   hand-editing local state files. Successful resync clears the sync-failure
+   reason through the same deterministic workspace writer.
 
 ### User Handoff And Local Agent Workflow
 
@@ -337,28 +386,6 @@ Derive the four user-facing groups without moving task directories:
    may fetch Relay, but opening task detail must not silently create another
    competing live-snapshot store.
 
-### Bounded Context Growth
-
-1. Always preserve the complete last successful task in `remote.json` and a
-   complete readable projection in `context.md`. The user and Local Agent retain
-   a local path to the complete context.
-2. Generate `working-context.md` only when configured item/byte thresholds are
-   exceeded. Include current state, goal, done criteria, ownership, recent
-   messages, recent artifact metadata, counts, and explicit truncation markers.
-3. Never silently truncate current goal, done criteria, ownership, pending
-   state, synchronization status, or the envelope used by a prepared action.
-4. Keep large artifact bodies out of the bounded working view. Preserve their
-   metadata and stable retrieval reference; add focused artifact retrieval only
-   after Relay exposes a stable artifact-read contract.
-5. Use deterministic item and serialized-byte budgets. Record generated size,
-   omitted counts, and full-context fallbacks so defaults can be tuned from real
-   workloads.
-6. Do not add LLM summaries in the first implementation. A later optional
-   rolling summary must record its coverage boundary and remain advisory.
-7. Coordinate cursor-based task history and artifact pagination with Relay when
-   full GET payload growth becomes a transport problem. Local working views
-   control model context size but cannot reduce Relay response size.
-
 ### Migration And Compatibility
 
 1. Introduce shared task-workspace and context-envelope modules before changing
@@ -388,9 +415,7 @@ Derive the four user-facing groups without moving task directories:
    manual resync, and removal of implicit detail-page snapshot authority.
 4. Local Agent actions: prepare-action persistence, user-confirmed submission,
    stale-action handling, context guard, stable idempotency, and success sync.
-5. Context growth: thresholds, bounded working view, artifact metadata, metrics,
-   and full-context fallback.
-6. Compatibility cleanup: backfill verification, installed-service validation,
+5. Compatibility cleanup: backfill verification, installed-service validation,
    deprecate superseded issue/live-event paths, and update public/install docs.
 
 ### Task Context Verification
@@ -411,8 +436,10 @@ Derive the four user-facing groups without moving task directories:
   stale and return structured `CONTEXT_CHANGED` without a Relay mutation.
 - Idempotency tests cover retrying one confirmed action, ambiguous network
   results, and two separately confirmed actions with identical content.
-- Bounded-view tests enforce ordering, item/byte budgets, truncation metadata,
-  invariant preservation, artifact references, and full-context fallback.
+- Background-boundary tests verify event delivery and reconciliation never
+  invoke a Local Agent, processor, executor, or mutation tool.
+- Resync tests verify background recovery, UI retry, and a user-invoked Agent
+  adapter use the same GET/atomic-write implementation and per-task lock.
 - Migration tests backfill existing state, preserve archives, rebuild indexes,
   and allow rollback while dual-write remains enabled.
 - Run `npm run check`, focused listener/intake/UI/MCP tests, installed launchd
@@ -505,14 +532,14 @@ The kit should preserve the existing product boundary:
 
 1. Implement the task-workspace foundation and additive `issues.json` projection.
 2. Refactor listener/intake into durable event, ACK, and independent context-sync
-   stages with one bounded retry and investigation handoff on failure.
+   stages with one automatic retry and investigation handoff on failure.
 3. Migrate the UI to workspace-backed categories and explicit normal,
    investigation, and changed-context prompts.
-4. Add prepared local actions, submission-time context guard, stable action
+4. Add the shared local resync operation and its background, UI, and
+   user-invoked Agent adapters.
+5. Add prepared local actions, submission-time context guard, stable action
    idempotency, and post-submit task synchronization.
-5. Add bounded working context after complete local context and mutation safety
-   are verified.
-6. Coordinate Relay `409 Conflict` enforcement and later history/artifact
-   pagination without moving protocol authority into the MCP client.
+6. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
+   into the MCP client.
 7. Return to the Service Worker Kit after the personal-agent local-context path
    is stable.
