@@ -78,6 +78,16 @@ export function buildInitialEnv({ baseUrl, wsUrl, agentId, username, token, loca
   ].join("\n");
 }
 
+export async function initializeLocalInboxState({ stateDir }) {
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+  await mkdir(resolve(stateDir, "logs"), { recursive: true, mode: 0o700 });
+  await mkdir(resolve(stateDir, "tasks"), { recursive: true, mode: 0o700 });
+  await mkdir(resolve(stateDir, ".locks"), { recursive: true, mode: 0o700 });
+  await writeJsonIfMissing(resolve(stateDir, "issues.json"), { version: 1, issues: {}, events: {} });
+  await writeJsonIfMissing(resolve(stateDir, "task-index.json"), { version: 1, tasks: {} });
+  await writeJsonIfMissing(resolve(stateDir, "task-drafts.json"), { version: 1, drafts: {} });
+}
+
 async function installLocalInbox({
   args = parseArgs(process.argv.slice(2)),
   root = repoRoot,
@@ -115,10 +125,7 @@ async function installLocalInbox({
   }
 
   await mkdir(inboxDir, { recursive: true, mode: 0o700 });
-  await mkdir(stateDir, { recursive: true, mode: 0o700 });
-  await mkdir(resolve(stateDir, "logs"), { recursive: true, mode: 0o700 });
-  await writeJsonIfMissing(resolve(stateDir, "issues.json"), { version: 1, issues: {}, events: {} });
-  await writeJsonIfMissing(resolve(stateDir, "task-drafts.json"), { version: 1, drafts: {} });
+  await initializeLocalInboxState({ stateDir });
   await writeJsonIfMissing(resolve(stateDir, "file-access-whitelist.json"), buildInitialFileAccessWhitelist({ installRoot: root }));
 
   await installCodexMcpConfig({
