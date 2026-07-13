@@ -205,6 +205,34 @@ async function persistTaskWorkspaceUnlocked({ stateRoot, task, taskId, localAgen
   await mkdir(paths.actionsDir, { recursive: true, mode: 0o700 });
   const previousSync = await readJson(paths.syncPath, defaultSync(taskId));
   const workflow = await readJson(paths.workflowPath, await workflowFromLegacyIssue(paths));
+  const previousTask = await readJson(paths.remotePath, null);
+  if (previousTask && isOlderTaskSnapshot(task, previousTask)) {
+    const sync = {
+      ...previousSync,
+      status: "context_ready",
+      source,
+      lastEventId: eventId || previousSync.lastEventId || "",
+      lastAttemptAt: syncedAt,
+      lastSuccessAt: previousSync.lastSuccessAt || syncedAt,
+      ignoredOlderSnapshotAt: syncedAt,
+      contextEnvelope: deriveTaskContextEnvelope(previousTask),
+      updatedAt: syncedAt
+    };
+    await writeJsonAtomic(paths.syncPath, sync);
+    const handoffPrompt = await readFile(paths.handoffPath, "utf8").catch(() => "");
+    const issue = await projectWorkspaceState({ paths, task: previousTask, sync, workflow, handoffPrompt, localAgentId, updatedAt: syncedAt });
+    return {
+      task: previousTask,
+      sync,
+      workflow,
+      handoffPrompt,
+      issue,
+      paths,
+      contextEnvelope: sync.contextEnvelope,
+      staleActionIds: [],
+      ignoredOlderSnapshot: true
+    };
+  }
   const envelope = deriveTaskContextEnvelope(task);
   const staleActionIds = await markChangedActionsStale({ paths, envelope, changedAt: syncedAt });
   const nextWorkflow = {
@@ -468,6 +496,46 @@ export async function backfillTaskWorkspaces({ stateRoot, localAgentId = "", age
   return { scanned: Object.keys(inbox.issues || {}).length, migrated, skipped };
 }
 
+export async function rebuildTaskIndex({ stateRoot, localAgentId = "", now = () => new Date().toISOString() }) {
+  await ensureTaskWorkspaceState({ stateRoot });
+  const root = resolve(stateRoot);
+  const taskDirs = await readdir(join(root, "tasks"), { withFileTypes: true }).catch(() => []);
+  const candidates = [];
+  for (const entry of taskDirs) {
+    if (!entry.isDirectory()) continue;
+    const taskDir = join(root, "tasks", entry.name);
+    const [task, sync, workflow, handoffPrompt] = await Promise.all([
+      readJson(join(taskDir, "remote.json"), null),
+      readJson(join(taskDir, "sync.json"), null),
+      readJson(join(taskDir, "workflow.json"), null),
+      readFile(join(taskDir, "handoff.md"), "utf8").catch(() => "")
+    ]);
+    const taskId = task?.task_id || task?.taskId || sync?.taskId || workflow?.taskId;
+    if (!taskId) continue;
+    candidates.push({ taskId: String(taskId), task, sync, workflow, handoffPrompt });
+  }
+  const rebuiltAt = now();
+  const indexPath = join(root, "task-index.json");
+  await withFileLock(join(root, ".locks", "task-index.lock"), () => writeJsonAtomic(indexPath, {
+    version: 1,
+    tasks: {},
+    updatedAt: rebuiltAt
+  }));
+  for (const candidate of candidates) {
+    const paths = taskWorkspacePaths(stateRoot, candidate.taskId);
+    await projectWorkspaceState({
+      paths,
+      task: candidate.task,
+      sync: candidate.sync || defaultSync(candidate.taskId),
+      workflow: candidate.workflow || defaultWorkflow(candidate.taskId),
+      handoffPrompt: candidate.handoffPrompt,
+      localAgentId,
+      updatedAt: candidate.workflow?.updatedAt || candidate.sync?.updatedAt || rebuiltAt
+    });
+  }
+  return { rebuilt: candidates.length, updatedAt: rebuiltAt };
+}
+
 export async function withTaskWorkspaceLock({ stateRoot, taskId, timeoutMs = DEFAULT_LOCK_TIMEOUT_MS }, callback) {
   const paths = taskWorkspacePaths(stateRoot, taskId);
   await ensureTaskWorkspaceState({ stateRoot });
@@ -643,6 +711,37 @@ function defaultAgentsMdPath(stateRoot) {
 
 function clearSyncAttention(value) {
   return value === "context_sync_failed" ? "" : String(value || "");
+}
+
+export function isOlderTaskSnapshot(candidate, current) {
+  if (!candidate || !current) return false;
+  const candidateEnvelope = deriveTaskContextEnvelope(candidate);
+  const currentEnvelope = deriveTaskContextEnvelope(current);
+  for (const field of ["goalVersion", "exchangeEpoch"]) {
+    const next = candidateEnvelope[field];
+    const previous = currentEnvelope[field];
+    if (next === null || previous === null || next === previous) continue;
+    return next < previous;
+  }
+  const candidateUpdatedAt = taskUpdatedAt(candidate);
+  const currentUpdatedAt = taskUpdatedAt(current);
+  if (candidateUpdatedAt !== null && currentUpdatedAt !== null && candidateUpdatedAt !== currentUpdatedAt) {
+    return candidateUpdatedAt < currentUpdatedAt;
+  }
+  const candidateMessages = Array.isArray(candidate.messages) ? candidate.messages.length : 0;
+  const currentMessages = Array.isArray(current.messages) ? current.messages.length : 0;
+  const candidateArtifacts = Array.isArray(candidate.artifacts) ? candidate.artifacts.length : 0;
+  const currentArtifacts = Array.isArray(current.artifacts) ? current.artifacts.length : 0;
+  return candidateMessages < currentMessages || candidateArtifacts < currentArtifacts;
+}
+
+function taskUpdatedAt(task) {
+  const value = task?.updated_at ?? task?.updatedAt;
+  if (value === undefined || value === null || value === "") return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function relayItemId(item, kind) {

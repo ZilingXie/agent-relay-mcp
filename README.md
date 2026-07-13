@@ -186,6 +186,7 @@ npm run protocol:sync      # fetch/cache current protocol schemas, examples, and
 npm run health:install     # verify hosted install loopback + local inbox delivery
 npm run listener           # run WebSocket listener in foreground
 npm run inbox-ui           # run local inbox UI in foreground
+npm run task-index:rebuild # rebuild the local UI index from task workspaces
 npm run processor          # advanced opt-in: run local LLM processor once
 npm run executor           # advanced opt-in: run structured action executor once
 npm run check              # syntax and unit tests

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +13,7 @@ import {
   persistTaskWorkspace,
   prepareLocalAction,
   readLocalAction,
+  rebuildTaskIndex,
   readTaskIndex,
   readTaskWorkspace,
   sanitizeTaskId,
@@ -197,6 +198,51 @@ test("backfillTaskWorkspaces migrates the newest durable task snapshot and archi
   const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_migrate" });
   assert.equal(workspace.workflow.localStatus, "archived");
   assert.deepEqual(workspace.task, task);
+});
+
+test("persistTaskWorkspace ignores an older full snapshot without regressing context", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const current = sampleTask("task_monotonic");
+  current.goal_version = 2;
+  current.exchange_epoch = 3;
+  current.updated_at = 200;
+  current.messages.push({ message_id: "message_2", parts: [{ kind: "text", text: "Newest" }] });
+  await persistTaskWorkspace({ stateRoot, task: current, localAgentId: "zac-agent" });
+
+  const older = sampleTask("task_monotonic");
+  older.updated_at = 100;
+  const result = await persistTaskWorkspace({
+    stateRoot,
+    task: older,
+    localAgentId: "zac-agent",
+    eventId: "evt_older",
+    syncedAt: "2026-07-13T02:00:00.000Z"
+  });
+
+  assert.equal(result.ignoredOlderSnapshot, true);
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_monotonic" });
+  assert.equal(workspace.task.goal_version, 2);
+  assert.equal(workspace.task.messages.at(-1).message_id, "message_2");
+  assert.equal(workspace.sync.lastEventId, "evt_older");
+});
+
+test("rebuildTaskIndex regenerates task projection only from local workspaces", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  await persistTaskWorkspace({ stateRoot, task: sampleTask("task_rebuild"), localAgentId: "zac-agent" });
+  await rm(join(stateRoot, "task-index.json"));
+
+  const result = await rebuildTaskIndex({
+    stateRoot,
+    localAgentId: "zac-agent",
+    now: () => "2026-07-13T02:10:00.000Z"
+  });
+
+  assert.equal(result.rebuilt, 1);
+  const index = await readTaskIndex({ stateRoot });
+  assert.equal(index.tasks.task_rebuild.contextSyncStatus, "context_ready");
+  assert.equal(index.tasks.task_rebuild.taskId, "task_rebuild");
 });
 
 test("context envelopes compare stable ids and reject unsafe task paths", () => {

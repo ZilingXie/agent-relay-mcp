@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { executeInboxAgent } from "../scripts/agentrelay-inbox-agent-executor.mjs";
+import { deriveTaskContextEnvelope } from "../scripts/agentrelay-task-workspace.mjs";
 
 test("executeInboxAgent guardrail sends a valid pending outbox artifact", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-guardrail-"));
@@ -806,6 +807,63 @@ test("executeInboxAgent skips archived issues", async () => {
   const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
   assert.equal(inbox.issues.task_archived_action.executorStatus, undefined);
   assert.equal(inbox.issues.task_archived_action.localStatus, "archived");
+});
+
+test("legacy opt-in executor syncs fresh context and rejects a changed envelope", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
+  const stateRoot = join(root, "state");
+  const originalTask = {
+    task_id: "task_executor_changed",
+    goal_version: 1,
+    exchange_epoch: 1,
+    status: "delivery_pending",
+    requester_agent_id: "frank-agent",
+    target_agent_id: "zac-agent",
+    completion_owner_agent_id: "frank-agent",
+    pending_on_agent_id: "zac-agent",
+    messages: [],
+    artifacts: []
+  };
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_executor_changed: {
+        taskId: "task_executor_changed",
+        requesterAgentId: "frank-agent",
+        targetAgentId: "zac-agent",
+        completionOwnerAgentId: "frank-agent",
+        pendingOnAgentId: "zac-agent",
+        relayStatus: "delivery_pending",
+        localStatus: "received",
+        contextEnvelope: deriveTaskContextEnvelope(originalTask),
+        latestHumanReplyId: "hr_changed",
+        processorLastHumanReplyId: "hr_changed",
+        processorActionIntent: "submit_artifact",
+        processorArtifactText: "Confirmed old reply"
+      }
+    },
+    events: {}
+  });
+  let mutations = 0;
+  const result = await executeInboxAgent({
+    stateRoot,
+    localAgentId: "zac-agent",
+    relayClient: {
+      async getTask() {
+        return { task: { ...originalTask, exchange_epoch: 2 } };
+      },
+      async submitArtifact() {
+        mutations += 1;
+      }
+    },
+    now: () => "2026-07-13T03:00:00.000Z"
+  });
+
+  assert.equal(result.failed, 1);
+  assert.equal(mutations, 0);
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  assert.match(inbox.issues.task_executor_changed.executorError, /CONTEXT_CHANGED/);
+  assert.equal(inbox.issues.task_executor_changed.contextEnvelope.exchangeEpoch, 2);
 });
 
 async function writeIssues(stateRoot, issues) {

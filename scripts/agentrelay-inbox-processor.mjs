@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
+import { readTaskWorkspace } from "./agentrelay-task-workspace.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -44,7 +45,7 @@ export async function processInbox({
       !hasNewHumanReply &&
       !hasLocalProcessorWork
     ) continue;
-    const task = await readTaskSnapshotForIssue({ inbox, issue });
+    const task = await readTaskSnapshotForIssue({ stateRoot, inbox, issue });
     if (!task) continue;
     const event = getIssueEvent({ inbox, issue });
     const inputFingerprint = buildProcessorInputFingerprint({ issue, task, event, humanReplies, latestHumanReplyId });
@@ -631,7 +632,9 @@ function summarizeProcessorError(error) {
   return `${message.slice(0, 600)}...`;
 }
 
-async function readTaskSnapshotForIssue({ inbox, issue }) {
+async function readTaskSnapshotForIssue({ stateRoot, inbox, issue }) {
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: issue.taskId });
+  if (workspace.task && workspace.sync.status === "context_ready") return workspace.task;
   const eventId = issue.lastEventId || issue.eventIds?.at?.(-1);
   const event = eventId ? inbox.events?.[eventId] : null;
   if (!event?.sourcePath) return null;
