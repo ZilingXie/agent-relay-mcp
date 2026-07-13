@@ -82,6 +82,9 @@ planning focus is cloud Relay guardrails for mutation authority.
    - Tell the local agent to separate what it can complete directly from what
      requires the local user to confirm, approve, provide missing context, or
      exercise human judgment.
+   - Keep the prompt body out of the task detail UI. Show one compact
+     `copy prompt for agent` row that copies on click and briefly changes to
+     `copied` after success.
 
 4. Reply path.
    - Incoming-task replies are not submitted by the UI.
