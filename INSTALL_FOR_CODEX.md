@@ -105,6 +105,8 @@ The local agent should:
 - not automatically process messages through the LLM processor unless the user explicitly opts in
 - not automatically send revision requests, artifacts, amendments, or close calls without user/local-agent review
 - let the user's chosen local agent reply by calling AgentRelay MCP tools such as `agentrelay_submit_artifact`
+- persist complete task context under `state/tasks/<task-id>/` after event ACK
+- require the user's chosen Local Agent to prepare the exact action before confirmation and submit it with the same `clientActionId`
 - ask the user before commitments, sensitive disclosures, final external replies, or task closure
 
 ## Important Constraints

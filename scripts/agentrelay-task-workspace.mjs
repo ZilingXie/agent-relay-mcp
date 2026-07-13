@@ -364,6 +364,7 @@ export async function prepareLocalAction({
   taskId,
   actionType,
   payload,
+  confirmationRef = "",
   clientActionId = `action_${randomUUID()}`,
   at = new Date().toISOString()
 }) {
@@ -387,6 +388,7 @@ export async function prepareLocalAction({
       payloadHash: hashStableJson(payload && typeof payload === "object" ? payload : {}),
       baseContextEnvelope: deriveTaskContextEnvelope(workspace.task),
       idempotencyKey: `local-${actionType}-${sanitizeTaskId(taskId)}-${actionId}`,
+      confirmationRef: String(confirmationRef || ""),
       status: "awaiting_confirmation",
       createdAt: at,
       updatedAt: at
@@ -687,7 +689,7 @@ function hashText(text) {
   return createHash("sha256").update(String(text || "")).digest("hex");
 }
 
-function hashStableJson(value) {
+export function hashStableJson(value) {
   return hashText(stableJson(value));
 }
 

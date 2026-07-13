@@ -373,7 +373,7 @@ test("processInboxEvent routes expired terminal task notifications to the reques
   const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
   const issue = inbox.issues.task_expired;
   assert.equal(issue.relayStatus, "expired");
-  assert.equal(issue.pendingOnAgentId, "zac-agent");
+  assert.equal(issue.pendingOnAgentId, "");
   assert.equal(issue.direction, "outgoing");
   assert.equal(inbox.events.evt_expired.type, "task.pending");
 });

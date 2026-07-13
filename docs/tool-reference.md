@@ -105,6 +105,37 @@ Note: acking an event does not deliver it into any UI by itself. The default loc
 
 Legacy helper that records the target Codex App thread for a claimed task. New installs should use the local inbox UI instead of Codex App thread delivery.
 
+### `agentrelay_resync_local_task`
+
+Fetches the complete task from Relay and atomically refreshes the local
+`state/tasks/<task-id>/` workspace. It is read-only with respect to Relay and
+does not start, wake, or invoke a Local Agent.
+
+```json
+{ "taskId": "task_abc" }
+```
+
+### `agentrelay_prepare_local_action`
+
+Persists the exact proposed mutation payload and binds it to the current local
+context envelope. Call it before asking the user for confirmation. It does not
+mutate Relay.
+
+```json
+{
+  "taskId": "task_abc",
+  "actionType": "submit_artifact",
+  "clientActionId": "reply_20260713_001",
+  "payloadJson": "{\"actor_agent_id\":\"zac-agent\",\"target_agent_id\":\"frank-agent\",\"intent\":\"work_result\",\"text\":\"Approved response\"}"
+}
+```
+
+`payloadJson` must contain the exact mutation arguments except `taskId`,
+`clientActionId`, and `confirmationRef`. After confirmation, pass the returned
+`clientActionId` and a local `confirmationRef` to the matching mutation tool.
+The client re-fetches the task immediately before submission. A changed
+envelope returns `CONTEXT_CHANGED` without a Relay mutation.
+
 ### `agentrelay_submit_artifact`
 
 Submits a protocol v0.3 result with `actor_agent_id`, top-level `intent`, artifact `summary`, and pending ownership. In the Phase 1 meeting flow, Frank's artifact does not complete the whole task; it returns ownership to `zac-agent` for delivery and confirmation.
@@ -122,7 +153,9 @@ Preferred example:
   "responseToGoalVersion": 1,
   "pendingOnAgentId": "zac-agent",
   "nextAction": "Zac agent should ask Zac to accept or propose alternatives.",
-  "text": "Frank is available Tuesday 10:00-11:00 China time."
+  "text": "Frank is available Tuesday 10:00-11:00 China time.",
+  "clientActionId": "reply_20260713_001",
+  "confirmationRef": "local-user-confirmed-reply-001"
 }
 ```
 
@@ -148,7 +181,9 @@ Preferred example:
   "humanApprovalSummary": "Zac clarified that he needs the review content itself.",
   "reason": "Requester-side human clarified the task goal after seeing the first artifact.",
   "newMaxTurns": 4,
-  "nextAction": "Project Hermes should answer the amended goal version."
+  "nextAction": "Project Hermes should answer the amended goal version.",
+  "clientActionId": "amend_20260713_001",
+  "confirmationRef": "zac-local-reply-123"
 }
 ```
 
@@ -209,7 +244,9 @@ When a human owner made the final decision, prefer the structured human fields:
   "humanApprovalRef": "zac-local-thread-20260705-001",
   "humanApprovalSummary": "Zac confirmed the result is acceptable.",
   "humanApprovalVisibility": "redacted",
-  "closedAgainstGoalVersion": 2
+  "closedAgainstGoalVersion": 2,
+  "clientActionId": "close_20260713_001",
+  "confirmationRef": "zac-local-thread-20260705-001"
 }
 ```
 
@@ -220,7 +257,9 @@ JSON object strings and are passed through to the relay.
 
 ### `agentrelay_get_task`
 
-Fetches task state.
+Fetches authoritative Relay task state. The Local Inbox normally reads the
+complete local workspace; use `agentrelay_resync_local_task` when the user
+explicitly requests a supported local refresh.
 
 ### `agentrelay_get_events`
 

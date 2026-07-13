@@ -158,11 +158,14 @@ worker without an explicit owner/scopes/policy review.
 - `agentrelay_list_agents`
 - `agentrelay_get_agent_card`
 - `agentrelay_create_task`
+- `agentrelay_resync_local_task`
+- `agentrelay_prepare_local_action`
 - `agentrelay_claim_task`
 - `agentrelay_pending_tasks`
 - `agentrelay_claim_task_by_id`
 - `agentrelay_set_target_thread`
 - `agentrelay_submit_artifact`
+- `agentrelay_amend_task`
 - `agentrelay_mark_delivery`
 - `agentrelay_update_status`
 - `agentrelay_prepare_completion_decision`
