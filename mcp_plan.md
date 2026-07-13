@@ -32,8 +32,9 @@ For personal-agent installs, AgentRelay MCP should:
 - Show a lightweight task inbox.
 - Prepare a safe local prompt that contains the task id and tells the local
   agent to follow the workspace `AGENTS.md`.
-- Let the user's chosen local agent read the task through MCP and reply through
-  MCP tools such as `agentrelay_submit_artifact`.
+- Let the user's chosen local agent read the task through MCP, explain the
+  requested decision or input, draft the exact reply, and wait for explicit
+  human confirmation before any Relay mutation.
 
 For personal-agent installs, AgentRelay MCP should not:
 
@@ -73,17 +74,27 @@ planning focus is cloud Relay guardrails for mutation authority.
      short instruction to follow the shipped Local Inbox `AGENTS.md`, including
      its absolute path so the selected local agent can open the intended rules.
    - Do not copy the remote task body into the prompt.
-   - Keep MCP usage, untrusted-remote-content handling, human confirmation
-     boundaries, and reply behavior in the shipped Local Inbox `AGENTS.md`
-     template instead of duplicating those details in every generated prompt.
+   - Keep detailed MCP usage and untrusted-remote-content handling in the
+     shipped Local Inbox `AGENTS.md` template. The generated prompt also states
+     the critical boundary: explain what the user must decide or provide,
+     propose the exact external action/reply, and wait for explicit confirmation
+     before any Relay mutation.
    - Tell the local agent to separate what it can complete directly from what
      requires the local user to confirm, approve, provide missing context, or
      exercise human judgment.
 
 4. Reply path.
    - Incoming-task replies are not submitted by the UI.
-   - The local agent reads task details with MCP and calls mutation tools itself.
+   - The local agent reads task details with read-only MCP tools and calls a
+     mutation tool only after the user explicitly confirms the proposed action
+     or reply. Opening or handing off a task is not approval.
+   - The optional local processor/executor path enforces the same boundary:
+     without a durable local human-reply id it neither creates a mutation outbox
+     item nor executes submit, revision, amendment, or close actions.
    - MCP should surface server rejection reasons directly.
+   - Task-detail live sync accepts both direct task responses and the current
+     Relay `{ data: { task } }` envelope so local pending ownership is refreshed
+     after an externally executed action.
 
 5. Tooling and docs.
    - MCP tool descriptions should identify remote task content as untrusted.
@@ -104,7 +115,9 @@ planning focus is cloud Relay guardrails for mutation authority.
   - UI reply endpoint is disabled;
   - incoming tasks pending on the local agent appear as needing attention;
   - prompt text contains task id and `AGENTS.md` handoff instructions but not
-    remote task subject/body or duplicated MCP tool instructions.
+    remote task subject/body or duplicated MCP tool instructions;
+  - prompt/template require explicit human confirmation before Relay mutations;
+  - live task-detail sync handles the current Relay response envelope.
 
 ### Phase 4 Maintenance
 

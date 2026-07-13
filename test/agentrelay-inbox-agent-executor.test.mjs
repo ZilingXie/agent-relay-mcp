@@ -20,11 +20,14 @@ test("executeInboxAgent guardrail sends a valid pending outbox artifact", async 
         pendingOnAgentId: "zac-agent",
         relayStatus: "delivery_pending",
         localStatus: "received",
+        latestHumanReplyId: "hr_outbox_submit",
+        humanReplies: [{ replyId: "hr_outbox_submit", text: "确认发送。" }],
         outbox: [{
           outboxId: "out_submit_1",
           taskId: "task_outbox_submit",
           status: "pending_guardrail",
           actionIntent: "submit_artifact",
+          humanReplyId: "hr_outbox_submit",
           fromAgentId: "zac-agent",
           artifactKind: "text",
           artifactText: "Frank, Zac confirmed receipt.",
@@ -101,11 +104,14 @@ test("executeInboxAgent guardrail rejects invalid outbox protocol without sendin
         pendingOnAgentId: "zac-agent",
         relayStatus: "delivery_pending",
         localStatus: "received",
+        latestHumanReplyId: "hr_outbox_close",
+        humanReplies: [{ replyId: "hr_outbox_close", text: "确认关闭。" }],
         outbox: [{
           outboxId: "out_bad_close_1",
           taskId: "task_outbox_bad_close",
           status: "pending_guardrail",
           actionIntent: "close_task",
+          humanReplyId: "hr_outbox_close",
           fromAgentId: "zac-agent",
           terminalReason: "Zac confirmed completion.",
           createdAt: "2026-07-07T02:00:00.000Z",
@@ -242,6 +248,7 @@ test("executeInboxAgent refuses to close when local agent is not completion owne
         processorActionIntent: "close_task",
         processorTerminalReason: "Zac approved closing.",
         latestHumanReplyId: "hr_close",
+        processorLastHumanReplyId: "hr_close",
         humanReplies: [{ replyId: "hr_close", text: "可以关闭task" }]
       }
     },
@@ -485,7 +492,40 @@ test("executeInboxAgent normalizes blocked task status when submitting an artifa
   assert.equal(calls[1].nextStatus, "delivery_pending");
 });
 
-test("executeInboxAgent sends a revision request back to the remote agent without human confirmation", async () => {
+test("executeInboxAgent does not send a revision request without human confirmation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_revision_unconfirmed: {
+        taskId: "task_revision_unconfirmed",
+        pendingOnAgentId: "zac-agent",
+        relayStatus: "delivery_pending",
+        localStatus: "received",
+        processorLastEventId: "evt_revision_unconfirmed",
+        processorActionIntent: "request_revision",
+        processorArtifactKind: "revision_request",
+        processorArtifactText: "Please revise the title.",
+        requiresHumanConfirmation: false
+      }
+    },
+    events: {}
+  });
+  const relayClient = {
+    async getTask() {
+      throw new Error("getTask should not be called without human confirmation");
+    }
+  };
+
+  const result = await executeInboxAgent({ stateRoot, localAgentId: "zac-agent", relayClient });
+
+  assert.equal(result.executed, 0);
+  assert.equal(result.failed, 0);
+  assert.deepEqual(result.actions, []);
+});
+
+test("executeInboxAgent sends a human-confirmed revision request back to the remote agent", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-executor-"));
   const stateRoot = join(root, "state");
   await writeIssues(stateRoot, {
@@ -504,7 +544,10 @@ test("executeInboxAgent sends a revision request back to the remote agent withou
         processorActionReason: "Remote result missed visible heading update.",
         processorArtifactKind: "revision_request",
         processorArtifactText: "Please continue the original task: update the visible H1 heading to match the requested title, then verify again.",
-        requiresHumanConfirmation: false
+        requiresHumanConfirmation: false,
+        latestHumanReplyId: "hr_revision",
+        processorLastHumanReplyId: "hr_revision",
+        humanReplies: [{ replyId: "hr_revision", text: "确认，请让 Hermes 按这段内容修订。" }]
       }
     },
     events: {}
@@ -683,6 +726,7 @@ test("executeInboxAgent refuses submit_artifact without artifact text", async ()
         processorArtifactText: "",
         requiresHumanConfirmation: false,
         latestHumanReplyId: "hr_submit",
+        processorLastHumanReplyId: "hr_submit",
         humanReplies: [{ replyId: "hr_submit", text: "确认。" }]
       }
     },

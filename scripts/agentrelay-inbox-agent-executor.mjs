@@ -258,14 +258,8 @@ function shouldAttemptAction({ issue, localAgentId }) {
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
   if (issue.pendingOnAgentId && issue.pendingOnAgentId !== localAgentId) return false;
   if (issue.requiresHumanConfirmation === true) return false;
-  if (issue.processorActionIntent === "request_revision") {
-    const processorEventId = issue.processorLastEventId || "";
-    if (!processorEventId) return false;
-    if (issue.executorStatus === "completed" && issue.executorLastProcessorEventId === processorEventId) return false;
-    return true;
-  }
-  const humanReplyId = issue.latestHumanReplyId || issue.processorLastHumanReplyId || "";
-  if (!humanReplyId) return false;
+  const humanReplyId = issue.processorLastHumanReplyId || "";
+  if (!humanReplyId || humanReplyId !== issue.latestHumanReplyId) return false;
   if (issue.executorStatus === "completed" && issue.executorLastHumanReplyId === humanReplyId) return false;
   if (issue.processorActionIntent === "close_task" && !issue.processorTerminalReason) return false;
   if (issue.processorActionIntent === "amend_task" && !issue.processorAmendedDoneCriteria) return false;
@@ -275,7 +269,9 @@ function shouldAttemptAction({ issue, localAgentId }) {
 function pendingGuardrailOutbox(issue) {
   if (issue.localStatus === "archived") return [];
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return [];
-  return normalizeOutbox(issue.outbox).filter((item) => item.status === "pending_guardrail");
+  return normalizeOutbox(issue.outbox).filter((item) =>
+    item.status === "pending_guardrail" && Boolean(item.humanReplyId)
+  );
 }
 
 function normalizeOutbox(outbox) {

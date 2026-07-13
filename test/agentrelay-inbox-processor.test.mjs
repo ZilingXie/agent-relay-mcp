@@ -937,8 +937,9 @@ test("buildCodexProcessorPrompt keeps intent interpretation inside the LLM agent
   assert.match(prompt, /only component allowed to interpret Zac's intent/);
   assert.match(prompt, /submit_artifact/);
   assert.match(prompt, /request_revision/);
-  assert.match(prompt, /ask the remote agent to continue/);
-  assert.match(prompt, /visible heading or user-facing title is still different/);
+  assert.match(prompt, /draft a concrete revision request/);
+  assert.match(prompt, /until Zac explicitly confirms sending it/);
+  assert.match(prompt, /related visible heading or user-facing title is still different/);
   assert.match(prompt, /completion_owner_agent_id equals the local agent id/);
   assert.match(prompt, /waiting for the completion owner to call close_task/);
 });
@@ -1162,6 +1163,7 @@ test("processInbox records local agent session, processor runs, input fingerprin
   assert.equal(issue.outbox.length, 1);
   assert.equal(issue.outbox[0].status, "pending_guardrail");
   assert.equal(issue.outbox[0].actionIntent, "request_revision");
+  assert.equal(issue.outbox[0].humanReplyId, "hr_runtime");
   assert.equal(issue.outbox[0].artifactText, "Please revise the title and verify again.");
 
   const second = await processInbox({

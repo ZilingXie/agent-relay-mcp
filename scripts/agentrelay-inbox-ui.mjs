@@ -343,7 +343,7 @@ async function fetchLiveRelayEvent({ taskId, relayClient, now }) {
   if (!relayClient?.getTask) return null;
   try {
     const response = await relayClient.getTask(taskId);
-    const task = response.task || response;
+    const task = response.data?.task || response.task || response;
     if (!task || !(Array.isArray(task.messages) || Array.isArray(task.artifacts))) return null;
     const eventId = `relay-live-${taskId}-${hashRelayTask(task)}`;
     return {
@@ -3671,6 +3671,8 @@ function renderHandoffPrompt(issue) {
 function buildPersonalAgentHandoffPrompt(issue) {
   return [
     "Please handle AgentRelay task id: " + (issue.taskId || ""),
+    "",
+    "First explain what this task asks me to decide or provide, propose the exact external action or reply, and wait for my explicit confirmation before any AgentRelay mutation.",
     "",
     "Read and follow the AgentRelay Local Inbox AGENTS.md before completing the task:",
     AGENTS_MD_PATH
