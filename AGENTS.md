@@ -68,11 +68,9 @@
 11. After merging a PR or pulling merged PR changes into this worktree, refresh
     CodeGraph with `rtk codegraph sync`. If the graph reports stale or missing
     data, run `rtk codegraph index`.
-12. Fast-forward `/Users/xieziling/Desktop/agentInbox/dev` to `origin/main`
-    after merge.
-13. Remove only task-owned worktrees/local branches after the PR is merged and
+12. Remove only task-owned worktrees/local branches after the PR is merged and
     only when cleanup is clearly requested or already agreed.
-14. A clean finish means:
+13. A clean finish means:
     - `rtk git fetch --prune origin` has completed before the final comparison.
     - `rtk git status --short --branch` shows no file changes.
     - `rtk git rev-list --left-right --count HEAD...@{u}` returns `0 0`.
