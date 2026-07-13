@@ -83,6 +83,24 @@ The listener connects to:
 wss://server.stellarix.space/agentrelay/api/workers/<AGENTRELAY_AGENT_ID>/events/ws
 ```
 
+The listener treats a connection with no frames for 90 seconds as inactive.
+This recovers half-open sockets after sleep, Wi-Fi changes, and similar network
+transitions even when the listener process itself remains alive. Override the
+threshold with `AGENTRELAY_LISTENER_INACTIVITY_MS` when needed.
+
+After every authenticated `hello`, and every five minutes while connected, the
+listener reconciles `GET /workers/<agent-id>/pending`. It fetches each full task
+snapshot and sends a deterministic recovery event through the same durable
+inbox and intake hook. This automatically restores tasks that were created
+while the listener was offline. Recovery events are local and are never ACKed
+to Relay as server event ids. Override the interval with
+`AGENTRELAY_LISTENER_RECONCILE_MS`.
+
+Connection health is written atomically to
+`.agentrelay/listener-status.json`. `npm run doctor` checks this file and fails
+when the listener reports a disconnected or stale connection. Use
+`AGENTRELAY_LISTENER_STATUS_PATH` to choose another location.
+
 When it receives a Relay event, it writes JSON to:
 
 ```text
@@ -165,13 +183,19 @@ Restart the listener:
 npm run install:listener
 ```
 
-Then use one of these recovery paths:
+The listener automatically reconciles all tasks that are still pending on the
+local agent after it reconnects. The operation is snapshot-idempotent, so a
+task found by both WebSocket push and HTTP recovery is processed once.
+
+Use these paths for inspection or manual diagnosis:
 
 - refresh the local inbox UI
 - inspect raw event files under `AGENTRELAY_INBOX_DIR`
 - ask the local Codex agent to call `agentrelay_pending_tasks`
 
 The REST pending endpoint remains the recovery source of truth when the listener was offline.
+Tasks that are no longer pending on this agent are intentionally not restored
+by reconciliation.
 
 ## Legacy Codex App Thread Receiver
 

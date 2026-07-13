@@ -9,6 +9,7 @@ import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
 import { syncCurrentProtocol } from "./protocol-sync.mjs";
+import { listenerStatusHealth, readJsonFrame } from "./agentrelay-listener-core.mjs";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,8 @@ const baseUrl = (process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL).replace(/\
 const wsBaseUrl = (process.env.AGENTRELAY_WS_URL || deriveWsUrl(baseUrl)).replace(/\/+$/, "");
 const inboxDir = resolveHome(process.env.AGENTRELAY_INBOX_DIR || resolve(repoRoot, ".agentrelay", "inbox"));
 const stateDir = resolveHome(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));
+const listenerStatusPath = resolveHome(process.env.AGENTRELAY_LISTENER_STATUS_PATH || resolve(inboxDir, "..", "listener-status.json"));
+const listenerInactivityMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_INACTIVITY_MS || "90000", 10);
 const inboxUiHost = process.env.AGENTRELAY_INBOX_UI_HOST || "127.0.0.1";
 const inboxUiPort = process.env.AGENTRELAY_INBOX_UI_PORT || "8787";
 let ok = true;
@@ -34,6 +37,14 @@ check("AGENTRELAY_TOKEN configured", Boolean(process.env.AGENTRELAY_TOKEN), proc
 check("Local inbox event directory exists", existsSync(inboxDir), inboxDir);
 check("Local inbox state exists", existsSync(resolve(stateDir, "issues.json")), resolve(stateDir, "issues.json"));
 check("Local inbox listener hook configured", Boolean(process.env.AGENTRELAY_LISTENER_HOOK), process.env.AGENTRELAY_LISTENER_HOOK ? "present" : "missing");
+
+try {
+  const listenerStatus = JSON.parse(await readFile(listenerStatusPath, "utf8"));
+  const health = listenerStatusHealth(listenerStatus, { staleAfterMs: Math.max(listenerInactivityMs * 2, 180000) });
+  check("Local listener connection is fresh", health.healthy, health.healthy ? `${health.ageMs}ms since activity` : health.reason);
+} catch (error) {
+  check("Local listener status exists", false, `${error.message} at ${listenerStatusPath}`);
+}
 
 if (existsSync(configPath)) {
   const config = await readFile(configPath, "utf8");
@@ -142,7 +153,7 @@ function websocketHello(url) {
       const remaining = response.subarray(headerEnd + 4);
       socket.agentRelayReadBuffer = remaining;
       try {
-        const hello = await readJsonFrame(socket);
+        const hello = await readJsonFrame(socket, { inactivityMs: 15000 });
         socket.destroy();
         resolveHello(hello);
       } catch (error) {
@@ -151,60 +162,6 @@ function websocketHello(url) {
       }
     };
     socket.on("data", onData);
-  });
-}
-
-async function readJsonFrame(socket) {
-  const header = await readExact(socket, 2);
-  const opcode = header[0] & 0x0f;
-  let length = header[1] & 0x7f;
-  if (length === 126) length = (await readExact(socket, 2)).readUInt16BE(0);
-  if (length === 127) length = Number((await readExact(socket, 8)).readBigUInt64BE(0));
-  if (header[1] & 0x80) await readExact(socket, 4);
-  const payload = await readExact(socket, length);
-  if (opcode !== 1) throw new Error(`expected text frame, got opcode ${opcode}`);
-  return JSON.parse(payload.toString("utf8"));
-}
-
-function readExact(socket, size) {
-  const buffered = socket.agentRelayReadBuffer || Buffer.alloc(0);
-  if (buffered.length >= size) {
-    const needed = buffered.subarray(0, size);
-    socket.agentRelayReadBuffer = buffered.subarray(size);
-    return Promise.resolve(needed);
-  }
-  const initial = buffered.length ? [buffered] : [];
-  socket.agentRelayReadBuffer = Buffer.alloc(0);
-  return new Promise((resolveRead, rejectRead) => {
-    const chunks = [...initial];
-    let total = buffered.length;
-    const cleanup = () => {
-      socket.off("data", onData);
-      socket.off("end", onEnd);
-      socket.off("error", onError);
-    };
-    const onData = (chunk) => {
-      chunks.push(chunk);
-      total += chunk.length;
-      if (total < size) return;
-      cleanup();
-      const data = Buffer.concat(chunks, total);
-      const needed = data.subarray(0, size);
-      const rest = data.subarray(size);
-      socket.agentRelayReadBuffer = rest;
-      resolveRead(needed);
-    };
-    const onEnd = () => {
-      cleanup();
-      rejectRead(new Error("socket closed"));
-    };
-    const onError = (error) => {
-      cleanup();
-      rejectRead(error);
-    };
-    socket.on("data", onData);
-    socket.once("end", onEnd);
-    socket.once("error", onError);
   });
 }
 

@@ -109,6 +109,94 @@ test("processInboxEvent treats duplicate event ids as already handled", async ()
   assert.equal(inbox.issues.task_duplicate.localWorkflowBinding.lastEventId, "evt_duplicate");
 });
 
+test("processInboxEvent does not process the same task snapshot under a different event id twice", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
+  const stateRoot = join(root, "state");
+  const pushPath = join(root, "push.json");
+  const recoveryPath = join(root, "recovery.json");
+  await writeFile(pushPath, JSON.stringify(sampleEvent("evt_push", "task_snapshot"), null, 2));
+  await writeFile(recoveryPath, JSON.stringify(sampleEvent("recovery_snapshot", "task_snapshot"), null, 2));
+  let processorCount = 0;
+
+  const options = {
+    stateRoot,
+    projectPath: root,
+    agentId: "zac-agent",
+    ackReceived: false,
+    processInboxAfterReceive: true,
+    processor: async () => {
+      processorCount += 1;
+      return { scanned: 1, processed: 1, externalActions: [] };
+    },
+    now: () => "2026-07-03T03:00:00.000Z"
+  };
+
+  const first = await processInboxEvent({ ...options, eventPath: pushPath });
+  const second = await processInboxEvent({ ...options, eventPath: recoveryPath });
+
+  assert.equal(first.status, "received");
+  assert.equal(second.status, "duplicate_snapshot");
+  assert.equal(processorCount, 1);
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  assert.deepEqual(inbox.issues.task_snapshot.eventIds, ["evt_push", "recovery_snapshot"]);
+  assert.equal(inbox.events.recovery_snapshot.status, "duplicate");
+});
+
+test("processInboxEvent distinguishes different snapshots updated in the same second", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
+  const stateRoot = join(root, "state");
+  const firstPath = join(root, "first.json");
+  const secondPath = join(root, "second.json");
+  const firstPayload = sampleEvent("evt_same_second_1", "task_same_second");
+  const secondPayload = sampleEvent("evt_same_second_2", "task_same_second");
+  secondPayload.task.messages[0].parts[0].text = "A distinct update in the same second.";
+  await writeFile(firstPath, JSON.stringify(firstPayload, null, 2));
+  await writeFile(secondPath, JSON.stringify(secondPayload, null, 2));
+  let processorCount = 0;
+  const options = {
+    stateRoot,
+    projectPath: root,
+    agentId: "zac-agent",
+    ackReceived: false,
+    processInboxAfterReceive: true,
+    processor: async () => {
+      processorCount += 1;
+      return { scanned: 1, processed: 1, externalActions: [] };
+    }
+  };
+
+  const first = await processInboxEvent({ ...options, eventPath: firstPath });
+  const second = await processInboxEvent({ ...options, eventPath: secondPath });
+
+  assert.equal(first.status, "received");
+  assert.equal(second.status, "received");
+  assert.equal(processorCount, 2);
+});
+
+test("processInboxEvent never ACKs a synthetic recovery event", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "recovery.json");
+  const payload = sampleEvent("recovery_no_ack", "task_recovery_no_ack");
+  payload.event.recovery = true;
+  await writeFile(eventPath, JSON.stringify(payload, null, 2));
+  let ackCount = 0;
+
+  const result = await processInboxEvent({
+    eventPath,
+    stateRoot,
+    projectPath: root,
+    agentId: "zac-agent",
+    ackReceived: true,
+    relayClient: { async ackEvent() { ackCount += 1; } },
+    now: () => "2026-07-03T03:00:00.000Z"
+  });
+
+  assert.equal(result.status, "received");
+  assert.equal(result.acked, undefined);
+  assert.equal(ackCount, 0);
+});
+
 test("processInboxEvent preserves archived local status on new Relay events", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-"));
   const stateRoot = join(root, "state");
@@ -203,6 +291,8 @@ function sampleEvent(eventId, taskId) {
       pending_on_agent_id: "zac-agent",
       pending_on_human_id: null,
       status: "delivery_pending",
+      goal_version: 1,
+      updated_at: 1783066800,
       messages: [{
         from_agent_id: "frank-agent",
         to_agent_id: "zac-agent",
