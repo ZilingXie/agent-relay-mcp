@@ -113,39 +113,38 @@ export function buildTaskHandoffPrompt({
   taskId,
   taskDir,
   contextPath,
-  remotePath,
   agentsMdPath,
   type = "normal",
   sync = null
 }) {
-  const header = type === "investigation"
-    ? `Please investigate AgentRelay local context sync for task id: ${taskId}`
-    : type === "changed_context"
-      ? `AgentRelay task context changed. Please re-handle task id: ${taskId}`
-      : `Please handle AgentRelay task id: ${taskId}`;
-  const lines = [header, ""];
   if (type === "investigation") {
-    lines.push(
+    const lines = [
+      `Please investigate AgentRelay local context sync for task id: ${taskId}`,
+      "",
       "The deterministic Listener/Intake sync failed twice. Do not submit, amend, revise, claim, or close the Relay task until complete local context is restored.",
       "",
       `Sync error category: ${sync?.lastError?.category || "unknown"}`,
       `Last attempt: ${sync?.lastAttemptAt || "unknown"}`,
       `Event id: ${sync?.lastEventId || "unknown"}`,
       "",
-      "After I explicitly ask you to investigate, inspect local Listener state, use read-only agentrelay_get_task if useful, and call agentrelay_resync_local_task for this task. Explain the result and next step to me."
-    );
-  } else {
-    lines.push(
-      "Read the complete local task context before analysis:",
-      contextPath,
+      "After I explicitly ask you to investigate, inspect local Listener state, use read-only agentrelay_get_task if useful, and call agentrelay_resync_local_task for this task. Explain the result and next step to me.",
       "",
-      "The complete raw Relay snapshot is available at:",
-      remotePath,
+      `Local task directory: ${taskDir}`,
       "",
-      "First explain what this task asks me to decide or provide, propose the exact external action or reply, and wait for my explicit confirmation before any AgentRelay mutation."
-    );
+      "Read and follow the AgentRelay Local Inbox AGENTS.md:",
+      agentsMdPath
+    ];
+    return `${lines.join("\n").trimEnd()}\n`;
   }
-  lines.push("", `Local task directory: ${taskDir}`, "", "Read and follow the AgentRelay Local Inbox AGENTS.md:", agentsMdPath);
+
+  const instruction = type === "changed_context"
+    ? `AgentRelay task context changed. Re-handle task ${taskId} at ${contextPath}. Follow ${agentsMdPath}.`
+    : `Handle AgentRelay task ${taskId} at ${contextPath}. Follow ${agentsMdPath}.`;
+  const lines = [
+    instruction,
+    "",
+    "First explain what this task asks me to decide or provide, propose the exact external action or reply, and wait for my explicit confirmation before any AgentRelay mutation."
+  ];
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
@@ -263,7 +262,6 @@ async function persistTaskWorkspaceUnlocked({ stateRoot, task, taskId, localAgen
     taskId,
     taskDir: paths.taskDir,
     contextPath: paths.contextPath,
-    remotePath: paths.remotePath,
     agentsMdPath,
     type: nextWorkflow.handoffType,
     sync: nextSync
@@ -361,7 +359,6 @@ export async function markTaskSyncFailed({
       taskId,
       taskDir: paths.taskDir,
       contextPath: paths.contextPath,
-      remotePath: paths.remotePath,
       agentsMdPath,
       type: "investigation",
       sync
