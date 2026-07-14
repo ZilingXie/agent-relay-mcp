@@ -199,8 +199,10 @@ state/
    local or Relay retrieval reference.
 3. `handoff.md` is the current locally synthesized user-to-Agent prompt. Its
    prompt type is normal task handling, context-sync investigation, or
-   changed-context reprocessing. The UI copies this file instead of rebuilding
-   a second prompt implementation.
+   changed-context reprocessing. Normal and changed-context prompts identify
+   only `context.md` plus the installed Local Inbox `AGENTS.md`; `remote.json`
+   remains a diagnostic source rather than a repeated prompt input. The UI
+   copies this file instead of rebuilding a second prompt implementation.
 4. `sync.json` records event delivery, ACK, fetch attempts, last successful
    sync, sanitized errors, retry state, and the latest derived context envelope.
 5. `workflow.json` records local-only state: UI category inputs, attention

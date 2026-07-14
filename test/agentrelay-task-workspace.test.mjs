@@ -24,6 +24,7 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
   const stateRoot = join(root, "state");
   const task = sampleTask("task_complete");
+  const agentsMdPath = join(root, "AGENTS.md");
 
   const result = await persistTaskWorkspace({
     stateRoot,
@@ -32,7 +33,7 @@ test("persistTaskWorkspace writes complete local context and projections atomica
     source: "test",
     eventId: "evt_complete",
     syncedAt: "2026-07-13T01:00:00.000Z",
-    agentsMdPath: join(root, "AGENTS.md")
+    agentsMdPath
   });
 
   const workspace = await readTaskWorkspace({ stateRoot, taskId: task.task_id });
@@ -41,7 +42,14 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   assert.equal(workspace.workflow.handoffType, "normal");
   assert.match(await readFile(workspace.paths.contextPath, "utf8"), /Complete Relay Task JSON/);
   assert.match(await readFile(workspace.paths.contextPath, "utf8"), /Please inspect the dashboard/);
-  assert.match(workspace.handoffPrompt, new RegExp(workspace.paths.contextPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(workspace.handoffPrompt, [
+    `Handle AgentRelay task task_complete at ${workspace.paths.contextPath}. Follow ${agentsMdPath}.`,
+    "",
+    "First explain what this task asks me to decide or provide, propose the exact external action or reply, and wait for my explicit confirmation before any AgentRelay mutation.",
+    ""
+  ].join("\n"));
+  assert.doesNotMatch(workspace.handoffPrompt, /remote\.json/);
+  assert.doesNotMatch(workspace.handoffPrompt, /Local task directory/);
   assert.equal((await stat(workspace.paths.remotePath)).mode & 0o777, 0o600);
   assert.equal((await stat(workspace.paths.taskDir)).mode & 0o777, 0o700);
   const index = await readTaskIndex({ stateRoot });
