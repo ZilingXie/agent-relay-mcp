@@ -1,6 +1,6 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-07-13
+Last updated: 2026-07-15
 
 ## Audience And Sources
 
@@ -46,6 +46,61 @@ For personal-agent installs, AgentRelay MCP should not:
 Cloud Relay guardrails are the authoritative enforcement point for mutations
 such as submit, amend, request revision, and close. Server-side guardrail work
 is intentionally deferred until after this Personal Agent Notifier plan lands.
+
+## Protocol v0.4 Task Lifecycle Client Plan
+
+Status: design complete; implementation not started. The server-owned contract
+is `ZilingXie/agentRelay/docs/task-lifecycle-v04.md`. Protocol v0.3 remains the
+active client behavior until server support and end-to-end conformance pass.
+
+Implementation dependency and merge order:
+
+1. The Relay server ships v0.4 schemas, storage, transition enforcement,
+   protocol negotiation, and conformance support first.
+2. MCP/Listener adds v0.4 support without removing v0.3.
+3. New Task creation selects v0.4 only when Relay and both participants
+   advertise `agent-collab-v0.4`; otherwise it uses negotiated v0.3 behavior.
+4. v0.4 is not enabled by default until a two-Agent create/ACK/response/ACK/
+   requester-complete/follow-up run passes.
+
+Client responsibilities:
+
+- Persist the current Message to the local task workspace before sending the
+  v0.4 delivery ACK. The ACK includes `message_id`, `turn_sequence`,
+  `expected_status_version`, and a stable `idempotency_key`.
+- Keep Task status authoritative on Relay. Local workspace/UI state is a
+  materialized view and never invents `submitted`, `delivered`, or a terminal
+  transition.
+- Enforce strict two-Agent alternation in local preparation, while treating
+  Relay rejection as authoritative. Do not allow the same Agent to create two
+  consecutive Messages.
+- Add v0.4 MCP operations for Message submit, requester completion,
+  reason-constrained failure, and follow-up creation. Do not expose any Task
+  delete operation.
+- At `max_turns`, prevent another local turn and guide the requester Agent to
+  choose `completed` or `failed/max_turns_exhausted`; never auto-close.
+- On `409 stale_task_state`, fetch the latest Task, update the local workspace,
+  invalidate stale prepared actions, and require a fresh Agent decision.
+- Store and display opaque `task_id` plus `root_task_id`; derive follow-up
+  grouping without parsing ids or persisting `is_followup`.
+- Keep notifier-first and local guardrail behavior. v0.4 removes human-specific
+  Relay state, but it does not remove local confirmation requirements.
+- Preserve Task workspaces even after terminal state. Local archive may hide a
+  workspace, but MCP must not request or imply hard deletion of the Relay Task.
+
+Client verification must cover:
+
+- durable local Message write before lifecycle-changing ACK;
+- duplicate ACK/Message/follow-up idempotency;
+- stale message, turn, and status-version recovery;
+- target response keeping the turn and requester follow-up incrementing it;
+- same-Agent consecutive Message rejection;
+- requester-only completion against the current delivered response;
+- requester-driven `max_turns_exhausted` failure;
+- `task_expires_at` and terminal state rendering without local inference;
+- root/follow-up workspace grouping with opaque Task ids;
+- absence of Task delete tools or actions;
+- v0.3/v0.4 negotiated coexistence.
 
 ## Personal Agent MCP Plan
 
