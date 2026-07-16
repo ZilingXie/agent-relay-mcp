@@ -10,7 +10,15 @@ import * as z from "zod/v4";
 import { executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
 import { resyncLocalTask } from "../scripts/agentrelay-task-context-sync.mjs";
 import { prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
-import { maybeHandleProtocolNegotiation, syncCurrentProtocol } from "../scripts/protocol-sync.mjs";
+import { maybeHandleProtocolNegotiation, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
+import {
+  buildCompletePayloadV04,
+  buildCreatePayloadV04,
+  buildFailPayloadV04,
+  buildFollowupPayloadV04,
+  buildMessagePayloadV04,
+  validatePreparedActionV04
+} from "../scripts/agentrelay-v04.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -56,6 +64,16 @@ function registerTools(mcpServer) {
     async () => {
       return jsonResult(await syncCurrentProtocol({ baseUrl }));
     }
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_protocol_sync_v04",
+    {
+      title: "Sync AgentRelay Protocol v0.4 bundle",
+      description: "Fetch and cache the accepted non-default Protocol v0.4 bundle without changing the default v0.3 tools.",
+      inputSchema: {}
+    },
+    async () => jsonResult(await syncProtocolVersion({ version: "agent-collab-v0.4", baseUrl }))
   );
 
   mcpServer.registerTool(
@@ -151,6 +169,132 @@ function registerTools(mcpServer) {
   );
 
   mcpServer.registerTool(
+    "agentrelay_create_task_v04",
+    {
+      title: "Create Protocol v0.4 Task",
+      description: "Create an explicit two-Agent Protocol v0.4 Task. Use only when both participants support v0.4; this does not change the default v0.3 tool.",
+      inputSchema: {
+        requesterAgentId: z.string().min(1),
+        targetAgentId: z.string().min(1),
+        requestText: z.string().min(1),
+        doneCriteria: z.string().min(1),
+        subject: z.string().optional(),
+        maxTurns: z.number().int().positive().optional(),
+        taskExpiresAt: z.number().int().positive().optional(),
+        clientRequestId: z.string().min(1).optional().describe("Stable caller id used to retry the same create without duplicating it")
+      }
+    },
+    async (args) => {
+      const key = `mcp-v04-create-${args.clientRequestId || randomUUID()}`;
+      return jsonResult(await relayPost("/tasks", buildCreatePayloadV04(args, key)));
+    }
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_send_message_v04",
+    {
+      title: "Send Protocol v0.4 Message",
+      description: "Send the confirmed next v0.4 Message using the exact current Task snapshot. Target replies keep the turn; requester follow-ups advance it on Relay.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        text: z.string().min(1),
+        ...v04MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "send_message_v04",
+      validateCurrentTask: (task) => validatePreparedActionV04("send_message_v04", task, args),
+      remotePayloadBuilder: (key) => buildMessagePayloadV04(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/messages`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_complete_task_v04",
+    {
+      title: "Complete Protocol v0.4 Task",
+      description: "Requester-only confirmation that the current delivered target response satisfies done criteria.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        completedAgainstMessageId: z.string().min(1),
+        ...v04MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "complete_task_v04",
+      validateCurrentTask: (task) => validatePreparedActionV04("complete_task_v04", task, args),
+      remotePayloadBuilder: (key) => buildCompletePayloadV04(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/complete`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_fail_task_v04",
+    {
+      title: "Fail Protocol v0.4 Task",
+      description: "End a v0.4 Task with a reason whose actor and source-state authority Relay validates.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        reason: z.enum(["agent_reported_failure", "max_turns_exhausted"]),
+        ...v04MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "fail_task_v04",
+      validateCurrentTask: (task) => validatePreparedActionV04("fail_task_v04", task, args),
+      remotePayloadBuilder: (key) => buildFailPayloadV04(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/fail`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_create_followup_v04",
+    {
+      title: "Create Protocol v0.4 Follow-up",
+      description: "Create a new opaque-id v0.4 Task under a terminal source Task's root lineage.",
+      inputSchema: {
+        taskId: z.string().min(1).describe("Terminal source Task id"),
+        requestText: z.string().min(1),
+        doneCriteria: z.string().min(1),
+        subject: z.string().optional(),
+        maxTurns: z.number().int().positive().optional(),
+        taskExpiresAt: z.number().int().positive().optional(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "create_followup_v04",
+      validateCurrentTask: (task) => validatePreparedActionV04("create_followup_v04", task, args),
+      remotePayloadBuilder: (key) => buildFollowupPayloadV04(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/followups`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_lineage_v04",
+    {
+      title: "Get Protocol v0.4 Task lineage",
+      description: "List a root Task and all follow-ups by root_task_id without parsing opaque Task ids.",
+      inputSchema: { taskId: z.string().min(1) }
+    },
+    async ({ taskId }) => jsonResult(await relayGet(`/tasks/${encodeURIComponent(taskId)}/lineage`))
+  );
+
+  mcpServer.registerTool(
     "agentrelay_get_task",
     {
       title: "Get AgentRelay task",
@@ -189,7 +333,10 @@ function registerTools(mcpServer) {
       description: "Persist an exact proposed Relay mutation and bind it to the current local task context before asking the user for confirmation. This tool does not mutate Relay.",
       inputSchema: {
         taskId: z.string().min(1),
-        actionType: z.enum(["submit_artifact", "request_revision", "amend_task", "close_task"]),
+        actionType: z.enum([
+          "submit_artifact", "request_revision", "amend_task", "close_task",
+          "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04"
+        ]),
         payloadJson: z.string().min(2).describe("Exact JSON object of mutation arguments excluding taskId, clientActionId, and confirmationRef"),
         clientActionId: z.string().min(1).optional(),
         confirmationRef: z.string().optional().describe("Optional local confirmation reference; it may be supplied later during submission")
@@ -544,12 +691,14 @@ function registerTools(mcpServer) {
   );
 }
 
-async function executeMcpTaskAction({ args, actionType, remotePayload, path }) {
+async function executeMcpTaskAction({ args, actionType, remotePayload, remotePayloadBuilder, path, validateCurrentTask }) {
   const preparedPayload = preparedActionPayload(args);
-  const mutate = (idempotencyKey) => relayPost(path, compact({
-    ...remotePayload,
-    idempotency_key: idempotencyKey
-  }));
+  const mutate = (idempotencyKey) => relayPost(
+    path,
+    remotePayloadBuilder
+      ? remotePayloadBuilder(idempotencyKey)
+      : compact({ ...remotePayload, idempotency_key: idempotencyKey })
+  );
   if (args.clientActionId) {
     return executePreparedTaskAction({
       stateRoot,
@@ -560,6 +709,7 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, path }) {
       confirmationRef: args.confirmationRef,
       fetchTask: (taskId) => relayGet(`/tasks/${encodeURIComponent(taskId)}`),
       mutate,
+      validateCurrentTask,
       localAgentId: agentId,
       agentsMdPath: localInboxAgentsMdPath
     });
@@ -570,6 +720,14 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, path }) {
     payload: preparedPayload
   });
   return mutate(idempotencyKey);
+}
+
+function v04MutationContextSchema() {
+  return {
+    currentMessageId: z.string().min(1),
+    turnSequence: z.number().int().positive(),
+    expectedStatusVersion: z.number().int().positive()
+  };
 }
 
 function preparedActionPayload(args) {
@@ -628,7 +786,12 @@ async function relayRequest(method, path, payload, options = {}) {
       });
       if (protocolRecovery) return protocolRecovery;
     }
-    throw new Error(`AgentRelay ${method} ${path} failed (${response.status}): ${JSON.stringify(data)}`);
+    const relayError = new Error(`AgentRelay ${method} ${path} failed (${response.status}): ${JSON.stringify(data)}`);
+    relayError.statusCode = response.status;
+    relayError.code = data?.error?.code || data?.code || "";
+    relayError.responseData = data;
+    relayError.currentTask = data?.error?.detail?.current_task || data?.detail?.current_task || null;
+    throw relayError;
   }
   return data;
 }

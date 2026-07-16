@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resyncLocalTask } from "./agentrelay-task-context-sync.mjs";
 import { markTaskSyncPending, sanitizeSyncError } from "./agentrelay-task-workspace.mjs";
+import { messageAckMetadataV04 } from "./agentrelay-v04.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -77,30 +78,44 @@ export async function processInboxEvent({
     source: event.recovery ? "reconciliation" : "event",
     at: now()
   });
-  const ackResult = await ackDurableEvent({
-    shouldAck,
-    relayClient,
-    agentId,
-    eventId,
-    taskId,
-    projectPath,
-    stateDir,
-    now
-  });
-  const contextSync = await syncTaskContext({
-    stateRoot: stateDir,
-    taskId,
-    fetchTask: (id) => relayClient.getTask(id),
-    initialTask: Object.keys(task).length ? task : null,
-    localAgentId: agentId,
-    source: event.recovery ? "reconciliation" : "event",
-    eventId,
-    maxAttempts: Object.keys(task).length ? 1 : syncMaxAttempts,
-    retryDelayMs: syncRetryDelayMs,
-    sleep,
-    now,
-    agentsMdPath
-  });
+  const messageAck = messageAckMetadataV04(event, agentId);
+  let ackResult;
+  let contextSync;
+  if (messageAck) {
+    contextSync = await syncInboxTaskContext();
+    const durableCurrentMessage = contextSync.status === "context_ready"
+      && contextSync.task?.current_message_id === messageAck.messageId
+      && Number(contextSync.task?.turn_sequence) === messageAck.payload.turn_sequence
+      && Number(contextSync.task?.status_version) === messageAck.payload.expected_status_version;
+    ackResult = await ackDurableEvent({
+      shouldAck: shouldAck && durableCurrentMessage,
+      relayClient, agentId, eventId, event, messageAck, taskId, projectPath, stateDir, now
+    });
+    const acknowledgedTask = ackResult.response?.data?.task || ackResult.response?.task;
+    if (acknowledgedTask) contextSync = await syncInboxTaskContext(acknowledgedTask);
+  } else {
+    ackResult = await ackDurableEvent({
+      shouldAck, relayClient, agentId, eventId, event, taskId, projectPath, stateDir, now
+    });
+    contextSync = await syncInboxTaskContext();
+  }
+
+  async function syncInboxTaskContext(initialTaskOverride = null) {
+    return syncTaskContext({
+      stateRoot: stateDir,
+      taskId,
+      fetchTask: (id) => relayClient.getTask(id),
+      initialTask: initialTaskOverride || (Object.keys(task).length ? task : null),
+      localAgentId: agentId,
+      source: event.recovery ? "reconciliation" : "event",
+      eventId,
+      maxAttempts: Object.keys(task).length ? 1 : syncMaxAttempts,
+      retryDelayMs: syncRetryDelayMs,
+      sleep,
+      now,
+      agentsMdPath
+    });
+  }
 
   const processorResult = processInboxAfterReceive && intakeStatus === "received" && contextSync.status === "context_ready"
     ? await runInboxProcessor({
@@ -131,17 +146,24 @@ export async function processInboxEvent({
   };
 }
 
-async function ackDurableEvent({ shouldAck, relayClient, agentId, eventId, taskId, projectPath, stateDir, now }) {
-  if (!shouldAck) return { acked: false, error: null };
+async function ackDurableEvent({ shouldAck, relayClient, agentId, eventId, event, messageAck, taskId, projectPath, stateDir, now }) {
+  if (!shouldAck) return { acked: false, error: null, response: null };
   if (!agentId) throw new Error("Missing AGENTRELAY_AGENT_ID");
   try {
-    await relayClient.ackEvent({ agentId, eventId, taskId, status: "received", projectPath });
-    await markIssueEventAcked({ stateDir, eventId, status: "received", now });
-    return { acked: true, error: null };
+    messageAck ||= messageAckMetadataV04(event, agentId);
+    if (messageAck) {
+      const response = await relayClient.ackMessage(messageAck);
+      await markIssueEventAcked({ stateDir, eventId, status: "received", now });
+      return { acked: true, error: null, response };
+    } else {
+      const response = await relayClient.ackEvent({ agentId, eventId, taskId, status: "received", projectPath });
+      await markIssueEventAcked({ stateDir, eventId, status: "received", now });
+      return { acked: true, error: null, response };
+    }
   } catch (error) {
     const safeError = sanitizeSyncError(error);
     await markIssueEventAckFailed({ stateDir, eventId, error: safeError, now });
-    return { acked: false, error: safeError };
+    return { acked: false, error: safeError, response: null };
   }
 }
 
@@ -170,6 +192,9 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
   const eventIds = Array.from(new Set([...(previousIssue.eventIds || []), eventId]));
   const recordedAt = now();
   const pendingOnAgentId = task.pending_on_agent_id
+    || task.to_agent_id
+    || event.toAgentId
+    || event.to_agent_id
     || event.pendingOnAgentId
     || event.pending_on_agent_id
     || previousIssue.pendingOnAgentId
@@ -183,6 +208,13 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
     targetAgentId: task.target_agent_id || previousIssue.targetAgentId || "",
     doneCriteria: task.done_criteria || previousIssue.doneCriteria || "",
     completionOwnerAgentId: task.completion_owner_agent_id || previousIssue.completionOwnerAgentId || "",
+    protocolVersion: task.protocol_version || previousIssue.protocolVersion || "",
+    rootTaskId: task.root_task_id || previousIssue.rootTaskId || taskId,
+    currentMessageId: task.current_message_id || event.messageId || event.message_id || previousIssue.currentMessageId || "",
+    turnSequence: task.turn_sequence ?? event.turnSequence ?? event.turn_sequence ?? previousIssue.turnSequence ?? null,
+    statusVersion: task.status_version ?? event.statusVersion ?? event.status_version ?? previousIssue.statusVersion ?? null,
+    fromAgentId: task.from_agent_id || event.fromAgentId || event.from_agent_id || previousIssue.fromAgentId || "",
+    toAgentId: task.to_agent_id || event.toAgentId || event.to_agent_id || previousIssue.toAgentId || "",
     pendingOnAgentId,
     pendingOnHumanId: task.pending_on_human_id || previousIssue.pendingOnHumanId || null,
     relayStatus: task.status || previousIssue.relayStatus || "",
@@ -308,7 +340,7 @@ function inferCounterpartAgentId(task, event) {
 function inferIssueDirection(task, event) {
   const localAgentId = event.agentId || event.agent_id || "";
   if (task.requester_agent_id === localAgentId) return "outgoing";
-  const pendingOnAgentId = task.pending_on_agent_id || event.pendingOnAgentId || event.pending_on_agent_id || "";
+  const pendingOnAgentId = task.pending_on_agent_id || task.to_agent_id || event.toAgentId || event.to_agent_id || event.pendingOnAgentId || event.pending_on_agent_id || "";
   if (task.target_agent_id === localAgentId || pendingOnAgentId === localAgentId) return "incoming";
   return "unknown";
 }
@@ -334,6 +366,14 @@ class AgentRelayHttpClient {
       status,
       projectPath
     });
+  }
+
+  async ackMessage({ agentId, messageId, payload }) {
+    return this.request(
+      "POST",
+      `/workers/${encodeURIComponent(agentId)}/messages/${encodeURIComponent(messageId)}/ack`,
+      payload
+    );
   }
 
   async getTask(taskId) {

@@ -46,9 +46,16 @@ export function deriveTaskContextEnvelope(task) {
   const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
   return {
     taskId: String(taskId),
+    protocolVersion: String(task.protocol_version || task.protocolVersion || ""),
+    rootTaskId: String(task.root_task_id || task.rootTaskId || taskId),
     goalVersion: numberOrNull(task.goal_version ?? task.goalVersion),
     exchangeEpoch: numberOrNull(task.exchange_epoch ?? task.exchangeEpoch),
     status: String(task.status || ""),
+    currentMessageId: String(task.current_message_id || task.currentMessageId || ""),
+    turnSequence: numberOrNull(task.turn_sequence ?? task.turnSequence),
+    statusVersion: numberOrNull(task.status_version ?? task.statusVersion),
+    fromAgentId: String(task.from_agent_id || task.fromAgentId || ""),
+    toAgentId: String(task.to_agent_id || task.toAgentId || ""),
     pendingOnAgentId: String(task.pending_on_agent_id || task.pendingOnAgentId || ""),
     completionOwnerAgentId: String(task.completion_owner_agent_id || task.completionOwnerAgentId || ""),
     latestMessageId: relayItemId(messages.at(-1), "message"),
@@ -59,9 +66,16 @@ export function deriveTaskContextEnvelope(task) {
 export function compareTaskContextEnvelopes(expected, current) {
   const fields = [
     "taskId",
+    "protocolVersion",
+    "rootTaskId",
     "goalVersion",
     "exchangeEpoch",
     "status",
+    "currentMessageId",
+    "turnSequence",
+    "statusVersion",
+    "fromAgentId",
+    "toAgentId",
     "pendingOnAgentId",
     "completionOwnerAgentId",
     "latestMessageId",
@@ -82,6 +96,12 @@ export function buildTaskContextMarkdown(task, { syncedAt = "" } = {}) {
     "",
     `- Synced at: ${syncedAt || "unknown"}`,
     `- Status: ${envelope.status || "unknown"}`,
+    `- Protocol: ${envelope.protocolVersion || "unknown"}`,
+    `- Root task: ${envelope.rootTaskId || envelope.taskId}`,
+    `- Current message: ${envelope.currentMessageId || "none"}`,
+    `- Turn: ${displayValue(envelope.turnSequence)}`,
+    `- Status version: ${displayValue(envelope.statusVersion)}`,
+    `- Current direction: ${envelope.fromAgentId || "none"} -> ${envelope.toAgentId || "none"}`,
     `- Goal version: ${displayValue(envelope.goalVersion)}`,
     `- Exchange epoch: ${displayValue(envelope.exchangeEpoch)}`,
     `- Pending on agent: ${envelope.pendingOnAgentId || "none"}`,
@@ -393,7 +413,10 @@ export async function prepareLocalAction({
   clientActionId = `action_${randomUUID()}`,
   at = new Date().toISOString()
 }) {
-  if (!new Set(["submit_artifact", "request_revision", "amend_task", "close_task"]).has(actionType)) {
+  if (!new Set([
+    "submit_artifact", "request_revision", "amend_task", "close_task",
+    "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04"
+  ]).has(actionType)) {
     throw new Error(`Unsupported local action type: ${actionType}`);
   }
   return withTaskWorkspaceLock({ stateRoot, taskId }, async () => {
@@ -601,9 +624,12 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
   const taskId = String(task?.task_id || task?.taskId || sync?.taskId || workflow?.taskId || existingIssue.taskId || paths.taskId);
   const requesterAgentId = String(task?.requester_agent_id || existingIssue.requesterAgentId || "");
   const targetAgentId = String(task?.target_agent_id || existingIssue.targetAgentId || "");
-  const pendingOnAgentId = task && (Object.hasOwn(task, "pending_on_agent_id") || Object.hasOwn(task, "pendingOnAgentId"))
-    ? String(task.pending_on_agent_id ?? task.pendingOnAgentId ?? "")
-    : String(existingIssue.pendingOnAgentId || "");
+  const isV04 = (task?.protocol_version || task?.protocolVersion) === "agent-collab-v0.4";
+  const pendingOnAgentId = isV04
+    ? String(task?.to_agent_id || task?.toAgentId || "")
+    : task && (Object.hasOwn(task, "pending_on_agent_id") || Object.hasOwn(task, "pendingOnAgentId"))
+      ? String(task.pending_on_agent_id ?? task.pendingOnAgentId ?? "")
+      : String(existingIssue.pendingOnAgentId || "");
   const localStatus = workflow?.localStatus || existingIssue.localStatus || (task ? "received" : "sync_pending");
   const direction = requesterAgentId === localAgentId
     ? "outgoing"
@@ -617,6 +643,8 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
     subject: String(task?.subject || existingIssue.subject || ""),
     requesterAgentId,
     targetAgentId,
+    protocolVersion: String(task?.protocol_version || task?.protocolVersion || existingIssue.protocolVersion || ""),
+    rootTaskId: String(task?.root_task_id || task?.rootTaskId || existingIssue.rootTaskId || taskId),
     doneCriteria: String(task?.done_criteria || task?.doneCriteria || existingIssue.doneCriteria || ""),
     completionOwnerAgentId: String(task?.completion_owner_agent_id || existingIssue.completionOwnerAgentId || ""),
     pendingOnAgentId,
@@ -625,6 +653,11 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
     relaySnapshotKey: task ? `${taskId}:${hashStableJson(task)}` : (existingIssue.relaySnapshotKey || ""),
     goalVersion: task?.goal_version ?? task?.goalVersion ?? existingIssue.goalVersion ?? null,
     exchangeEpoch: task?.exchange_epoch ?? task?.exchangeEpoch ?? existingIssue.exchangeEpoch ?? null,
+    currentMessageId: String(task?.current_message_id || task?.currentMessageId || existingIssue.currentMessageId || ""),
+    turnSequence: task?.turn_sequence ?? task?.turnSequence ?? existingIssue.turnSequence ?? null,
+    statusVersion: task?.status_version ?? task?.statusVersion ?? existingIssue.statusVersion ?? null,
+    fromAgentId: String(task?.from_agent_id || task?.fromAgentId || existingIssue.fromAgentId || ""),
+    toAgentId: String(task?.to_agent_id || task?.toAgentId || existingIssue.toAgentId || ""),
     localStatus,
     direction,
     counterpartAgentId,

@@ -37,6 +37,18 @@ try {
   assert(tools.tools.some((tool) => tool.name === "agentrelay_amend_task"), "agentrelay_amend_task not found");
   assert(tools.tools.some((tool) => tool.name === "agentrelay_resync_local_task"), "agentrelay_resync_local_task not found");
   assert(tools.tools.some((tool) => tool.name === "agentrelay_prepare_local_action"), "agentrelay_prepare_local_action not found");
+  for (const toolName of [
+    "agentrelay_create_task_v04",
+    "agentrelay_send_message_v04",
+    "agentrelay_complete_task_v04",
+    "agentrelay_fail_task_v04",
+    "agentrelay_create_followup_v04",
+    "agentrelay_get_task_lineage_v04",
+    "agentrelay_protocol_sync_v04"
+  ]) {
+    assert(tools.tools.some((tool) => tool.name === toolName), `${toolName} not found`);
+  }
+  assert(!tools.tools.some((tool) => /delete.*task|task.*delete/i.test(tool.name)), "Task delete tool must not exist");
 
   await callJson("agentrelay_health", {});
   await callJson("agentrelay_list_agents", {});

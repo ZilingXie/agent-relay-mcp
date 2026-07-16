@@ -11,8 +11,26 @@ import {
   maybeHandleProtocolNegotiation,
   resolveProtocolDir,
   syncCurrentProtocol,
-  syncProtocolBundle
+  syncProtocolBundle,
+  syncProtocolVersion
 } from "../scripts/protocol-sync.mjs";
+
+test("syncProtocolVersion fetches accepted non-default v0.4 explicitly", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-"));
+  const manifestUrl = "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/manifest";
+  const bundleUrl = "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle";
+  const result = await syncProtocolVersion({
+    version: "agent-collab-v0.4",
+    baseUrl: "https://relay.example/agentrelay/api",
+    cacheRoot: root,
+    fetchImpl: fakeFetch({
+      [manifestUrl]: { urls: { bundle: bundleUrl } },
+      [bundleUrl]: fakeBundle()
+    }),
+    log: null
+  });
+  assert.equal(result.version, "agent-collab-v0.4");
+});
 
 test("syncProtocolBundle writes manifest, bundle, schemas, examples, and docs", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-"));

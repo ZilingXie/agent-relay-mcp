@@ -7,10 +7,25 @@ import {
   buildRecoveryEvent,
   listenerStatusHealth,
   readJsonFrame,
+  reconcileAgentEvents,
   reconcilePendingTasks,
   unwrapPendingTasks,
   unwrapTask
 } from "../scripts/agentrelay-listener-core.mjs";
+
+test("reconcileAgentEvents persists real unacked events for lifecycle-safe recovery", async () => {
+  const persisted = [];
+  const result = await reconcileAgentEvents({
+    agentId: "frank-agent",
+    relayGet: async (path) => {
+      assert.equal(path, "/workers/frank-agent/events?include_acked=false&limit=500");
+      return { events: [{ event_id: "aevt_v04", event_type: "task.message_pending", task_id: "task_v04" }] };
+    },
+    persist: async (payload) => persisted.push(payload)
+  });
+  assert.equal(result.persisted, 1);
+  assert.equal(persisted[0].event.event_id, "aevt_v04");
+});
 
 test("buildPendingEventPayload persists only the notification summary", () => {
   const event = { type: "task.pending", eventId: "evt_summary", taskId: "task_summary", payloadRef: "/tasks/task_summary" };

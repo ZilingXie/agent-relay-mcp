@@ -15,6 +15,7 @@ export async function executePreparedTaskAction({
   confirmationRef = "",
   fetchTask,
   mutate,
+  validateCurrentTask,
   localAgentId = "",
   now = () => new Date().toISOString(),
   agentsMdPath
@@ -83,6 +84,13 @@ export async function executePreparedTaskAction({
       currentContextEnvelope: syncResult.contextEnvelope
     });
   }
+  if (typeof validateCurrentTask === "function") {
+    try {
+      validateCurrentTask(syncResult.task);
+    } catch (error) {
+      return rejection("INVALID_TASK_TRANSITION", taskId, clientActionId, { message: error.message });
+    }
+  }
 
   await updateLocalAction({
     stateRoot,
@@ -101,6 +109,36 @@ export async function executePreparedTaskAction({
   try {
     relayResponse = await mutate(action.idempotencyKey);
   } catch (error) {
+    if (error?.code === "stale_task_state") {
+      const currentTask = error.currentTask;
+      const syncResult = await resyncLocalTask({
+        stateRoot,
+        taskId,
+        fetchTask,
+        initialTask: currentTask && Array.isArray(currentTask.messages) ? currentTask : null,
+        localAgentId,
+        source: "stale_task_state",
+        maxAttempts: 1,
+        now,
+        agentsMdPath
+      });
+      await updateLocalAction({
+        stateRoot,
+        taskId,
+        clientActionId,
+        patch: {
+          status: "stale",
+          staleAt: now(),
+          changedFields: ["currentMessageId", "turnSequence", "statusVersion"],
+          relayConflictCode: error.code
+        },
+        at: now()
+      });
+      return rejection("STALE_TASK_STATE", taskId, clientActionId, {
+        currentTask,
+        contextSyncStatus: syncResult.status
+      });
+    }
     await updateLocalAction({
       stateRoot,
       taskId,
