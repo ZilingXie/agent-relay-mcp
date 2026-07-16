@@ -49,10 +49,10 @@ is intentionally deferred until after this Personal Agent Notifier plan lands.
 
 ## Protocol v0.4 Task Lifecycle Client Plan
 
-Status: MCP/Listener implementation complete on its task branch; live two-Agent
-end-to-end conformance pending. The server-owned contract is
-`ZilingXie/agentRelay/docs/task-lifecycle-v04.md`. Protocol v0.3 remains the
-default client behavior until the end-to-end run passes.
+Status: implemented and production-E2E verified. The server-owned contract is
+`ZilingXie/agentRelay/docs/task-lifecycle-v04.md`. Protocol v0.4 is available
+through explicit tools; v0.3 remains the default compatibility path until
+participant capability advertisement supports automatic selection.
 
 Implemented client behavior:
 
@@ -77,7 +77,19 @@ Implementation dependency and merge order:
    incomplete; callers use it only when both participants are known to run the
    v0.4 client. The existing create tool stays on v0.3.
 4. v0.4 is not enabled by default until a two-Agent create/ACK/response/ACK/
-   requester-complete/follow-up run passes.
+   requester-complete/follow-up run passes. This passed on 2026-07-16; changing
+   the default remains a separate capability-rollout decision.
+
+Verification record:
+
+- Full client suite: 161 checks plus MCP smoke passed.
+- Production root Task `task_255b7b51f9364697a6e599c45ea2d496`
+  reached `completed` after both durable Listener ACK boundaries.
+- Follow-up Task `task_842009bd133a4a2bbe48ebde9af8e0e4`
+  shared the root lineage, created a distinct local workspace, and was
+  explicitly terminated after verification.
+- Implementation PRs: `#37`; follow-up workspace `#38`; repeatable production
+  E2E runner `#39`; auth-username compatibility `#40`.
 
 Client responsibilities:
 
