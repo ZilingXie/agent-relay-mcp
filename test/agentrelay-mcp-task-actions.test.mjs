@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
-import { persistTaskWorkspace, prepareLocalAction, readLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
+import { persistTaskWorkspace, prepareLocalAction, readLocalAction, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
 function task(overrides = {}) {
   return {
@@ -218,4 +218,39 @@ test("Relay stale_task_state refreshes v0.4 workspace and invalidates the prepar
   assert.equal(result.contextSyncStatus, "context_ready");
   const stored = await readLocalAction({ stateRoot, taskId: "task_guard", clientActionId: "v04_stale" });
   assert.equal(stored.action.status, "stale");
+});
+
+test("follow-up action persists the returned child in its own workspace", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-followup-v04-"));
+  const source = task({
+    protocol_version: "agent-collab-v0.4", root_task_id: "task_guard", status: "completed",
+    current_message_id: "msg_done", turn_sequence: 1, status_version: 5,
+    from_agent_id: "frank-agent", to_agent_id: "zac-agent"
+  });
+  const payload = { requestText: "Continue", doneCriteria: "Follow-up done" };
+  await persistTaskWorkspace({ stateRoot, task: source, localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot, taskId: "task_guard", actionType: "create_followup_v04",
+    payload, clientActionId: "followup_1"
+  });
+  const child = {
+    ...source,
+    task_id: "task_child",
+    root_task_id: "task_guard",
+    status: "submitted",
+    current_message_id: "msg_child",
+    status_version: 1,
+    messages: [{ message_id: "msg_child", parts: [{ kind: "text", text: "Continue" }] }]
+  };
+  const result = await executePreparedTaskAction({
+    stateRoot, taskId: "task_guard", clientActionId: "followup_1",
+    actionType: "create_followup_v04", payload, resultTaskMode: "new_task",
+    fetchTask: async () => source,
+    mutate: async () => ({ task: child }),
+    localAgentId: "zac-agent"
+  });
+  assert.equal(result.resultTaskId, "task_child");
+  assert.equal(result.contextSyncStatus, "context_ready");
+  const childWorkspace = await readTaskWorkspace({ stateRoot, taskId: "task_child" });
+  assert.equal(childWorkspace.task.root_task_id, "task_guard");
 });

@@ -279,6 +279,7 @@ function registerTools(mcpServer) {
       args,
       actionType: "create_followup_v04",
       validateCurrentTask: (task) => validatePreparedActionV04("create_followup_v04", task, args),
+      resultTaskMode: "new_task",
       remotePayloadBuilder: (key) => buildFollowupPayloadV04(args, key),
       path: `/tasks/${encodeURIComponent(args.taskId)}/followups`
     }))
@@ -691,7 +692,7 @@ function registerTools(mcpServer) {
   );
 }
 
-async function executeMcpTaskAction({ args, actionType, remotePayload, remotePayloadBuilder, path, validateCurrentTask }) {
+async function executeMcpTaskAction({ args, actionType, remotePayload, remotePayloadBuilder, path, validateCurrentTask, resultTaskMode }) {
   const preparedPayload = preparedActionPayload(args);
   const mutate = (idempotencyKey) => relayPost(
     path,
@@ -710,6 +711,7 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
       fetchTask: (taskId) => relayGet(`/tasks/${encodeURIComponent(taskId)}`),
       mutate,
       validateCurrentTask,
+      resultTaskMode,
       localAgentId: agentId,
       agentsMdPath: localInboxAgentsMdPath
     });

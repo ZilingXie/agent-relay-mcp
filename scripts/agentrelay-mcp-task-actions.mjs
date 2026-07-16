@@ -16,6 +16,7 @@ export async function executePreparedTaskAction({
   fetchTask,
   mutate,
   validateCurrentTask,
+  resultTaskMode = "same_task",
   localAgentId = "",
   now = () => new Date().toISOString(),
   agentsMdPath
@@ -156,9 +157,11 @@ export async function executePreparedTaskAction({
   const completeReturnedTask = returnedTask && Array.isArray(returnedTask.messages) && Array.isArray(returnedTask.artifacts)
     ? returnedTask
     : null;
+  const returnedTaskId = String(completeReturnedTask?.task_id || completeReturnedTask?.taskId || "");
+  const postSyncTaskId = resultTaskMode === "new_task" && returnedTaskId ? returnedTaskId : taskId;
   const postSync = await resyncLocalTask({
     stateRoot,
-    taskId,
+    taskId: postSyncTaskId,
     fetchTask,
     initialTask: completeReturnedTask,
     localAgentId,
@@ -184,6 +187,7 @@ export async function executePreparedTaskAction({
     ok: true,
     status: "sent",
     taskId: String(taskId),
+    resultTaskId: postSyncTaskId,
     clientActionId,
     idempotencyKey: action.idempotencyKey,
     relayResponse,
