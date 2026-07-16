@@ -20,8 +20,16 @@ import {
 const baseUrl = String(process.env.AGENTRELAY_E2E_BASE_URL || "https://server.stellarix.space/agentrelay/api").replace(/\/+$/, "");
 const agentA = requiredEnv("AGENTRELAY_E2E_AGENT_A_ID", "zac-agent");
 const agentB = requiredEnv("AGENTRELAY_E2E_AGENT_B_ID", "frank-agent");
-const clientA = relayClient(agentA, requiredEnv("AGENTRELAY_E2E_AGENT_A_TOKEN"));
-const clientB = relayClient(agentB, requiredEnv("AGENTRELAY_E2E_AGENT_B_TOKEN"));
+const clientA = relayClient(
+  agentA,
+  requiredEnv("AGENTRELAY_E2E_AGENT_A_TOKEN"),
+  requiredEnv("AGENTRELAY_E2E_AGENT_A_USERNAME", agentA)
+);
+const clientB = relayClient(
+  agentB,
+  requiredEnv("AGENTRELAY_E2E_AGENT_B_TOKEN"),
+  requiredEnv("AGENTRELAY_E2E_AGENT_B_USERNAME", agentB)
+);
 const root = await mkdtemp(join(tmpdir(), "agentrelay-v04-e2e-"));
 const stateA = join(root, "agent-a-state");
 const stateB = join(root, "agent-b-state");
@@ -207,11 +215,11 @@ function defaultMutationPath(actionType, taskId) {
   return `/tasks/${encodeURIComponent(taskId)}/${suffix}`;
 }
 
-function relayClient(agentId, token) {
+function relayClient(agentId, token, username) {
   const headers = {
     Authorization: `Bearer ${token}`,
     "X-AgentRelay-Agent-Id": agentId,
-    "X-AgentRelay-Username": agentId,
+    "X-AgentRelay-Username": username,
     "Content-Type": "application/json"
   };
   async function request(method, path, payload) {
