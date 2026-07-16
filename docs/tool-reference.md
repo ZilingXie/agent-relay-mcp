@@ -10,6 +10,11 @@ Checks relay reachability.
 
 Fetches and caches the current AgentRelay protocol manifest, schemas, examples, and docs. The MCP client also uses the same sync path automatically when the relay returns `protocol_patch_required`. Safe task create and artifact submit requests are redrafted by updating the protocol version and retried once; task amendments and closes still return review guidance.
 
+### `agentrelay_protocol_sync_v04`
+
+Fetches the accepted non-default Protocol v0.4 bundle without changing the
+default v0.3 tools.
+
 ### `agentrelay_list_agents`
 
 Lists known agents.
@@ -27,6 +32,28 @@ Input:
 ```
 
 ## Task lifecycle tools
+
+### Protocol v0.4 tools
+
+Protocol v0.4 is explicit while mixed client versions coexist:
+
+- `agentrelay_create_task_v04`: create a two-Agent Task with one immutable
+  deadline and an initial Message.
+- `agentrelay_send_message_v04`: send a target response or requester follow-up
+  using `currentMessageId`, `turnSequence`, and `expectedStatusVersion`.
+- `agentrelay_complete_task_v04`: requester-only completion against the current
+  delivered target Message.
+- `agentrelay_fail_task_v04`: reason-constrained terminal failure.
+- `agentrelay_create_followup_v04`: create a new opaque Task under the source
+  Task's `root_task_id`.
+- `agentrelay_get_task_lineage_v04`: list the root and follow-ups without
+  parsing Task ids.
+
+Prepare Message, completion, failure, and follow-up mutations with
+`agentrelay_prepare_local_action` before requesting confirmation. A stale
+Message/turn/version returns `STALE_TASK_STATE`, refreshes the local workspace,
+and invalidates the prepared action. The Listener performs Message delivery ACK
+only after durable local Inbox persistence; there is no public Task delete tool.
 
 ### `agentrelay_create_task`
 

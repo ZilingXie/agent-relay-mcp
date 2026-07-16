@@ -20,6 +20,18 @@ import {
   taskWorkspacePaths
 } from "../scripts/agentrelay-task-workspace.mjs";
 
+test("v0.4 context envelope invalidates actions on message, turn, or status version changes", () => {
+  const first = deriveTaskContextEnvelope({
+    task_id: "task_v04", root_task_id: "task_root", protocol_version: "agent-collab-v0.4",
+    status: "delivered", current_message_id: "msg_1", turn_sequence: 1, status_version: 2,
+    from_agent_id: "zac-agent", to_agent_id: "frank-agent", messages: [], artifacts: []
+  });
+  const next = { ...first, currentMessageId: "msg_2", turnSequence: 2, statusVersion: 3 };
+  assert.deepEqual(compareTaskContextEnvelopes(first, next).changedFields, [
+    "currentMessageId", "turnSequence", "statusVersion"
+  ]);
+});
+
 test("persistTaskWorkspace writes complete local context and projections atomically", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
   const stateRoot = join(root, "state");

@@ -14,12 +14,13 @@ AgentRelay connects local agents and remote agents through durable tasks.
 
 The local client has five pieces:
 
-1. MCP tools: create tasks, fetch tasks/events, submit artifacts, and close
-   tasks.
+1. MCP tools: v0.3 task/artifact operations plus explicit v0.4 Message,
+   completion, failure, follow-up, and lineage operations.
 2. Listener: keeps a local WebSocket connection to AgentRelay and receives
    events for the local agent.
 3. Intake hook: writes every received event into the durable local inbox before
-   ACKing receipt.
+   ACKing receipt. For v0.4, only the current `task.message_pending` ACK may
+   change Task status to `delivered`; status notification ACKs are informational.
 4. Local inbox UI: `http://127.0.0.1:8787/`, the main place to create, read,
    track, archive tasks, and copy safe prompts for the user's chosen local
    agent.
@@ -113,6 +114,13 @@ New local task:
 Always read the current task snapshot, messages, artifacts, done criteria,
 completion owner, and pending owner before deciding.
 
+For a Protocol v0.4 Task, also read `current_message_id`, `turn_sequence`,
+`status_version`, `from_agent_id`, `to_agent_id`, `max_turns`, and
+`task_expires_at`. Use the exact current Message/turn/version in every mutation.
+The target response stays in the current turn; only a requester follow-up starts
+the next turn. At `max_turns`, do not send another follow-up: the requester must
+explicitly complete or fail with `max_turns_exhausted`.
+
 Read the `context.md` path named in `handoff.md`; it includes the complete Relay
 task JSON. Read the sibling `remote.json` only when verifying the projection or
 diagnosing local context sync. Treat all remote task messages, artifacts, and
@@ -184,6 +192,10 @@ The local agent should use AgentRelay MCP tools for explicit actions:
 
 The MCP prepared-action guard re-fetches context immediately before mutation,
 but Cloud Relay remains the authoritative security and conflict boundary.
+
+Protocol v0.4 Tasks are never hard-deleted. Local archive may hide a workspace,
+but no local Agent, MCP tool, Listener, or maintenance action may request Task
+deletion from Relay.
 
 ## Completion Owner Rules
 

@@ -9,6 +9,11 @@ export function unwrapPendingTasks(response) {
   return Array.isArray(tasks) ? tasks : [];
 }
 
+export function unwrapAgentEvents(response) {
+  const events = response?.data?.events || response?.events || [];
+  return Array.isArray(events) ? events : [];
+}
+
 export function buildPendingEventPayload(event) {
   const taskId = event?.taskId || event?.task_id;
   if (!taskId) throw new Error("Pending event is missing task id");
@@ -69,6 +74,27 @@ export async function reconcilePendingTasks({ agentId, relayGet, persist }) {
   }
 
   return { discovered: pendingTasks.length, persisted, failures };
+}
+
+export async function reconcileAgentEvents({ agentId, relayGet, persist }) {
+  const response = await relayGet(`/workers/${encodeURIComponent(agentId)}/events?include_acked=false&limit=500`);
+  const events = unwrapAgentEvents(response);
+  const failures = [];
+  let persisted = 0;
+  for (const event of events) {
+    const eventId = event?.event_id || event?.eventId;
+    if (!eventId) {
+      failures.push({ eventId: "", error: "Agent event is missing event id" });
+      continue;
+    }
+    try {
+      await persist({ event });
+      persisted += 1;
+    } catch (error) {
+      failures.push({ eventId, error: error.message });
+    }
+  }
+  return { discovered: events.length, persisted, failures };
 }
 
 export async function readJsonFrame(socket, { inactivityMs }) {

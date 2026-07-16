@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
-import { buildPendingEventPayload, readJsonFrame, reconcilePendingTasks } from "./agentrelay-listener-core.mjs";
+import { buildPendingEventPayload, readJsonFrame, reconcileAgentEvents, reconcilePendingTasks } from "./agentrelay-listener-core.mjs";
 import { recoverPendingTaskSyncs } from "./agentrelay-task-context-sync.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -112,6 +112,14 @@ async function tryReconcilePending() {
         if (hookCommand) await runHook(eventPath);
       }
     });
+    const eventRecovery = await reconcileAgentEvents({
+      agentId,
+      relayGet: (path) => relayRequest("GET", path),
+      persist: async (payload) => {
+        const eventPath = await writeInboxEvent(payload, { stableName: true });
+        if (hookCommand) await runHook(eventPath);
+      }
+    });
     const localRecovery = await recoverPendingTaskSyncs({
       stateRoot,
       fetchTask: (taskId) => relayRequest("GET", `/tasks/${encodeURIComponent(taskId)}`),
@@ -125,6 +133,9 @@ async function tryReconcilePending() {
       reconciliationDiscovered: result.discovered,
       reconciliationPersisted: result.persisted,
       reconciliationFailed: result.failures.length,
+      eventRecoveryDiscovered: eventRecovery.discovered,
+      eventRecoveryPersisted: eventRecovery.persisted,
+      eventRecoveryFailed: eventRecovery.failures.length,
       localSyncRecoveryDiscovered: localRecovery.discovered,
       localSyncRecoveryReady: localRecovery.ready,
       localSyncRecoveryFailed: localRecovery.failed,
@@ -152,7 +163,7 @@ async function updateListenerStatus(patch) {
 }
 
 async function writeInboxEvent(payload, { stableName = false } = {}) {
-  const safeEventId = String(payload.event?.eventId || crypto.randomUUID()).replace(/[^a-zA-Z0-9_.-]/g, "_");
+  const safeEventId = String(payload.event?.eventId || payload.event?.event_id || crypto.randomUUID()).replace(/[^a-zA-Z0-9_.-]/g, "_");
   const fileName = stableName
     ? `${safeEventId}.json`
     : `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeEventId}.json`;

@@ -1,6 +1,6 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 ## Audience And Sources
 
@@ -49,17 +49,33 @@ is intentionally deferred until after this Personal Agent Notifier plan lands.
 
 ## Protocol v0.4 Task Lifecycle Client Plan
 
-Status: design complete; implementation not started. The server-owned contract
-is `ZilingXie/agentRelay/docs/task-lifecycle-v04.md`. Protocol v0.3 remains the
-active client behavior until server support and end-to-end conformance pass.
+Status: MCP/Listener implementation complete on its task branch; live two-Agent
+end-to-end conformance pending. The server-owned contract is
+`ZilingXie/agentRelay/docs/task-lifecycle-v04.md`. Protocol v0.3 remains the
+default client behavior until the end-to-end run passes.
+
+Implemented client behavior:
+
+- Explicit v0.4 create, Message, completion, reason-constrained failure,
+  follow-up, lineage, and bundle-sync MCP tools; v0.3 tools remain unchanged.
+- Durable local event/Message recording before the Listener sends the only ACK
+  that may transition a Task to `delivered`.
+- Recovery from real unacked agent events after disconnect, including exact
+  Message/turn/version ACK metadata.
+- v0.4 workspace context envelopes with root, Message, turn, version, and
+  direction fields; stale Relay conflicts refresh context and invalidate old
+  prepared actions.
+- No Task delete tool or local action. Local archive remains a presentation-only
+  state and never deletes the Relay Task.
 
 Implementation dependency and merge order:
 
 1. The Relay server ships v0.4 schemas, storage, transition enforcement,
    protocol negotiation, and conformance support first.
 2. MCP/Listener adds v0.4 support without removing v0.3.
-3. New Task creation selects v0.4 only when Relay and both participants
-   advertise `agent-collab-v0.4`; otherwise it uses negotiated v0.3 behavior.
+3. v0.4 creation is an explicit tool choice while capability advertisement is
+   incomplete; callers use it only when both participants are known to run the
+   v0.4 client. The existing create tool stays on v0.3.
 4. v0.4 is not enabled by default until a two-Agent create/ACK/response/ACK/
    requester-complete/follow-up run passes.
 

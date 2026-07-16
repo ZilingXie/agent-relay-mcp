@@ -154,3 +154,68 @@ test("separate confirmations and legacy calls use deterministic idempotency iden
   assert.equal(key, legacyActionIdempotencyKey({ taskId: "task_guard", actionType: "close_task", payload: { reason: "done" } }));
   assert.notEqual(key, legacyActionIdempotencyKey({ taskId: "task_guard", actionType: "close_task", payload: { reason: "different" } }));
 });
+
+test("Relay stale_task_state refreshes v0.4 workspace and invalidates the prepared action", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-action-v04-"));
+  const initial = task({
+    protocol_version: "agent-collab-v0.4",
+    root_task_id: "task_guard",
+    status: "delivered",
+    current_message_id: "msg_1",
+    turn_sequence: 1,
+    status_version: 2,
+    from_agent_id: "frank-agent",
+    to_agent_id: "zac-agent"
+  });
+  const payload = {
+    actorAgentId: "zac-agent",
+    text: "follow-up",
+    currentMessageId: "msg_1",
+    turnSequence: 1,
+    expectedStatusVersion: 2
+  };
+  await persistTaskWorkspace({ stateRoot, task: initial, localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    actionType: "send_message_v04",
+    payload,
+    clientActionId: "v04_stale"
+  });
+  const current = {
+    ...initial,
+    status: "submitted",
+    current_message_id: "msg_2",
+    turn_sequence: 2,
+    status_version: 3,
+    from_agent_id: "zac-agent",
+    to_agent_id: "frank-agent",
+    messages: [...initial.messages, { message_id: "msg_2", parts: [{ kind: "text", text: "new" }] }]
+  };
+  let fetches = 0;
+  const result = await executePreparedTaskAction({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "v04_stale",
+    actionType: "send_message_v04",
+    payload,
+    fetchTask: async () => {
+      fetches += 1;
+      if (fetches > 1) throw new Error("full conflict snapshot should avoid a second GET");
+      return initial;
+    },
+    mutate: async () => {
+      throw Object.assign(new Error("stale"), {
+        code: "stale_task_state",
+        currentTask: current,
+        statusCode: 409
+      });
+    },
+    localAgentId: "zac-agent"
+  });
+  assert.equal(result.code, "STALE_TASK_STATE");
+  assert.equal(fetches, 1);
+  assert.equal(result.contextSyncStatus, "context_ready");
+  const stored = await readLocalAction({ stateRoot, taskId: "task_guard", clientActionId: "v04_stale" });
+  assert.equal(stored.action.status, "stale");
+});

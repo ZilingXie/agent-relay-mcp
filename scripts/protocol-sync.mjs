@@ -36,6 +36,22 @@ export async function syncCurrentProtocol({
   return syncProtocolBundle({ bundleUrl, cacheRoot, fetchImpl, log });
 }
 
+export async function syncProtocolVersion({
+  version,
+  baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
+  cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
+  fetchImpl = fetch,
+  log = console.error
+} = {}) {
+  const match = /^agent-collab-(v\d+\.\d+)$/.exec(String(version || ""));
+  if (!match) throw new Error("version must look like agent-collab-v0.4");
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const manifest = await fetchJson(fetchImpl, `${normalizedBaseUrl}/protocols/agent-collab/${match[1]}/manifest`);
+  const bundleUrl = manifest?.urls?.bundle;
+  if (!bundleUrl) throw new Error(`Protocol manifest did not include urls.bundle: ${JSON.stringify(manifest)}`);
+  return syncProtocolBundle({ bundleUrl, cacheRoot, fetchImpl, log });
+}
+
 export async function syncProtocolBundle({
   bundleUrl,
   cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
