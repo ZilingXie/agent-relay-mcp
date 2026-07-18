@@ -8,10 +8,32 @@ import {
   listenerStatusHealth,
   readJsonFrame,
   reconcileAgentEvents,
+  reconcileAgentEventsV05,
   reconcilePendingTasks,
   unwrapPendingTasks,
   unwrapTask
 } from "../scripts/agentrelay-listener-core.mjs";
+
+test("v0.5 recovery binds Listener epoch and drains one durable Event at a time", async () => {
+  const persisted = [];
+  let calls = 0;
+  const result = await reconcileAgentEventsV05({
+    agentId: "frank-agent",
+    listenerInstanceId: "listener-1",
+    readinessEpoch: 3,
+    relayGet: async (path) => {
+      assert.match(path, /listener_instance_id=listener-1/);
+      assert.match(path, /readiness_epoch=3/);
+      calls += 1;
+      return calls <= 2
+        ? { events: [{ event_id: `evt_${calls}`, task_id: `task_${calls}` }] }
+        : { events: [] };
+    },
+    persist: async (payload) => persisted.push(payload.event.event_id)
+  });
+  assert.deepEqual(persisted, ["evt_1", "evt_2"]);
+  assert.deepEqual(result, { discovered: 2, persisted: 2, failures: [] });
+});
 
 test("reconcileAgentEvents persists real unacked events for lifecycle-safe recovery", async () => {
   const persisted = [];

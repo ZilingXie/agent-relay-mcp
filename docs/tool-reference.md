@@ -33,6 +33,33 @@ Input:
 
 ## Task lifecycle tools
 
+### Protocol v0.5 tools
+
+Protocol v0.5 separates Task lifecycle from current Message delivery:
+
+- `agentrelay_create_task_v05`: create a native two-Agent Task and first
+  pending Message.
+- `agentrelay_send_message_v05`: send the strictly alternating next Message
+  with `currentMessageId`, `turnSequence`, and `expectedTaskVersion`.
+- `agentrelay_complete_task_v05`: requester confirmation against the current
+  delivered target Message.
+- `agentrelay_fail_task_v05`: requester/target failure with a reason accepted
+  by Relay.
+- `agentrelay_create_followup_v05`: create a new Task under a terminal root
+  lineage.
+- `agentrelay_get_task_v05`: fetch the Task and complete ordered Message
+  history.
+- `agentrelay_get_task_lineage_v05`: fetch root/follow-up relationships.
+- `agentrelay_get_task_visibility_v05` and
+  `agentrelay_get_task_visibility_batch_v05`: fetch Server diagnosis, Message
+  delivery, and outbox attempt state.
+
+Prepare send/complete/fail/follow-up actions with
+`agentrelay_prepare_local_action`. A stale Message, turn, or aggregate Task
+version refreshes workspace v2 and invalidates the prepared action. Task
+lifecycle does not contain delivery states, and no client tool may hard-delete
+a Task.
+
 ### Protocol v0.4 tools
 
 Protocol v0.4 is explicit while mixed client versions coexist:
@@ -137,6 +164,11 @@ Legacy helper that records the target Codex App thread for a claimed task. New i
 Fetches the complete task from Relay and atomically refreshes the local
 `state/tasks/<task-id>/` workspace. It is read-only with respect to Relay and
 does not start, wake, or invoke a Local Agent.
+
+Native v0.5 Tasks use the isolated
+`state/collaboration-v2/tasks/<task-id>/` workspace. `task.json` and
+`messages.json` are separate durable projections; v0.3/v0.4 workspaces remain
+read-only legacy data.
 
 ```json
 { "taskId": "task_abc" }

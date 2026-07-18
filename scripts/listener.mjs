@@ -9,8 +9,10 @@ import { homedir } from "node:os";
 import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
-import { buildPendingEventPayload, readJsonFrame, reconcileAgentEvents, reconcilePendingTasks } from "./agentrelay-listener-core.mjs";
+import { buildPendingEventPayload, readJsonFrame, reconcileAgentEvents, reconcileAgentEventsV05, reconcilePendingTasks } from "./agentrelay-listener-core.mjs";
 import { recoverPendingTaskSyncs } from "./agentrelay-task-context-sync.mjs";
+import { ensureTaskWorkspaceState } from "./agentrelay-task-workspace.mjs";
+import { PROTOCOL_V05 } from "./agentrelay-v05.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -22,6 +24,8 @@ const wsBaseUrl = normalizeBaseUrl(process.env.AGENTRELAY_WS_URL || deriveWsUrl(
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
 const token = process.env.AGENTRELAY_TOKEN || "";
+const protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.3";
+const isV05 = protocolVersion === PROTOCOL_V05;
 const inboxDir = resolveHome(process.env.AGENTRELAY_INBOX_DIR || resolve(repoRoot, ".agentrelay", "inbox"));
 const stateRoot = resolveHome(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));
 const hookCommand = process.env.AGENTRELAY_LISTENER_HOOK || "";
@@ -30,7 +34,10 @@ const inactivityMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_INACTIVITY_
 const reconcileIntervalMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_RECONCILE_MS || "300000", 10);
 const statusPath = resolveHome(process.env.AGENTRELAY_LISTENER_STATUS_PATH || resolve(inboxDir, "..", "listener-status.json"));
 const once = process.argv.includes("--once");
+const readinessPublishMs = Number.parseInt(process.env.AGENTRELAY_READINESS_PUBLISH_MS || "60000", 10);
 let lastReconciledAt = 0;
+let lastReadinessPublishedAt = 0;
+let listenerIdentity = null;
 const listenerStatus = {
   version: 1,
   agentId,
@@ -44,6 +51,7 @@ if (!agentId || !username || !token) {
 
 await mkdir(inboxDir, { recursive: true });
 await mkdir(dirname(statusPath), { recursive: true });
+if (isV05) await initializeV05Listener();
 await updateListenerStatus({ state: "connecting" });
 console.error(`[agentrelay-listener] inbox: ${inboxDir}`);
 console.error(`[agentrelay-listener] connecting as ${agentId} to ${wsBaseUrl}`);
@@ -54,6 +62,7 @@ while (true) {
   } catch (error) {
     console.error(`[agentrelay-listener] disconnected: ${error.message}`);
     await updateListenerStatus({ state: "disconnected", disconnectedAt: new Date().toISOString(), lastError: error.message });
+    if (isV05 && listenerIdentity) await publishV05Readiness(false).catch(() => {});
   }
   if (once) break;
   await delay(reconnectMs);
@@ -61,20 +70,28 @@ while (true) {
 
 async function listenOnce() {
   await updateListenerStatus({ state: "connecting", connectionStartedAt: new Date().toISOString() });
-  const socket = await connectWebSocket(`${wsBaseUrl}/workers/${encodeURIComponent(agentId)}/events/ws`, relayHeaders());
+  const wsQuery = isV05
+    ? `?${new URLSearchParams({ listener_instance_id: listenerIdentity.instanceId, readiness_epoch: String(listenerIdentity.epoch) })}`
+    : "";
+  const socket = await connectWebSocket(`${wsBaseUrl}/workers/${encodeURIComponent(agentId)}/events/ws${wsQuery}`, relayHeaders());
   try {
     while (true) {
       const frame = await readJsonFrame(socket, { inactivityMs });
       if (frame.type === "hello") {
+        if (isV05 && (frame.listenerInstanceId !== listenerIdentity.instanceId || Number(frame.readinessEpoch) !== listenerIdentity.epoch)) {
+          throw new Error("v0.5 hello does not match the registered Listener epoch");
+        }
         console.error(`[agentrelay-listener] hello ${frame.agentId}`);
-        await updateListenerStatus({ state: "connected", connectedAt: new Date().toISOString(), lastError: null });
         await tryReconcilePending();
+        if (isV05) await publishV05Readiness(true);
+        await updateListenerStatus({ state: "connected", connectedAt: new Date().toISOString(), lastError: null, ready: isV05 ? true : undefined });
         continue;
       }
       if (frame.type === "heartbeat") {
         console.error(`[agentrelay-listener] heartbeat ${frame.serverTime}`);
         await updateListenerStatus({ state: "connected", lastHeartbeatAt: new Date().toISOString(), serverTime: frame.serverTime });
         if (Date.now() - lastReconciledAt >= reconcileIntervalMs) await tryReconcilePending();
+        if (isV05 && Date.now() - lastReadinessPublishedAt >= readinessPublishMs) await publishV05Readiness(true);
         continue;
       }
       if (frame.type === "task.pending") {
@@ -96,7 +113,7 @@ async function listenOnce() {
 
 async function tryReconcilePending() {
   try {
-    const result = await reconcilePendingTasks({
+    const result = isV05 ? { discovered: 0, persisted: 0, failures: [] } : await reconcilePendingTasks({
       agentId,
       relayGet: (path) => relayRequest("GET", path),
       persist: async (payload) => {
@@ -112,14 +129,23 @@ async function tryReconcilePending() {
         if (hookCommand) await runHook(eventPath);
       }
     });
-    const eventRecovery = await reconcileAgentEvents({
-      agentId,
-      relayGet: (path) => relayRequest("GET", path),
-      persist: async (payload) => {
-        const eventPath = await writeInboxEvent(payload, { stableName: true });
-        if (hookCommand) await runHook(eventPath);
-      }
-    });
+    const persistRecoveredEvent = async (payload) => {
+      const eventPath = await writeInboxEvent(payload, { stableName: true });
+      if (hookCommand) await runHook(eventPath);
+    };
+    const eventRecovery = isV05
+      ? await reconcileAgentEventsV05({
+          agentId,
+          listenerInstanceId: listenerIdentity.instanceId,
+          readinessEpoch: listenerIdentity.epoch,
+          relayGet: (path) => relayRequest("GET", path),
+          persist: persistRecoveredEvent
+        })
+      : await reconcileAgentEvents({
+          agentId,
+          relayGet: (path) => relayRequest("GET", path),
+          persist: persistRecoveredEvent
+        });
     const localRecovery = await recoverPendingTaskSyncs({
       stateRoot,
       fetchTask: (taskId) => relayRequest("GET", `/tasks/${encodeURIComponent(taskId)}`),
@@ -174,7 +200,17 @@ async function writeInboxEvent(payload, { stableName = false } = {}) {
 
 async function runHook(eventPath) {
   await new Promise((resolveHook) => {
-    const child = spawn(hookCommand, [eventPath], { shell: true, stdio: "inherit", env: process.env });
+    const child = spawn(hookCommand, [eventPath], {
+      shell: true,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        ...(listenerIdentity ? {
+          AGENTRELAY_LISTENER_INSTANCE_ID: listenerIdentity.instanceId,
+          AGENTRELAY_READINESS_EPOCH: String(listenerIdentity.epoch)
+        } : {})
+      }
+    });
     child.on("close", (code) => {
       if (code !== 0) console.error(`[agentrelay-listener] hook exited with ${code}`);
       resolveHook();
@@ -184,6 +220,43 @@ async function runHook(eventPath) {
       resolveHook();
     });
   });
+}
+
+async function initializeV05Listener() {
+  if (!hookCommand || process.env.AGENTRELAY_ACK_ON_INBOX_RECEIVED !== "1") {
+    throw new Error("Protocol v0.5 readiness requires the durable inbox hook and AGENTRELAY_ACK_ON_INBOX_RECEIVED=1");
+  }
+  const manifest = await relayRequest("GET", "/protocols/agent-collab/v0.5/manifest");
+  if (manifest.version !== PROTOCOL_V05) throw new Error("Relay did not return the Protocol v0.5 manifest");
+  await ensureTaskWorkspaceState({ stateRoot, workspaceVersion: 2 });
+  const instanceId = `listener-${agentId}-${crypto.randomUUID()}`;
+  const registered = await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness/register`, {
+    listener_instance_id: instanceId,
+    client_version: "0.5.0",
+    workspace_version: "2",
+    transport: "websocket"
+  });
+  const readiness = registered.readiness || registered.data?.readiness;
+  if (!readiness?.readiness_epoch) throw new Error("Relay readiness registration is missing readiness_epoch");
+  listenerIdentity = { instanceId, epoch: Number(readiness.readiness_epoch) };
+  await publishV05Readiness(false);
+  await updateListenerStatus({
+    protocolVersion,
+    listenerInstanceId: listenerIdentity.instanceId,
+    readinessEpoch: listenerIdentity.epoch,
+    workspaceVersion: 2,
+    ready: false
+  });
+}
+
+async function publishV05Readiness(ready) {
+  await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness`, {
+    listener_instance_id: listenerIdentity.instanceId,
+    readiness_epoch: listenerIdentity.epoch,
+    ready
+  });
+  lastReadinessPublishedAt = Date.now();
+  await updateListenerStatus({ ready, readinessPublishedAt: new Date().toISOString() });
 }
 
 async function relayRequest(method, path, payload) {

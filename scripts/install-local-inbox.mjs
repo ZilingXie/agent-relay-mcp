@@ -34,6 +34,7 @@ export function buildLocalInboxEnvBlock({
   localAgentRunner = "codex",
   agentRole = "personal_agent",
   executionMode = "notify_only",
+  protocolVersion = "agent-collab-v0.5",
   processOnReceive = false,
   executeOnReceive = false,
   host = "127.0.0.1",
@@ -43,10 +44,12 @@ export function buildLocalInboxEnvBlock({
     "# BEGIN AgentRelay Local Inbox managed block",
     `AGENTRELAY_AGENT_ROLE=${envValue(agentRole)}`,
     `AGENTRELAY_EXECUTION_MODE=${envValue(executionMode)}`,
+    `AGENTRELAY_PROTOCOL_VERSION=${envValue(protocolVersion)}`,
     `AGENTRELAY_INBOX_DIR=${envValue(inboxDir)}`,
     `AGENTRELAY_STATE_DIR=${envValue(stateDir)}`,
     `AGENTRELAY_LISTENER_HOOK=${envValue(hookCommand)}`,
     "AGENTRELAY_ACK_ON_INBOX_RECEIVED=1",
+    "AGENTRELAY_READINESS_PUBLISH_MS=60000",
     `AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=${processOnReceive ? "1" : "0"}`,
     `AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=${executeOnReceive ? "1" : "0"}`,
     `AGENTRELAY_LOCAL_AGENT_RUNNER=${envValue(localAgentRunner)}`,
@@ -82,6 +85,7 @@ export async function initializeLocalInboxState({ stateDir }) {
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
   await mkdir(resolve(stateDir, "logs"), { recursive: true, mode: 0o700 });
   await mkdir(resolve(stateDir, "tasks"), { recursive: true, mode: 0o700 });
+  await mkdir(resolve(stateDir, "collaboration-v2", "tasks"), { recursive: true, mode: 0o700 });
   await mkdir(resolve(stateDir, ".locks"), { recursive: true, mode: 0o700 });
   await writeJsonIfMissing(resolve(stateDir, "issues.json"), { version: 1, issues: {}, events: {} });
   await writeJsonIfMissing(resolve(stateDir, "task-index.json"), { version: 1, tasks: {} });

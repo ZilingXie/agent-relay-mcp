@@ -19,6 +19,15 @@ import {
   buildMessagePayloadV04,
   validatePreparedActionV04
 } from "../scripts/agentrelay-v04.mjs";
+import {
+  buildCompletePayloadV05,
+  buildCreatePayloadV05,
+  buildFailPayloadV05,
+  buildFollowupPayloadV05,
+  buildMessagePayloadV05,
+  validateFollowupSourceV05,
+  validatePreparedActionV05
+} from "../scripts/agentrelay-v05.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -296,6 +305,171 @@ function registerTools(mcpServer) {
   );
 
   mcpServer.registerTool(
+    "agentrelay_protocol_sync_v05",
+    {
+      title: "Sync AgentRelay Protocol v0.5 bundle",
+      description: "Fetch and cache the Protocol v0.5 bundle used by the maintenance-window client.",
+      inputSchema: {}
+    },
+    async () => jsonResult(await syncProtocolVersion({ version: "agent-collab-v0.5", baseUrl }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_create_task_v05",
+    {
+      title: "Create Protocol v0.5 Task",
+      description: "Create a native two-Agent v0.5 Task and its first pending Message.",
+      inputSchema: {
+        requesterAgentId: z.string().min(1),
+        targetAgentId: z.string().min(1),
+        requestText: z.string().min(1),
+        doneCriteria: z.string().min(1),
+        maxTurns: z.number().int().positive().optional(),
+        taskExpiresAt: z.number().int().positive().optional(),
+        clientRequestId: z.string().min(1).optional()
+      }
+    },
+    async (args) => jsonResult(await relayPost(
+      "/tasks",
+      buildCreatePayloadV05(args, `mcp-v05-create-${args.clientRequestId || randomUUID()}`)
+    ))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_send_message_v05",
+    {
+      title: "Send Protocol v0.5 Message",
+      description: "Send the strictly alternating next Message from the exact current Task version.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        text: z.string().min(1),
+        ...v05MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "send_message_v05",
+      validateCurrentTask: (task) => validatePreparedActionV05("send_message_v05", task, args),
+      remotePayloadBuilder: (key) => buildMessagePayloadV05(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/messages`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_complete_task_v05",
+    {
+      title: "Complete Protocol v0.5 Task",
+      description: "Record requester confirmation against the current delivered target Message.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        completedAgainstMessageId: z.string().min(1),
+        ...v05MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "complete_task_v05",
+      validateCurrentTask: (task) => validatePreparedActionV05("complete_task_v05", task, args),
+      remotePayloadBuilder: (key) => buildCompletePayloadV05(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/complete`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_fail_task_v05",
+    {
+      title: "Fail Protocol v0.5 Task",
+      description: "End a v0.5 Task with a Relay-authorized failure reason.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        reason: z.enum(["agent_reported_failure", "max_turns_exhausted"]),
+        ...v05MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "fail_task_v05",
+      validateCurrentTask: (task) => validatePreparedActionV05("fail_task_v05", task, args),
+      remotePayloadBuilder: (key) => buildFailPayloadV05(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/fail`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_create_followup_v05",
+    {
+      title: "Create Protocol v0.5 follow-up",
+      description: "Create a new Task under a terminal v0.5 root lineage.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        requestText: z.string().min(1),
+        doneCriteria: z.string().min(1),
+        maxTurns: z.number().int().positive().optional(),
+        taskExpiresAt: z.number().int().positive().optional(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "create_followup_v05",
+      validateCurrentTask: validateFollowupSourceV05,
+      resultTaskMode: "new_task",
+      remotePayloadBuilder: (key) => buildFollowupPayloadV05(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/followups`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_v05",
+    {
+      title: "Get Protocol v0.5 Task",
+      description: "Fetch the authoritative Task and complete ordered Message history.",
+      inputSchema: { taskId: z.string().min(1) }
+    },
+    async ({ taskId }) => jsonResult(await relayGet(`/tasks/${encodeURIComponent(taskId)}`))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_lineage_v05",
+    {
+      title: "Get Protocol v0.5 Task lineage",
+      description: "List a v0.5 root Task and all follow-ups by root_task_id.",
+      inputSchema: { taskId: z.string().min(1) }
+    },
+    async ({ taskId }) => jsonResult(await relayGet(`/tasks/${encodeURIComponent(taskId)}/lineage`))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_visibility_v05",
+    {
+      title: "Get Protocol v0.5 Task visibility",
+      description: "Fetch Server-computed Task, Message delivery, outbox, and diagnosis state.",
+      inputSchema: { taskId: z.string().min(1) }
+    },
+    async ({ taskId }) => jsonResult(await relayGet(`/tasks/${encodeURIComponent(taskId)}/visibility`))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_visibility_batch_v05",
+    {
+      title: "Get Protocol v0.5 Task visibility batch",
+      description: "Fetch Server-computed diagnosis for a de-duplicated Task list.",
+      inputSchema: { taskIds: z.array(z.string().min(1)).min(1).max(100) }
+    },
+    async ({ taskIds }) => jsonResult(await relayPost("/task-visibility/batch", { task_ids: [...new Set(taskIds)] }))
+  );
+
+  mcpServer.registerTool(
     "agentrelay_get_task",
     {
       title: "Get AgentRelay task",
@@ -336,7 +510,8 @@ function registerTools(mcpServer) {
         taskId: z.string().min(1),
         actionType: z.enum([
           "submit_artifact", "request_revision", "amend_task", "close_task",
-          "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04"
+          "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04",
+          "send_message_v05", "complete_task_v05", "fail_task_v05", "create_followup_v05"
         ]),
         payloadJson: z.string().min(2).describe("Exact JSON object of mutation arguments excluding taskId, clientActionId, and confirmationRef"),
         clientActionId: z.string().min(1).optional(),
@@ -729,6 +904,14 @@ function v04MutationContextSchema() {
     currentMessageId: z.string().min(1),
     turnSequence: z.number().int().positive(),
     expectedStatusVersion: z.number().int().positive()
+  };
+}
+
+function v05MutationContextSchema() {
+  return {
+    currentMessageId: z.string().min(1),
+    turnSequence: z.number().int().positive(),
+    expectedTaskVersion: z.number().int().positive()
   };
 }
 

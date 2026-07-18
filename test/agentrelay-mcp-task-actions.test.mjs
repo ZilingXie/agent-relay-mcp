@@ -254,3 +254,45 @@ test("follow-up action persists the returned child in its own workspace", async 
   const childWorkspace = await readTaskWorkspace({ stateRoot, taskId: "task_child" });
   assert.equal(childWorkspace.task.root_task_id, "task_guard");
 });
+
+test("Relay stale_task_version refreshes v0.5 workspace and invalidates the prepared action", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-action-v05-"));
+  const initial = {
+    task_id: "task_v05_guard", root_task_id: "task_v05_guard", protocol_version: "agent-collab-v0.5",
+    requester_agent_id: "zac-agent", target_agent_id: "frank-agent", status: "open",
+    current_message_id: "msg_1", turn_sequence: 1, task_version: 2,
+    from_agent_id: "frank-agent", to_agent_id: "zac-agent", max_turns: 3,
+    messages: [{ message_id: "msg_1", delivery_status: "delivered", parts: [{ kind: "text", text: "pong" }] }],
+    artifacts: []
+  };
+  const payload = {
+    actorAgentId: "zac-agent", text: "again", currentMessageId: "msg_1",
+    turnSequence: 1, expectedTaskVersion: 2
+  };
+  await persistTaskWorkspace({ stateRoot, task: initial, localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot, taskId: "task_v05_guard", actionType: "send_message_v05",
+    payload, clientActionId: "v05_stale"
+  });
+  const current = {
+    ...initial, current_message_id: "msg_2", task_version: 3,
+    messages: [...initial.messages, { message_id: "msg_2", delivery_status: "pending", parts: [] }]
+  };
+  const result = await executePreparedTaskAction({
+    stateRoot, taskId: "task_v05_guard", clientActionId: "v05_stale",
+    actionType: "send_message_v05", payload,
+    fetchTask: async () => initial,
+    mutate: async () => {
+      throw Object.assign(new Error("stale"), {
+        code: "stale_task_version", currentTask: current, statusCode: 409
+      });
+    },
+    localAgentId: "zac-agent"
+  });
+  assert.equal(result.code, "STALE_TASK_STATE");
+  const stored = await readLocalAction({
+    stateRoot, taskId: "task_v05_guard", clientActionId: "v05_stale"
+  });
+  assert.equal(stored.action.status, "stale");
+  assert.deepEqual(stored.action.changedFields, ["currentMessageId", "turnSequence", "taskVersion"]);
+});

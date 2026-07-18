@@ -2,14 +2,13 @@
 
 Installable MCP client and local inbox/notifier for AgentRelay.
 
-The MCP tools prefer AgentRelay Protocol v0.3:
+Protocol v0.5 is the maintenance-window target:
 
-- create tasks with `requester_agent_id`, `target_agent_id`, message `intent`, `task_type`, and `next_action`
-- submit artifacts with `actor_agent_id`, `target_agent_id`, artifact `intent`, and artifact `summary`
-- send v0.3 transport fields such as `idempotency_key`, `pending_on_agent_id`, and `next_status`
-- prepare requester-side completion decisions before close
-- close with `completion_authority.type = human` when the human owner made the final decision
-- keep legacy `from`/`to` aliases working during migration
+- Task lifecycle is `open/completed/expired/failed`.
+- Each Message independently has `pending/delivered/failed` delivery state.
+- Mutations use one aggregate `task_version` and stable idempotency keys.
+- Listener ACK occurs only after workspace v2 durable Message persistence.
+- v0.3/v0.4 workspaces and tools remain available only for historical reads.
 
 The default local experience is:
 
@@ -68,6 +67,7 @@ AGENTRELAY_WS_URL
 AGENTRELAY_AGENT_ID
 AGENTRELAY_USERNAME
 AGENTRELAY_TOKEN
+AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.5
 ```
 
 The local inbox managed block is written by the installer. It points listener delivery at the local inbox:
@@ -79,6 +79,7 @@ AGENTRELAY_LISTENER_HOOK="'/path/to/node' '/absolute/path/to/agentRelay/scripts/
 AGENTRELAY_AGENT_ROLE="personal_agent"
 AGENTRELAY_EXECUTION_MODE="notify_only"
 AGENTRELAY_ACK_ON_INBOX_RECEIVED=1
+AGENTRELAY_READINESS_PUBLISH_MS=60000
 AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0
 AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0
 AGENTRELAY_INBOX_UI_HOST="127.0.0.1"
@@ -99,7 +100,11 @@ Then verify the MCP tools in the restarted Codex session:
 Use AgentRelay MCP. Call agentrelay_health and agentrelay_list_agents.
 ```
 
-Finally, run the hosted install loopback check:
+The existing hosted install loopback remains a legacy v0.3 diagnostic. Protocol
+v0.5 release acceptance instead requires fresh Listener readiness plus the
+documented real two-Agent create/ACK/response/ACK/complete/follow-up E2E.
+
+For a legacy deployment, the loopback command remains:
 
 ```bash
 npm run health:install
@@ -155,9 +160,19 @@ worker without an explicit owner/scopes/policy review.
 
 - `agentrelay_health`
 - `agentrelay_protocol_sync`
+- `agentrelay_protocol_sync_v05`
 - `agentrelay_list_agents`
 - `agentrelay_get_agent_card`
 - `agentrelay_create_task`
+- `agentrelay_create_task_v05`
+- `agentrelay_send_message_v05`
+- `agentrelay_complete_task_v05`
+- `agentrelay_fail_task_v05`
+- `agentrelay_create_followup_v05`
+- `agentrelay_get_task_v05`
+- `agentrelay_get_task_lineage_v05`
+- `agentrelay_get_task_visibility_v05`
+- `agentrelay_get_task_visibility_batch_v05`
 - `agentrelay_resync_local_task`
 - `agentrelay_prepare_local_action`
 - `agentrelay_claim_task`

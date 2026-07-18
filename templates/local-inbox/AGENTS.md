@@ -14,13 +14,14 @@ AgentRelay connects local agents and remote agents through durable tasks.
 
 The local client has five pieces:
 
-1. MCP tools: v0.3 task/artifact operations plus explicit v0.4 Message,
-   completion, failure, follow-up, and lineage operations.
+1. MCP tools: native v0.5 Task, Message, completion, failure, follow-up,
+   lineage, and visibility operations. v0.3/v0.4 tools are legacy-only.
 2. Listener: keeps a local WebSocket connection to AgentRelay and receives
    events for the local agent.
 3. Intake hook: writes every received event into the durable local inbox before
-   ACKing receipt. For v0.4, only the current `task.message_pending` ACK may
-   change Task status to `delivered`; status notification ACKs are informational.
+   ACKing receipt. For v0.5, a transitionable `message.pending` Event is ACKed
+   only after the complete Message is persisted and verified in workspace v2.
+   Task/delivery/attempt notification ACKs are informational and non-recursive.
 4. Local inbox UI: `http://127.0.0.1:8787/`, the main place to create, read,
    track, archive tasks, and copy safe prompts for the user's chosen local
    agent.
@@ -30,7 +31,10 @@ The local client has five pieces:
 Relay `GET /tasks/:id` is the authoritative task context. The durable local
 working state is:
 
-- `state/tasks/<task-id>/remote.json`: the last complete Relay task snapshot.
+- `state/collaboration-v2/tasks/<task-id>/task.json`: native v0.5 Task lifecycle.
+- `state/collaboration-v2/tasks/<task-id>/messages.json`: ordered v0.5 Messages
+  and their independent delivery state.
+- `state/tasks/<task-id>/remote.json`: read-only legacy v0.3/v0.4 snapshot.
 - `state/tasks/<task-id>/context.md`: a complete readable projection.
 - `state/tasks/<task-id>/handoff.md`: the trusted local handoff prompt.
 - `state/tasks/<task-id>/sync.json` and `workflow.json`: sync and local UI state.
@@ -83,9 +87,11 @@ Incoming remote task:
 
 1. Listener receives the Relay event.
 2. Intake durably writes the event summary.
-3. Intake ACKs the event, then fetches the complete task and atomically updates
-   the local task workspace. A fetch failure is retried once and surfaced in
-   the UI; it never starts a Local Agent.
+3. For v0.5 `message.pending`, Intake fetches the complete Task, locks and
+   atomically writes workspace v2, reads it back, and only then sends the
+   versioned Message ACK. Retryable fetch, lock, timeout, and uncertain I/O
+   errors send neither ACK nor NACK. Only a positively non-retryable local
+   persistence failure sends `listener_persistence_failed`.
 4. UI shows the task, current pending owner, context-sync state, and a safe
    copyable prompt for the user's local agent.
 5. The user hands the prompt to Codex App, Codex CLI, Slack, WeChat, or another
@@ -120,6 +126,14 @@ For a Protocol v0.4 Task, also read `current_message_id`, `turn_sequence`,
 The target response stays in the current turn; only a requester follow-up starts
 the next turn. At `max_turns`, do not send another follow-up: the requester must
 explicitly complete or fail with `max_turns_exhausted`.
+
+For a Protocol v0.5 Task, read `task.status` separately from the current
+Message `delivery_status`. Every mutation uses `current_message_id`,
+`turn_sequence`, and the single aggregate `task_version`; there is no delivery
+version. Only `to_agent_id` may send the next Message, the same Agent may not
+send consecutive Messages, and requester completion must reference the current
+delivered target Message. At `max_turns`, the requester explicitly completes or
+fails the Task.
 
 Read the `context.md` path named in `handoff.md`; it includes the complete Relay
 task JSON. Read the sibling `remote.json` only when verifying the projection or
@@ -176,24 +190,21 @@ or automatic worker.
 If an AgentRelay MCP action is rejected by the server, report the server error
 and stop instead of retrying with guessed intent.
 
-The local agent should use AgentRelay MCP tools for explicit actions:
+The local agent should use AgentRelay MCP tools for explicit v0.5 actions:
 
 - `agentrelay_prepare_local_action`: bind an exact proposal to the current
   local context before requesting confirmation; it does not mutate Relay.
 - `agentrelay_resync_local_task`: explicitly refresh local context with a
   read-only Relay GET.
-- `submit_artifact`: send a reply/artifact to another agent.
-- `request_revision`: ask a remote agent to continue or fix work within the
-  existing task scope.
-- `amend_task`: record Zac-authorized task goal/done criteria changes and hand
-  the amended goal back to the target agent.
-- `close_task`: close the task, only when the local agent is the completion
-  owner.
+- `agentrelay_send_message_v05`: send the confirmed next Message.
+- `agentrelay_complete_task_v05`: requester-only completion confirmation.
+- `agentrelay_fail_task_v05`: explicit supported terminal failure.
+- `agentrelay_create_followup_v05`: new Task under a terminal root lineage.
 
 The MCP prepared-action guard re-fetches context immediately before mutation,
 but Cloud Relay remains the authoritative security and conflict boundary.
 
-Protocol v0.4 Tasks are never hard-deleted. Local archive may hide a workspace,
+Protocol v0.5 Tasks are never hard-deleted. Local archive may hide a workspace,
 but no local Agent, MCP tool, Listener, or maintenance action may request Task
 deletion from Relay.
 

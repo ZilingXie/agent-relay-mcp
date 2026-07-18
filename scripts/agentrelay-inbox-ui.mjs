@@ -10,7 +10,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
-import { resyncLocalTask } from "./agentrelay-task-context-sync.mjs";
+import { resyncLocalTask, unwrapTask } from "./agentrelay-task-context-sync.mjs";
+import { buildCreatePayloadV05, PROTOCOL_V05 } from "./agentrelay-v05.mjs";
 import {
   archiveTaskWorkspace,
   backfillTaskWorkspaces,
@@ -26,7 +27,7 @@ const DEFAULT_PORT = Number.parseInt(process.env.AGENTRELAY_INBOX_UI_PORT || "87
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const DEFAULT_RESPONSES_BASE_URL = "https://sub2api.la3.agoralab.co";
 const DEFAULT_CODEX_CLI = "/Applications/Codex.app/Contents/Resources/codex";
-const PROTOCOL_VERSION = "agent-collab-v0.3";
+const LEGACY_PROTOCOL_VERSION = "agent-collab-v0.3";
 const TASK_DRAFT_SCHEMA_PATH = resolve(PROJECT_ROOT, "schemas/task-draft.schema.json");
 const LOCAL_INBOX_AGENTS_TEMPLATE_PATH = resolve(PROJECT_ROOT, "templates/local-inbox/AGENTS.md");
 const TASK_DRAFT_SUBJECT_MAX_LENGTH = 32;
@@ -270,13 +271,17 @@ export function createInboxUiServer({
       }
 
       if (url.pathname === "/api/issues") {
-        sendJson(res, 200, await loadInboxSnapshot({ stateRoot, localAgentId, now }));
+        const snapshot = await loadInboxSnapshot({ stateRoot, localAgentId, now });
+        sendJson(res, 200, await enrichSnapshotVisibility(snapshot, relayClient));
         return;
       }
 
       const detailMatch = url.pathname.match(/^\/api\/issues\/([^/]+)$/);
       if (detailMatch) {
-        const snapshot = await loadInboxSnapshot({ stateRoot, localAgentId, now });
+        const snapshot = await enrichSnapshotVisibility(
+          await loadInboxSnapshot({ stateRoot, localAgentId, now }),
+          relayClient
+        );
         const taskId = decodeURIComponent(detailMatch[1]);
         const issue = snapshot.issues.find((candidate) => candidate.taskId === taskId);
         if (!issue) {
@@ -484,6 +489,15 @@ function normalizeIssue(issue, eventsById, { localAgentId = process.env.AGENTREL
     pendingOnAgentId: issue.pendingOnAgentId || "",
     pendingOnHumanId: issue.pendingOnHumanId || null,
     relayStatus: issue.relayStatus || "",
+    protocolVersion: issue.protocolVersion || "",
+    taskVersion: issue.taskVersion ?? null,
+    messageDeliveryStatus: issue.currentMessageDeliveryStatus || issue.messageDeliveryStatus || "",
+    diagnosis: issue.diagnosis || "",
+    outboxStatus: issue.outboxStatus || "",
+    deliveryAttempts: Number(issue.deliveryAttempts || 0),
+    maxDeliveryAttempts: Number(issue.maxDeliveryAttempts || 0),
+    nextRetryAt: issue.nextRetryAt ?? null,
+    deliveryLastError: issue.deliveryLastError || "",
     localStatus: issue.localStatus || "",
     goalVersion: issue.goalVersion ?? null,
     exchangeEpoch: issue.exchangeEpoch ?? null,
@@ -541,6 +555,36 @@ function normalizeIssue(issue, eventsById, { localAgentId = process.env.AGENTREL
     createdAt: issue.createdAt || "",
     updatedAt: issue.updatedAt || issue.createdAt || ""
   };
+}
+
+async function enrichSnapshotVisibility(snapshot, relayClient) {
+  const taskIds = snapshot.issues
+    .filter((issue) => issue.protocolVersion === "agent-collab-v0.5")
+    .map((issue) => issue.taskId);
+  if (!taskIds.length || typeof relayClient.getTaskVisibilityBatch !== "function") return snapshot;
+  try {
+    const response = await relayClient.getTaskVisibilityBatch(taskIds);
+    const byTaskId = new Map((response.items || response.data?.items || []).map((item) => [item.task?.task_id, item]));
+    const issues = snapshot.issues.map((issue) => {
+      const visibility = byTaskId.get(issue.taskId);
+      if (!visibility) return issue;
+      return {
+        ...issue,
+        relayStatus: visibility.task.status,
+        taskVersion: visibility.task.task_version,
+        messageDeliveryStatus: visibility.current_message.delivery_status,
+        diagnosis: visibility.diagnosis,
+        outboxStatus: visibility.outbox.outbox_status,
+        deliveryAttempts: visibility.outbox.outbox_attempts,
+        maxDeliveryAttempts: visibility.current_message.max_delivery_attempts,
+        nextRetryAt: visibility.outbox.next_retry_at,
+        deliveryLastError: visibility.outbox.last_error || ""
+      };
+    });
+    return { ...snapshot, counts: countIssues(issues), issues, visibilityErrors: response.errors || [] };
+  } catch (error) {
+    return { ...snapshot, visibilityError: error.message };
+  }
 }
 
 function normalizeHumanReplies(humanReplies) {
@@ -1408,8 +1452,18 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
   const requesterThreadId = draft.requesterThreadId || `agentrelay-local-ui-${draftId}`;
   const requesterAgentId = draft.from || localAgentId;
   const targetAgentId = draft.to;
-  const payload = {
-    protocol_version: PROTOCOL_VERSION,
+  const protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || LEGACY_PROTOCOL_VERSION;
+  const payload = protocolVersion === PROTOCOL_V05
+    ? buildCreatePayloadV05({
+        requesterAgentId,
+        targetAgentId,
+        requestText: draft.requestText,
+        doneCriteria: draft.doneCriteria,
+        maxTurns: draft.maxTurns,
+        taskExpiresAt: draft.taskExpiresAt
+      }, `local-ui-create-${draftId}`)
+    : {
+    protocol_version: LEGACY_PROTOCOL_VERSION,
     idempotency_key: `local-ui-create-${draftId}`,
     task_type: "agent.task",
     requester_agent_id: requesterAgentId,
@@ -1457,14 +1511,17 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
     localAgentId,
     now: () => updatedAt
   });
+  const completeTask = protocolVersion === PROTOCOL_V05
+    ? unwrapTask(response)
+    : {
+        ...task,
+        task_id: task.task_id || task.taskId || task.id || taskId,
+        messages: Array.isArray(task.messages) ? task.messages : [payload.message],
+        artifacts: Array.isArray(task.artifacts) ? task.artifacts : []
+      };
   await persistTaskWorkspace({
     stateRoot,
-    task: {
-      ...task,
-      task_id: task.task_id || task.taskId || task.id || taskId,
-      messages: Array.isArray(task.messages) ? task.messages : [payload.message],
-      artifacts: Array.isArray(task.artifacts) ? task.artifacts : []
-    },
+    task: completeTask,
     localAgentId,
     source: "ui_create",
     syncedAt: updatedAt,
@@ -1909,6 +1966,10 @@ class AgentRelayUiHttpClient {
     return this.request("GET", `/tasks/${encodeURIComponent(taskId)}`);
   }
 
+  async getTaskVisibilityBatch(taskIds) {
+    return this.request("POST", "/task-visibility/batch", { task_ids: taskIds });
+  }
+
   async createTask(payload) {
     return this.request("POST", "/tasks", payload);
   }
@@ -1993,6 +2054,21 @@ const INDEX_HTML = String.raw`<!doctype html>
       </div>
       <div class="list-tools">
         <input id="search" type="search" placeholder="Search tasks or agents" autocomplete="off" />
+        <div class="state-filters">
+          <select id="task-state-filter" aria-label="Task state">
+            <option value="all">All task states</option>
+            <option value="open">Open</option>
+            <option value="completed">Completed</option>
+            <option value="expired">Expired</option>
+            <option value="failed">Failed</option>
+          </select>
+          <select id="delivery-state-filter" aria-label="Message delivery state">
+            <option value="all">All delivery states</option>
+            <option value="pending">Pending</option>
+            <option value="delivered">Delivered</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
         <button id="show-completed" class="toggle-button" type="button" aria-pressed="false">Show Completed</button>
       </div>
       <div id="issues" class="issues"></div>
@@ -2264,6 +2340,28 @@ p {
   padding: 12px 14px;
 }
 
+.list-tools > input {
+  grid-column: 1 / -1;
+}
+
+.state-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.state-filters select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 28px 7px 9px;
+  background: var(--surface);
+  color: var(--text);
+}
+
 .list-tools input,
 .draft-form input,
 .draft-form textarea,
@@ -2444,6 +2542,18 @@ button.list-header:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
+}
+
+.row-state-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.row-state-tags .tag {
+  min-height: 20px;
+  font-size: 11px;
 }
 
 .row-actions {
@@ -3142,7 +3252,7 @@ button:disabled {
 
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(340px, 42dvh) minmax(0, 1fr);
+    grid-template-rows: minmax(400px, 48dvh) minmax(0, 1fr);
     height: auto;
     min-height: 100dvh;
   }
@@ -3152,7 +3262,7 @@ button:disabled {
   }
 
   .conversation-pane {
-    min-height: 340px;
+    min-height: 400px;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
@@ -3164,7 +3274,7 @@ button:disabled {
   .view,
   .chat-view {
     height: auto;
-    min-height: 58dvh;
+    min-height: 52dvh;
   }
 
   .field-grid,
@@ -3208,6 +3318,8 @@ const el = {
   detailBody: document.querySelector("#detail-body"),
   dashboardDetail: document.querySelector("#dashboard-detail"),
   search: document.querySelector("#search"),
+  taskStateFilter: document.querySelector("#task-state-filter"),
+  deliveryStateFilter: document.querySelector("#delivery-state-filter"),
   refresh: document.querySelector("#refresh"),
   showCompleted: document.querySelector("#show-completed"),
   themeToggle: document.querySelector("#theme-toggle"),
@@ -3223,6 +3335,8 @@ applyTheme(localStorage.getItem("agentrelay-theme") || "dark");
 initSidebarResize();
 
 if (el.search) el.search.addEventListener("input", renderList);
+if (el.taskStateFilter) el.taskStateFilter.addEventListener("change", renderList);
+if (el.deliveryStateFilter) el.deliveryStateFilter.addEventListener("change", renderList);
 if (el.refresh) el.refresh.addEventListener("click", () => refresh());
 if (el.showCompleted) {
   el.showCompleted.addEventListener("click", () => {
@@ -3388,7 +3502,11 @@ function renderMetrics() {
 function renderList() {
   if (!snapshot || !el.issues) return;
   const query = el.search ? el.search.value.trim().toLowerCase() : "";
+  const taskState = el.taskStateFilter?.value || "all";
+  const deliveryState = el.deliveryStateFilter?.value || "all";
   const issues = snapshot.issues.filter((issue) => {
+    if (taskState !== "all" && issue.relayStatus !== taskState) return false;
+    if (deliveryState !== "all" && issue.messageDeliveryStatus !== deliveryState) return false;
     if (!query) return true;
     return [
       issue.taskId,
@@ -3396,6 +3514,8 @@ function renderList() {
       issue.counterpartAgentId,
       issue.pendingOnAgentId,
       issue.relayStatus,
+      issue.messageDeliveryStatus,
+      issue.diagnosis,
       issue.localStatus,
       issue.processorSummary
     ].join(" ").toLowerCase().includes(query);
@@ -3605,6 +3725,7 @@ function issueRow(issue) {
   const current = issue.taskId === selectedTaskId ? ' aria-current="true"' : "";
   return '<article class="' + classes + '" role="button" tabindex="0" data-task-id="' + escapeAttr(issue.taskId) + '"' + current + '>' +
     '<div class="row-main"><span class="subject">' + escapeHtml(issue.subject || "(untitled)") + '</span><div class="row-actions"><span class="time">' + formatTime(issue.updatedAt) + '</span><button class="delete-issue" type="button" data-task-id="' + escapeAttr(issue.taskId) + '" title="Archive thread" aria-label="Archive thread">' + trashIcon() + '</button></div></div>' +
+    (issue.protocolVersion === "agent-collab-v0.5" ? '<div class="row-state-tags">' + taskStateChip(issue) + deliveryStateChip(issue) + '</div>' : "") +
   '</article>';
 }
 
@@ -3991,6 +4112,11 @@ function renderDashboard() {
       field("Pending agent", issue.pendingOnAgentId || "none") +
       field("Need approval", issue.pendingOnHumanId || "none") +
       field("Relay status", issue.relayStatus || "unknown") +
+      field("Message delivery", issue.messageDeliveryStatus || "unknown") +
+      field("Diagnosis", issue.diagnosis || "unknown") +
+      field("Delivery attempt", issue.maxDeliveryAttempts ? issue.deliveryAttempts + " / " + issue.maxDeliveryAttempts : "unknown") +
+      field("Next retry", issue.nextRetryAt ? formatTime(new Date(issue.nextRetryAt * 1000).toISOString()) : "none") +
+      field("Delivery error", issue.deliveryLastError || "none") +
       field("Local status", issue.localStatus || "unknown") +
       field("Processor", issue.processorStatus || "not processed") +
       field("Executor", issue.executorStatus || "not run") +
@@ -4007,7 +4133,9 @@ function renderEvent(event) {
 }
 
 function tags(issue) {
-  return [statusChip(issue)];
+  return issue.protocolVersion === "agent-collab-v0.5"
+    ? [statusChip(issue), taskStateChip(issue), deliveryStateChip(issue)]
+    : [statusChip(issue)];
 }
 
 function issueListTags(issue) {
@@ -4017,6 +4145,14 @@ function issueListTags(issue) {
 function statusChip(issue) {
   const status = issueStatus(issue);
   return chip(status, status.replaceAll(" ", "-"));
+}
+
+function taskStateChip(issue) {
+  return chip("Task: " + (issue.relayStatus || "unknown"), "task-" + (issue.relayStatus || "unknown"));
+}
+
+function deliveryStateChip(issue) {
+  return chip("Delivery: " + (issue.messageDeliveryStatus || "unknown"), "delivery-" + (issue.messageDeliveryStatus || "unknown"));
 }
 
 function trashIcon() {

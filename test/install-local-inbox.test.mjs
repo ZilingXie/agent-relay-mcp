@@ -29,6 +29,8 @@ test("buildLocalInboxEnvBlock configures listener hook and local inbox state", (
   assert.match(block, /AGENTRELAY_STATE_DIR="\/Users\/zac\/project\/agentRelay\/state"/);
   assert.match(block, /AGENTRELAY_LISTENER_HOOK="\/usr\/local\/bin\/node \/Users\/zac\/project\/agentRelay\/scripts\/agentrelay-inbox-intake\.mjs"/);
   assert.match(block, /AGENTRELAY_ACK_ON_INBOX_RECEIVED=1/);
+  assert.match(block, /AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0\.5"/);
+  assert.match(block, /AGENTRELAY_READINESS_PUBLISH_MS=60000/);
   assert.match(block, /AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0/);
   assert.match(block, /AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0/);
   assert.match(block, /AGENTRELAY_LOCAL_AGENT_RUNNER="codex"/);

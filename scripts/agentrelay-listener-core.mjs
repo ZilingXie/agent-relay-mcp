@@ -97,6 +97,46 @@ export async function reconcileAgentEvents({ agentId, relayGet, persist }) {
   return { discovered: events.length, persisted, failures };
 }
 
+export async function reconcileAgentEventsV05({
+  agentId,
+  listenerInstanceId,
+  readinessEpoch,
+  relayGet,
+  persist,
+  limit = 500
+}) {
+  const failures = [];
+  let discovered = 0;
+  let persisted = 0;
+  const seen = new Set();
+  const query = new URLSearchParams({
+    listener_instance_id: listenerInstanceId,
+    readiness_epoch: String(readinessEpoch)
+  });
+  while (discovered < limit) {
+    const response = await relayGet(`/workers/${encodeURIComponent(agentId)}/events?${query}`);
+    const events = unwrapAgentEvents(response);
+    if (!events.length) break;
+    const event = events[0];
+    discovered += 1;
+    const eventId = event?.event_id || event?.eventId;
+    if (!eventId) {
+      failures.push({ eventId: "", error: "Agent event is missing event id" });
+      break;
+    }
+    if (seen.has(eventId)) break;
+    seen.add(eventId);
+    try {
+      await persist({ event });
+      persisted += 1;
+    } catch (error) {
+      failures.push({ eventId, error: error.message });
+      break;
+    }
+  }
+  return { discovered, persisted, failures };
+}
+
 export async function readJsonFrame(socket, { inactivityMs }) {
   while (true) {
     const frame = await readFrameWithTimeout(socket, inactivityMs);
