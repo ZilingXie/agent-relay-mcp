@@ -1,6 +1,6 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-07-16
+Last updated: 2026-07-18
 
 ## Audience And Sources
 
@@ -53,6 +53,25 @@ Status: implemented and production-E2E verified. The server-owned contract is
 `ZilingXie/agentRelay/docs/task-lifecycle-v04.md`. Protocol v0.4 is available
 through explicit tools; v0.3 remains the default compatibility path until
 participant capability advertisement supports automatic selection.
+
+Current implemented Task status snapshot (verified 2026-07-18):
+
+- `submitted`: supported; the Listener fetches and durably persists the full
+  current Message before it may ACK delivery.
+- `delivered`: supported; MCP sends `message_id`, `turn_sequence`,
+  `expected_status_version`, and stable idempotency context through the v0.4
+  Message ACK operation.
+- `completed`: supported; the requester tool completes only against the current
+  delivered target response.
+- `expired`: supported as Relay-authoritative terminal state; the client syncs
+  and renders it without local inference.
+- `failed`: supported through the reason-constrained v0.4 failure tool and
+  Relay authority checks.
+- `cancelled` and `archived`: not exposed as Relay lifecycle mutations. Local
+  archive remains presentation-only and never changes or deletes the Task.
+- Multi-turn alternation, stale-state refresh, follow-up child workspaces,
+  lifecycle notifications, and preservation of terminal Task history are
+  implemented. v0.4 remains an explicit non-default tool path.
 
 Implemented client behavior:
 
