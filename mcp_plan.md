@@ -151,11 +151,11 @@ Client verification must cover:
 
 ## Protocol v0.5 Two-Layer Client Plan
 
-Status: core design confirmed; specification review in progress;
-implementation not started. Protocol v0.4 remains a completed historical
-baseline and its tools, docs, tests, and workspaces must not be overwritten. No
-v0.5 implementation begins until Server, Client, and public planning updates
-are merged and published.
+Status: design complete and independently reviewed; implementation not started.
+Protocol v0.4 remains a completed historical baseline and its tools, docs,
+tests, and workspaces must not be overwritten. No v0.5 implementation begins
+until Server, Client, and public planning updates are merged/published and the
+Hermes baseline gate is complete.
 
 The Server-owned contract is
 `ZilingXie/agentRelay/docs/task-lifecycle-v05.md`. v0.5 becomes the only active
@@ -177,7 +177,8 @@ Client state boundaries:
 Planned client behavior:
 
 - Add v0.5 protocol sync, create, send Message, complete, fail, follow-up,
-  lineage, and visibility tools; switch generic tools to v0.5 at cutover.
+  full Task fetch, lineage, and visibility tools; switch generic tools to v0.5
+  at cutover.
 - Reject v0.3/v0.4 mutations locally with `protocol_retired`; preserve
   historical GET, timeline, lineage, and read-only local workspaces.
 - Replace `expected_status_version` with the aggregate
@@ -185,6 +186,8 @@ Planned client behavior:
 - Handle `message.pending` by fetching the complete Task/Message, taking the
   workspace lock, durably writing workspace v2, verifying the write, and only
   then sending the current-Message ACK.
+- Expose `agentrelay_get_task_v05` for the full ordered Task/Message response;
+  visibility is diagnosis-only and cannot supply Message parts.
 - Route intake by protocol and Event authority before ACK. A transitionable
   v0.5 `message.pending` Event must use Message-before-ACK; the existing
   ACK-then-sync path is permitted only for read-only legacy intake and v0.5
@@ -208,6 +211,9 @@ Planned client behavior:
   the confirmed 300-second maximum age and rejects stale epochs. Report ready
   only after protocol, workspace, authenticated recovery, and ACK/NACK
   self-checks.
+- Bind WS hello, HTTP recovery, ACK, and NACK to the current Listener instance
+  and readiness epoch. Stale hello is rejected; after a new registration the
+  old socket is removed from delivery routing and cannot mutate new delivery.
 
 The fixed delivery policy is four total attempts: initial delivery plus retries
 after 1, 5, and 10 minutes. The Listener does not schedule retries; it reports
@@ -248,6 +254,7 @@ Project Hermes client workstream:
 Planned verification:
 
 - v0.5 manifest and MCP tool contract;
+- full Task/Message fetch ordering, complete parts, and workspace persistence;
 - durable local Message persistence before ACK;
 - stable duplicate ACK and stale-state recovery;
 - guarded non-retryable NACK and retryable no-ACK behavior;
@@ -264,13 +271,13 @@ Planned verification:
 
 Implementation dependency order:
 
-1. Merge and publish planning updates while preserving v0.4.
-2. Preserve and reconcile the identified Hermes dirty production baseline;
-   treat its upgrade as a cutover blocker.
-3. Merge the Server v0.5 implementation and archive/cutover tooling.
-4. Merge MCP/Listener and workspace v2 support.
-5. Merge Inbox UI changes and complete cross-repository conformance.
-6. Upgrade all Listener installations during the maintenance window before
+1. Complete Task 0: merge/publish Server, Client, and public planning updates;
+   secret-scan, obtain user approval for, preserve, and reconcile the identified
+   Hermes dirty baseline. No v0.5 code begins before both parts finish.
+2. Merge the Server v0.5 implementation and archive/cutover tooling.
+3. Merge MCP/Listener and workspace v2 support.
+4. Merge Inbox UI changes and complete cross-repository conformance.
+5. Upgrade all Listener installations during the maintenance window before
    Server writes open.
 
 ## Personal Agent MCP Plan
