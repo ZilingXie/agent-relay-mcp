@@ -248,11 +248,14 @@ Implemented core evidence:
   Server diagnosis projection;
 - full Client test suite, desktop/390px browser verification, and local
   cross-repository create/ACK/response/ACK/complete/follow-up E2E.
+- active v0.5 mode routes generic create through the native v0.5 payload and
+  locally rejects legacy mutation tools with `protocol_retired`;
+- Listener readiness now requires a real workspace v2 write/read probe,
+  ACK/NACK endpoint compatibility probes, and successful authenticated Event
+  recovery before publishing `ready=true`.
 
 Still required at maintenance/cutover:
 
-- switch or remove legacy generic mutation tools only when Server write mode
-  changes to v0.5; explicit v0.5 tools are already available;
 - upgrade installed Listeners and confirm fresh readiness for every enabled
   Agent;
 - complete Hermes/dispatcher work and live production rehearsal before opening

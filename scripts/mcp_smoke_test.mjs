@@ -172,6 +172,27 @@ try {
   });
   assert(ack.event?.acked_at, "event ack did not return acked event");
 
+  const v05Session = await startMcpClient(relayBaseUrl, localStateRoot, "agent-collab-v0.5");
+  try {
+    const v05Created = await callJson("agentrelay_create_task", {
+      requester_agent_id: "zac-agent",
+      target_agent_id: "frank-agent",
+      requesterThreadId: "ignored-by-v05",
+      requestText: "v0.5 request",
+      doneCriteria: "v0.5 response"
+    }, v05Session.client);
+    assert(v05Created.task.protocol_version === "agent-collab-v0.5", "generic create did not switch to v0.5");
+    const retired = await v05Session.client.callTool({
+      name: "agentrelay_claim_task",
+      arguments: { agentId: "frank-agent" }
+    });
+    assert(retired.isError === true, "legacy mutation tool should fail in v0.5 mode");
+    assert(retired.content?.[0]?.text.includes("protocol_retired"), "legacy mutation error should identify protocol_retired");
+  } finally {
+    await v05Session.transport.close().catch(() => {});
+    await v05Session.client.close().catch(() => {});
+  }
+
   console.log(JSON.stringify({ ok: true, taskId, status: closed.task.status }, null, 2));
 } finally {
   await transport?.close().catch(() => {});
@@ -180,7 +201,7 @@ try {
   if (localStateRoot) await rm(localStateRoot, { recursive: true, force: true });
 }
 
-async function startMcpClient(relayBaseUrl, stateRoot) {
+async function startMcpClient(relayBaseUrl, stateRoot, protocolVersion = "") {
   const mcpClient = new Client({ name: "agent-relay-mcp-smoke", version: "0.1.0" });
   const mcpTransport = new StdioClientTransport({
     command: "node",
@@ -192,7 +213,8 @@ async function startMcpClient(relayBaseUrl, stateRoot) {
       AGENTRELAY_AGENT_ID: smokeAuth.agentId,
       AGENTRELAY_USERNAME: smokeAuth.username,
       AGENTRELAY_TOKEN: smokeAuth.token,
-      AGENTRELAY_STATE_DIR: stateRoot
+      AGENTRELAY_STATE_DIR: stateRoot,
+      ...(protocolVersion ? { AGENTRELAY_PROTOCOL_VERSION: protocolVersion } : {})
     },
     stderr: "pipe"
   });
@@ -224,6 +246,26 @@ function startFakeRelay() {
         return sendJson(response, { name: "Frank Agent", skills: [{ id: "meeting-coordination" }] });
       }
       if (request.method === "POST" && path === "/agentrelay/tasks") {
+        if (payload.protocol_version === "agent-collab-v0.5") {
+          assert(payload.idempotency_key, "v0.5 MCP create payload missing idempotency_key");
+          assert(payload.requester_agent_id === "zac-agent", "v0.5 MCP create payload missing requester_agent_id");
+          assert(payload.target_agent_id === "frank-agent", "v0.5 MCP create payload missing target_agent_id");
+          assert(payload.done_criteria === "v0.5 response", "v0.5 MCP create payload missing done_criteria");
+          assert(payload.message?.parts?.[0]?.text === "v0.5 request", "v0.5 MCP create payload missing Message text");
+          assert(!payload.task_type && !payload.completion_owner_agent_id, "v0.5 MCP create leaked legacy fields");
+          state.task = {
+            task_id: "task_smoke_v05",
+            root_task_id: "task_smoke_v05",
+            protocol_version: "agent-collab-v0.5",
+            requester_agent_id: payload.requester_agent_id,
+            target_agent_id: payload.target_agent_id,
+            status: "open",
+            current_message_id: "msg_smoke_v05",
+            turn_sequence: 1,
+            task_version: 1
+          };
+          return sendJson(response, { task: state.task, messages: [] }, 201);
+        }
         assert(payload.protocol_version === "agent-collab-v0.3", "MCP create payload missing protocol version");
         assert(payload.idempotency_key, "MCP create payload missing idempotency_key");
         assert(payload.task_type === "agent.task", "MCP create payload missing task_type");
@@ -369,8 +411,8 @@ function sendJson(response, payload, status = 200) {
   response.end(body);
 }
 
-async function callJson(name, args) {
-  const result = await client.callTool({ name, arguments: args });
+async function callJson(name, args, targetClient = client) {
+  const result = await targetClient.callTool({ name, arguments: args });
   const first = result.content?.[0];
   if (!first || first.type !== "text") {
     throw new Error(`Tool ${name} did not return text content`);

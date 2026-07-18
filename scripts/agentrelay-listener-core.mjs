@@ -137,6 +137,46 @@ export async function reconcileAgentEventsV05({
   return { discovered, persisted, failures };
 }
 
+export async function probeV05DeliveryEndpoints({
+  agentId,
+  listenerInstanceId,
+  readinessEpoch,
+  relayPost
+}) {
+  const probeId = `readiness-probe-${listenerInstanceId}`;
+  const common = {
+    task_id: probeId,
+    event_id: probeId,
+    message_id: probeId,
+    turn_sequence: 1,
+    expected_task_version: 1,
+    listener_instance_id: listenerInstanceId,
+    readiness_epoch: readinessEpoch
+  };
+  const probes = [
+    {
+      name: "ack",
+      path: `/workers/${encodeURIComponent(agentId)}/messages/${encodeURIComponent(probeId)}/ack`,
+      payload: { ...common, idempotency_key: `${probeId}-ack` }
+    },
+    {
+      name: "nack",
+      path: `/workers/${encodeURIComponent(agentId)}/messages/${encodeURIComponent(probeId)}/delivery-fail`,
+      payload: { ...common, reason: "listener_persistence_failed", idempotency_key: `${probeId}-nack` }
+    }
+  ];
+  for (const probe of probes) {
+    const response = await relayPost(probe.path, probe.payload);
+    const code = response?.body?.code || response?.body?.error?.code;
+    const compatible = (response?.status === 404 && code === "task_not_found")
+      || (response?.status === 503 && code === "mutations_closed");
+    if (!compatible) {
+      throw new Error(`Protocol v0.5 ${probe.name.toUpperCase()} endpoint compatibility check failed (${response?.status || "unknown"}/${code || "unknown"})`);
+    }
+  }
+  return { ack: true, nack: true };
+}
+
 export async function readJsonFrame(socket, { inactivityMs }) {
   while (true) {
     const frame = await readFrameWithTimeout(socket, inactivityMs);

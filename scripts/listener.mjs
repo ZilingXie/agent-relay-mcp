@@ -9,9 +9,9 @@ import { homedir } from "node:os";
 import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
-import { buildPendingEventPayload, readJsonFrame, reconcileAgentEvents, reconcileAgentEventsV05, reconcilePendingTasks } from "./agentrelay-listener-core.mjs";
+import { buildPendingEventPayload, probeV05DeliveryEndpoints, readJsonFrame, reconcileAgentEvents, reconcileAgentEventsV05, reconcilePendingTasks } from "./agentrelay-listener-core.mjs";
 import { recoverPendingTaskSyncs } from "./agentrelay-task-context-sync.mjs";
-import { ensureTaskWorkspaceState } from "./agentrelay-task-workspace.mjs";
+import { verifyWorkspaceV2Ready } from "./agentrelay-task-workspace.mjs";
 import { PROTOCOL_V05 } from "./agentrelay-v05.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -82,7 +82,7 @@ async function listenOnce() {
           throw new Error("v0.5 hello does not match the registered Listener epoch");
         }
         console.error(`[agentrelay-listener] hello ${frame.agentId}`);
-        await tryReconcilePending();
+        await tryReconcilePending({ required: isV05 });
         if (isV05) await publishV05Readiness(true);
         await updateListenerStatus({ state: "connected", connectedAt: new Date().toISOString(), lastError: null, ready: isV05 ? true : undefined });
         continue;
@@ -111,7 +111,7 @@ async function listenOnce() {
   }
 }
 
-async function tryReconcilePending() {
+async function tryReconcilePending({ required = false } = {}) {
   try {
     const result = isV05 ? { discovered: 0, persisted: 0, failures: [] } : await reconcilePendingTasks({
       agentId,
@@ -153,6 +153,9 @@ async function tryReconcilePending() {
       maxAttempts: 2,
       retryDelayMs: Number(process.env.AGENTRELAY_CONTEXT_SYNC_RETRY_MS || 250)
     });
+    if (required && eventRecovery.failures.length > 0) {
+      throw new Error(`Protocol v0.5 Event recovery failed for ${eventRecovery.failures.length} Event(s)`);
+    }
     lastReconciledAt = Date.now();
     await updateListenerStatus({
       lastReconciliationAt: new Date().toISOString(),
@@ -174,6 +177,7 @@ async function tryReconcilePending() {
   } catch (error) {
     console.error(`[agentrelay-listener] reconciliation failed: ${error.message}`);
     await updateListenerStatus({ lastReconciliationError: error.message });
+    if (required) throw error;
   }
 }
 
@@ -228,7 +232,7 @@ async function initializeV05Listener() {
   }
   const manifest = await relayRequest("GET", "/protocols/agent-collab/v0.5/manifest");
   if (manifest.version !== PROTOCOL_V05) throw new Error("Relay did not return the Protocol v0.5 manifest");
-  await ensureTaskWorkspaceState({ stateRoot, workspaceVersion: 2 });
+  await verifyWorkspaceV2Ready({ stateRoot });
   const instanceId = `listener-${agentId}-${crypto.randomUUID()}`;
   const registered = await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness/register`, {
     listener_instance_id: instanceId,
@@ -239,6 +243,12 @@ async function initializeV05Listener() {
   const readiness = registered.readiness || registered.data?.readiness;
   if (!readiness?.readiness_epoch) throw new Error("Relay readiness registration is missing readiness_epoch");
   listenerIdentity = { instanceId, epoch: Number(readiness.readiness_epoch) };
+  await probeV05DeliveryEndpoints({
+    agentId,
+    listenerInstanceId: listenerIdentity.instanceId,
+    readinessEpoch: listenerIdentity.epoch,
+    relayPost: relayProbe
+  });
   await publishV05Readiness(false);
   await updateListenerStatus({
     protocolVersion,
@@ -269,6 +279,16 @@ async function relayRequest(method, path, payload) {
   const data = text ? JSON.parse(text) : {};
   if (!response.ok) throw new Error(`${method} ${path} failed (${response.status}): ${JSON.stringify(data)}`);
   return data;
+}
+
+async function relayProbe(path, payload) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...relayHeaders() },
+    body: JSON.stringify(payload)
+  });
+  const text = await response.text();
+  return { status: response.status, body: text ? JSON.parse(text) : {} };
 }
 
 function connectWebSocket(url, headers) {

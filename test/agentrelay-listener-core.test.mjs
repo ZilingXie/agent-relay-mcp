@@ -6,6 +6,7 @@ import {
   buildPendingEventPayload,
   buildRecoveryEvent,
   listenerStatusHealth,
+  probeV05DeliveryEndpoints,
   readJsonFrame,
   reconcileAgentEvents,
   reconcileAgentEventsV05,
@@ -13,6 +14,37 @@ import {
   unwrapPendingTasks,
   unwrapTask
 } from "../scripts/agentrelay-listener-core.mjs";
+
+test("v0.5 readiness probes ACK and NACK endpoints without a business Task", async () => {
+  const calls = [];
+  const result = await probeV05DeliveryEndpoints({
+    agentId: "frank-agent",
+    listenerInstanceId: "listener-1",
+    readinessEpoch: 3,
+    relayPost: async (path, payload) => {
+      calls.push({ path, payload });
+      return { status: 503, body: { code: "mutations_closed" } };
+    }
+  });
+  assert.deepEqual(result, { ack: true, nack: true });
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].path, /\/ack$/);
+  assert.match(calls[1].path, /\/delivery-fail$/);
+  assert.equal(calls[1].payload.reason, "listener_persistence_failed");
+  assert.equal(calls[0].payload.readiness_epoch, 3);
+});
+
+test("v0.5 readiness rejects an incompatible delivery endpoint", async () => {
+  await assert.rejects(
+    probeV05DeliveryEndpoints({
+      agentId: "frank-agent",
+      listenerInstanceId: "listener-1",
+      readinessEpoch: 3,
+      relayPost: async () => ({ status: 404, body: { code: "ERROR" } })
+    }),
+    /ACK endpoint compatibility check failed/
+  );
+});
 
 test("v0.5 recovery binds Listener epoch and drains one durable Event at a time", async () => {
   const persisted = [];

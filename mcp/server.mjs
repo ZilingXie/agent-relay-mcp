@@ -35,6 +35,7 @@ loadDotEnv(process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const PROTOCOL_VERSION = "agent-collab-v0.3";
+const ACTIVE_PROTOCOL_VERSION = process.env.AGENTRELAY_PROTOCOL_VERSION || PROTOCOL_VERSION;
 const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL);
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
@@ -138,6 +139,15 @@ function registerTools(mcpServer) {
       if (!requesterAgentId || !targetAgentId) {
         throw new Error("agentrelay_create_task requires requester_agent_id/target_agent_id or legacy from/to");
       }
+      if (ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5") {
+        return jsonResult(await relayPost("/tasks", buildCreatePayloadV05({
+          requesterAgentId,
+          targetAgentId,
+          requestText: args.requestText,
+          doneCriteria: args.doneCriteria,
+          maxTurns: args.maxTurns
+        }, `mcp-v05-create-${randomUUID()}`)));
+      }
       const requestedCompletionOwnerAgentId = args.completionOwnerAgentId;
       const warnings = [];
       if (requestedCompletionOwnerAgentId && requestedCompletionOwnerAgentId !== requesterAgentId) {
@@ -194,6 +204,7 @@ function registerTools(mcpServer) {
       }
     },
     async (args) => {
+      assertLegacyMutationAvailable("agentrelay_create_task_v04");
       const key = `mcp-v04-create-${args.clientRequestId || randomUUID()}`;
       return jsonResult(await relayPost("/tasks", buildCreatePayloadV04(args, key)));
     }
@@ -213,13 +224,16 @@ function registerTools(mcpServer) {
         confirmationRef: z.string().min(1)
       }
     },
-    async (args) => jsonResult(await executeMcpTaskAction({
-      args,
-      actionType: "send_message_v04",
-      validateCurrentTask: (task) => validatePreparedActionV04("send_message_v04", task, args),
-      remotePayloadBuilder: (key) => buildMessagePayloadV04(args, key),
-      path: `/tasks/${encodeURIComponent(args.taskId)}/messages`
-    }))
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_send_message_v04");
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "send_message_v04",
+        validateCurrentTask: (task) => validatePreparedActionV04("send_message_v04", task, args),
+        remotePayloadBuilder: (key) => buildMessagePayloadV04(args, key),
+        path: `/tasks/${encodeURIComponent(args.taskId)}/messages`
+      }));
+    }
   );
 
   mcpServer.registerTool(
@@ -236,13 +250,16 @@ function registerTools(mcpServer) {
         confirmationRef: z.string().min(1)
       }
     },
-    async (args) => jsonResult(await executeMcpTaskAction({
-      args,
-      actionType: "complete_task_v04",
-      validateCurrentTask: (task) => validatePreparedActionV04("complete_task_v04", task, args),
-      remotePayloadBuilder: (key) => buildCompletePayloadV04(args, key),
-      path: `/tasks/${encodeURIComponent(args.taskId)}/complete`
-    }))
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_complete_task_v04");
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "complete_task_v04",
+        validateCurrentTask: (task) => validatePreparedActionV04("complete_task_v04", task, args),
+        remotePayloadBuilder: (key) => buildCompletePayloadV04(args, key),
+        path: `/tasks/${encodeURIComponent(args.taskId)}/complete`
+      }));
+    }
   );
 
   mcpServer.registerTool(
@@ -259,13 +276,16 @@ function registerTools(mcpServer) {
         confirmationRef: z.string().min(1)
       }
     },
-    async (args) => jsonResult(await executeMcpTaskAction({
-      args,
-      actionType: "fail_task_v04",
-      validateCurrentTask: (task) => validatePreparedActionV04("fail_task_v04", task, args),
-      remotePayloadBuilder: (key) => buildFailPayloadV04(args, key),
-      path: `/tasks/${encodeURIComponent(args.taskId)}/fail`
-    }))
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_fail_task_v04");
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "fail_task_v04",
+        validateCurrentTask: (task) => validatePreparedActionV04("fail_task_v04", task, args),
+        remotePayloadBuilder: (key) => buildFailPayloadV04(args, key),
+        path: `/tasks/${encodeURIComponent(args.taskId)}/fail`
+      }));
+    }
   );
 
   mcpServer.registerTool(
@@ -284,14 +304,17 @@ function registerTools(mcpServer) {
         confirmationRef: z.string().min(1)
       }
     },
-    async (args) => jsonResult(await executeMcpTaskAction({
-      args,
-      actionType: "create_followup_v04",
-      validateCurrentTask: (task) => validatePreparedActionV04("create_followup_v04", task, args),
-      resultTaskMode: "new_task",
-      remotePayloadBuilder: (key) => buildFollowupPayloadV04(args, key),
-      path: `/tasks/${encodeURIComponent(args.taskId)}/followups`
-    }))
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_create_followup_v04");
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "create_followup_v04",
+        validateCurrentTask: (task) => validatePreparedActionV04("create_followup_v04", task, args),
+        resultTaskMode: "new_task",
+        remotePayloadBuilder: (key) => buildFollowupPayloadV04(args, key),
+        path: `/tasks/${encodeURIComponent(args.taskId)}/followups`
+      }));
+    }
   );
 
   mcpServer.registerTool(
@@ -552,7 +575,10 @@ function registerTools(mcpServer) {
         agentId: z.string().min(1)
       }
     },
-    async ({ agentId }) => jsonResult(await relayGet(`/workers/${encodeURIComponent(agentId)}/claim`))
+    async ({ agentId }) => {
+      assertLegacyMutationAvailable("agentrelay_claim_task");
+      return jsonResult(await relayGet(`/workers/${encodeURIComponent(agentId)}/claim`));
+    }
   );
 
   mcpServer.registerTool(
@@ -577,8 +603,10 @@ function registerTools(mcpServer) {
         taskId: z.string().min(1)
       }
     },
-    async ({ agentId, taskId }) =>
-      jsonResult(await relayPost(`/workers/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/claim`, {}))
+    async ({ agentId, taskId }) => {
+      assertLegacyMutationAvailable("agentrelay_claim_task_by_id");
+      return jsonResult(await relayPost(`/workers/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/claim`, {}));
+    }
   );
 
   mcpServer.registerTool(
@@ -592,13 +620,15 @@ function registerTools(mcpServer) {
         threadId: z.string().min(1)
       }
     },
-    async ({ agentId, taskId, threadId }) =>
-      jsonResult(
+    async ({ agentId, taskId, threadId }) => {
+      assertLegacyMutationAvailable("agentrelay_set_target_thread");
+      return jsonResult(
         await relayPost(
           `/workers/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/thread`,
           { threadId }
         )
-      )
+      );
+    }
   );
 
   mcpServer.registerTool(
@@ -626,6 +656,7 @@ function registerTools(mcpServer) {
       }
     },
     async (args) => {
+      assertLegacyMutationAvailable("agentrelay_submit_artifact");
       const actorAgentId = args.actor_agent_id || args.from;
       if (!actorAgentId) {
         throw new Error("agentrelay_submit_artifact requires actor_agent_id or legacy from");
@@ -692,6 +723,7 @@ function registerTools(mcpServer) {
       }
     },
     async (args) => {
+      assertLegacyMutationAvailable("agentrelay_amend_task");
       const humanAuthority = buildHumanAuthority(args);
       const payload = {
         protocol_version: PROTOCOL_VERSION,
@@ -730,8 +762,9 @@ function registerTools(mcpServer) {
         error: z.string().optional()
       }
     },
-    async (args) =>
-      jsonResult(
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_mark_delivery");
+      return jsonResult(
         await relayPost(
           `/tasks/${encodeURIComponent(args.taskId)}/deliveries`,
           compact({
@@ -744,7 +777,8 @@ function registerTools(mcpServer) {
             error: args.error
           })
         )
-      )
+      );
+    }
   );
 
   mcpServer.registerTool(
@@ -761,8 +795,9 @@ function registerTools(mcpServer) {
         terminalReason: z.string().optional()
       }
     },
-    async (args) =>
-      jsonResult(
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_update_status");
+      return jsonResult(
         await relayPost(
           `/tasks/${encodeURIComponent(args.taskId)}/status`,
           compact({
@@ -773,7 +808,8 @@ function registerTools(mcpServer) {
             terminalReason: args.terminalReason
           })
         )
-      )
+      );
+    }
   );
 
   mcpServer.registerTool(
@@ -798,6 +834,7 @@ function registerTools(mcpServer) {
       }
     },
     async (args) => {
+      assertLegacyMutationAvailable("agentrelay_close_task");
       const completionAuthority = buildCompletionAuthority(args);
       const finalArtifact = parseOptionalJsonObject(args.finalArtifactJson, "finalArtifactJson");
       return jsonResult(await executeMcpTaskAction({
@@ -857,13 +894,15 @@ function registerTools(mcpServer) {
         projectPath: z.string().optional()
       }
     },
-    async ({ agentId, eventId, taskId, status, threadId, threadRole, projectPath }) =>
-      jsonResult(
+    async ({ agentId, eventId, taskId, status, threadId, threadRole, projectPath }) => {
+      assertLegacyMutationAvailable("agentrelay_ack_event");
+      return jsonResult(
         await relayPost(
           `/workers/${encodeURIComponent(agentId)}/events/${encodeURIComponent(eventId)}/ack`,
           compact({ taskId, status, threadId, threadRole, projectPath })
         )
-      )
+      );
+    }
   );
 }
 
@@ -1335,4 +1374,9 @@ function compact(value) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== null)
   );
+}
+
+function assertLegacyMutationAvailable(toolName) {
+  if (ACTIVE_PROTOCOL_VERSION !== "agent-collab-v0.5") return;
+  throw new Error(`protocol_retired: ${toolName} uses the retired v0.3/v0.4 mutation contract; use the Protocol v0.5 tools`);
 }

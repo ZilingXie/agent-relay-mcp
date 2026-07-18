@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,7 +9,8 @@ import {
   persistTaskWorkspace,
   readTaskWorkspace,
   taskWorkspacePaths,
-  taskWorkspacePathsV2
+  taskWorkspacePathsV2,
+  verifyWorkspaceV2Ready
 } from "../scripts/agentrelay-task-workspace.mjs";
 import { unwrapTask } from "../scripts/agentrelay-task-context-sync.mjs";
 
@@ -66,4 +67,14 @@ test("v0.5 detail normalization preserves ordered Messages without inventing art
   const task = unwrapTask(detail());
   assert.equal(task.messages[0].message_id, "msg_1");
   assert.deepEqual(task.artifacts, []);
+});
+
+test("workspace v2 readiness performs a write/read probe without creating a Task", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-workspace-v2-ready-"));
+  try {
+    assert.deepEqual(await verifyWorkspaceV2Ready({ stateRoot }), { workspaceVersion: 2, verified: true });
+    assert.deepEqual(await readdir(join(stateRoot, "collaboration-v2")), ["tasks"]);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
 });

@@ -195,6 +195,20 @@ export async function ensureTaskWorkspaceState({ stateRoot, workspaceVersion = 1
   }
 }
 
+export async function verifyWorkspaceV2Ready({ stateRoot }) {
+  await ensureTaskWorkspaceState({ stateRoot, workspaceVersion: 2 });
+  const probePath = join(resolve(stateRoot), "collaboration-v2", `.readiness-${process.pid}-${randomUUID()}.json`);
+  const nonce = randomUUID();
+  try {
+    await writeJsonAtomic(probePath, { nonce });
+    const persisted = await readJson(probePath, null);
+    if (persisted?.nonce !== nonce) throw new Error("workspace_v2_readiness_verification_failed");
+  } finally {
+    await rm(probePath, { force: true });
+  }
+  return { workspaceVersion: 2, verified: true };
+}
+
 export async function readTaskWorkspace({ stateRoot, taskId }) {
   const paths = await locateTaskWorkspacePaths(stateRoot, taskId);
   const [task, sync, workflow, handoffPrompt] = await Promise.all([
