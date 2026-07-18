@@ -12,7 +12,8 @@ import {
   reconcileAgentEventsV05,
   reconcilePendingTasks,
   unwrapPendingTasks,
-  unwrapTask
+  unwrapTask,
+  v05ReadinessHealth
 } from "../scripts/agentrelay-listener-core.mjs";
 
 test("v0.5 readiness probes ACK and NACK endpoints without a business Task", async () => {
@@ -103,6 +104,30 @@ test("listenerStatusHealth rejects a stale connected listener", () => {
     now: Date.parse("2026-07-13T02:04:00.000Z"),
     staleAfterMs: 180000
   }).healthy, true);
+});
+
+test("v05ReadinessHealth matches Relay readiness to the installed Listener identity", () => {
+  const status = {
+    agentId: "zac-agent",
+    listenerInstanceId: "listener-zac-1",
+    readinessEpoch: 3
+  };
+  const agent = {
+    agent_id: "zac-agent",
+    enabled: true,
+    protocol_capabilities: ["agent-collab-v0.5"],
+    readiness_protocol_version: "agent-collab-v0.5",
+    ready: true,
+    readiness_fresh: true,
+    workspace_version: "2",
+    transport: "websocket",
+    listener_instance_id: "listener-zac-1",
+    readiness_epoch: 3
+  };
+  assert.deepEqual(v05ReadinessHealth(agent, status), { healthy: true });
+  const mismatch = v05ReadinessHealth({ ...agent, readiness_epoch: 4, readiness_fresh: false }, status);
+  assert.equal(mismatch.healthy, false);
+  assert.deepEqual(mismatch.failures, ["Relay readiness is stale", "readiness epoch mismatch"]);
 });
 
 test("listener core unwraps current and legacy Relay envelopes", () => {

@@ -50,6 +50,27 @@ export function listenerStatusHealth(status, { now = Date.now(), staleAfterMs = 
     : { healthy: false, reason: `activity stale by ${ageMs}ms`, ageMs };
 }
 
+export function v05ReadinessHealth(agent, listenerStatus) {
+  const failures = [];
+  if (!agent) failures.push("agent missing from Relay registry");
+  if (!listenerStatus) failures.push("local Listener status missing");
+  if (agent && listenerStatus) {
+    if (agent.agent_id !== listenerStatus.agentId) failures.push("agent id mismatch");
+    if (agent.enabled !== true) failures.push("agent disabled");
+    if (!(agent.protocol_capabilities || []).includes("agent-collab-v0.5")) failures.push("v0.5 capability missing");
+    if (agent.readiness_protocol_version !== "agent-collab-v0.5") failures.push("readiness protocol mismatch");
+    if (agent.ready !== true) failures.push("Relay readiness is false");
+    if (agent.readiness_fresh !== true) failures.push("Relay readiness is stale");
+    if (String(agent.workspace_version || "") !== "2") failures.push("workspace version mismatch");
+    if (agent.transport !== "websocket") failures.push("transport mismatch");
+    if (agent.listener_instance_id !== listenerStatus.listenerInstanceId) failures.push("Listener instance mismatch");
+    if (Number(agent.readiness_epoch) !== Number(listenerStatus.readinessEpoch)) failures.push("readiness epoch mismatch");
+  }
+  return failures.length === 0
+    ? { healthy: true }
+    : { healthy: false, reason: failures.join(", "), failures };
+}
+
 export async function reconcilePendingTasks({ agentId, relayGet, persist }) {
   const pendingResponse = await relayGet(`/workers/${encodeURIComponent(agentId)}/pending`);
   const pendingTasks = unwrapPendingTasks(pendingResponse);
