@@ -49,7 +49,7 @@ is intentionally deferred until after this Personal Agent Notifier plan lands.
 
 ## Protocol v0.4 Task Lifecycle Client Plan
 
-Status: implemented and production-E2E verified. The server-owned contract is
+Status: completed baseline; implemented and production-E2E verified. The server-owned contract is
 `ZilingXie/agentRelay/docs/task-lifecycle-v04.md`. Protocol v0.4 is available
 through explicit tools; v0.3 remains the default compatibility path until
 participant capability advertisement supports automatic selection.
@@ -148,6 +148,76 @@ Client verification must cover:
 - root/follow-up workspace grouping with opaque Task ids;
 - absence of Task delete tools or actions;
 - v0.3/v0.4 negotiated coexistence.
+
+## Protocol v0.5 Two-Layer Client Plan
+
+Status: design approved; implementation planned. Protocol v0.4 remains a
+completed historical baseline and its tools, docs, tests, and workspaces must
+not be overwritten. No v0.5 implementation begins until Server, Client, and
+public planning updates are merged and published.
+
+The Server-owned contract is
+`ZilingXie/agentRelay/docs/task-lifecycle-v05.md`. v0.5 becomes the only active
+write protocol during a maintenance-window cutover.
+
+Client state boundaries:
+
+- Task lifecycle comes from Server `tasks.status` and is rendered as open,
+  completed, expired, or failed.
+- Per-Message delivery comes from Server `messages.delivery_status` and is
+  rendered as pending, delivered, or failed.
+- Event outbox state is transport metadata only.
+- Workspace and UI are materialized views of the Server visibility response and
+  never invent or reconcile authoritative state locally.
+
+Planned client behavior:
+
+- Add v0.5 protocol sync, create, send Message, complete, fail, follow-up,
+  lineage, and visibility tools; switch generic tools to v0.5 at cutover.
+- Reject v0.4 mutations locally with `protocol_retired`; preserve historical
+  GET, timeline, lineage, and read-only local workspaces.
+- Replace `expected_status_version` with the aggregate
+  `expected_task_version`; do not add a delivery version.
+- Handle `message.pending` by fetching the complete Task/Message, taking the
+  workspace lock, durably writing workspace v2, verifying the write, and only
+  then sending the current-Message ACK.
+- Use stable ACK idempotency over Agent, Task, Message, turn, and task version.
+- Treat task/delivery/attempt notifications as informational outbox Events whose
+  ACKs cannot mutate Task or Message.
+- Store Task lifecycle and each Message's delivery separately in workspace v2;
+  preserve v0.4 workspaces as read-only legacy data.
+- Update Inbox UI to show separate Task and delivery badges, two-dimensional
+  filters, attempt/next-retry details, visibility diagnosis, and v0.5 action
+  guards.
+- Require every registered Listener to advertise v0.5 capability before the
+  maintenance window opens writes. Old Listener reconnects and v0.4 ACKs must
+  fail clearly rather than downgrade.
+
+The fixed delivery policy is four total attempts: initial delivery plus retries
+after 1, 5, and 10 minutes. The Listener does not schedule retries; it reports
+durable ACK or an explicit non-retryable persistence failure, while Relay owns
+attempt scheduling and exhaustion.
+
+Planned verification:
+
+- v0.5 manifest and MCP tool contract;
+- durable local Message persistence before ACK;
+- stable duplicate ACK and stale-state recovery;
+- non-recursive informational Event ACK;
+- workspace v2 and read-only v0.4 workspace preservation;
+- Inbox UI Task/delivery separation and action guards;
+- protocol mismatch and required-upgrade behavior;
+- real two-Agent create/ACK/response/ACK/complete/follow-up E2E;
+- attempt-exhaustion state synchronization with Server visibility.
+
+Implementation dependency order:
+
+1. Merge and publish planning updates while preserving v0.4.
+2. Merge the Server v0.5 implementation and migration tooling.
+3. Merge MCP/Listener and workspace v2 support.
+4. Merge Inbox UI changes and complete cross-repository conformance.
+5. Upgrade all Listener installations during the maintenance window before
+   Server writes open.
 
 ## Personal Agent MCP Plan
 
