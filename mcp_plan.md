@@ -1,6 +1,6 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 ## Audience And Sources
 
@@ -207,6 +207,35 @@ durable ACK or a guarded, idempotent non-retryable persistence NACK with Event,
 Message, turn, and task-version identity. Retryable local errors send neither
 ACK nor NACK. Relay alone owns attempt scheduling and exhaustion.
 
+Why these client rules exist:
+
+- Readiness blocks admission of a Task when an enabled participant is still on
+  an incompatible Listener; it is not delivery evidence or execution progress.
+- Keeping legacy workspaces read-only prevents an old snapshot from being
+  rewritten into a plausible but false v0.5 state. Workspace v2 contains only
+  native v0.5 materialized views.
+- NACK is deliberately narrower than a generic error report. Use it only when
+  the Listener has positively determined that retry cannot make local durable
+  persistence succeed without intervention. Transient I/O, lock contention,
+  timeout, process restart, and uncertain outcomes send no ACK or NACK and let
+  Relay retry. This avoids both false delivery and premature Task failure.
+
+Project Hermes client workstream:
+
+1. Inventory the exact deployed Hermes Listener version, service definition,
+   workspace root, capability advertisement, readiness publisher, and rollback
+   command together with the dispatcher ownership discovery.
+2. Upgrade Hermes intake to v0.5 protocol routing, complete Message fetch,
+   workspace lock/persist/verify, versioned ACK, guarded NACK, and stale-state
+   resync. Local execution progress remains local and is not added to Relay.
+3. Upgrade Hermes reply submission to strict two-Agent alternation, aggregate
+   `task_version`, stable idempotency, and workspace refresh after mutation.
+4. Make the dispatcher consume only Server batch visibility diagnosis and treat
+   missing/unauthorized batch items as report errors, not failed Tasks.
+5. Add fixtures for Zac delivered-but-waiting, Vivi not-delivered, exhaustion,
+   completed, expired, partial-batch, stale readiness, and duplicate schedule
+   execution; verify dry-run output before enabling WeCom delivery.
+
 Planned verification:
 
 - v0.5 manifest and MCP tool contract;
@@ -218,6 +247,9 @@ Planned verification:
 - Inbox UI Task/delivery separation and action guards;
 - protocol mismatch and required-upgrade behavior;
 - enabled-Agent capability/readiness admission and stale-readiness rejection;
+- Hermes Listener Message-before-ACK and guarded-NACK behavior;
+- Hermes dispatcher diagnosis mapping, partial-batch handling, dry-run output,
+  and per-window duplicate-send prevention;
 - real two-Agent create/ACK/response/ACK/complete/follow-up E2E;
 - attempt-exhaustion state synchronization with Server visibility.
 
