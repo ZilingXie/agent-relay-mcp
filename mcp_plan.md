@@ -151,14 +151,16 @@ Client verification must cover:
 
 ## Protocol v0.5 Two-Layer Client Plan
 
-Status: core MCP/Listener/workspace v2/Inbox UI implementation merged through
-Client PR #44 on 2026-07-19 after Server PR #51. The merged `main` branches
-passed the full Server suite, all 179 Client tests, and the cross-repository
-v0.5 E2E. Hermes and production cutover are deferred to separate
-pre-production workstreams.
+Status: Protocol v0.5 is active in production as of 2026-07-19. Core
+MCP/Listener/workspace v2/Inbox UI support merged in Client PR #44 after Server
+PR #51. Client PR #47 corrected `doctor` to verify the installed v0.5 Listener's
+Relay readiness instead of opening a competing legacy WebSocket. Zac and Vivi
+now run the merged Client at `e42a4dc`; both publish fresh v0.5/workspace-v2
+readiness and persisted the successful production root/follow-up E2E. Hermes is
+an independent deferred workstream and was not changed. The 24-hour production
+observation window is still in progress.
 Protocol v0.4 remains a completed historical baseline and its tools, docs,
-tests, and workspaces must not be overwritten. Core implementation may proceed
-with production mutations closed; Hermes remains mandatory before cutover.
+tests, and workspaces must not be overwritten.
 
 The Server-owned contract is
 `ZilingXie/agentRelay/docs/task-lifecycle-v05.md`. v0.5 becomes the only active
@@ -256,12 +258,18 @@ Implemented core evidence:
   ACK/NACK endpoint compatibility probes, and successful authenticated Event
   recovery before publishing `ready=true`.
 
-Still required at maintenance/cutover:
+Production rollout evidence:
 
-- upgrade installed Listeners and confirm fresh readiness for every enabled
-  Agent;
-- complete Hermes/dispatcher work and live production rehearsal before opening
-  production writes.
+- Zac's full local installation passes the v0.5 `doctor`, including Listener
+  identity/readiness matching, protocol bundle sync, and Inbox UI health.
+- Vivi's isolated listener-only runtime passes its Listener freshness and Relay
+  readiness checks. Full Codex config and Inbox UI checks are intentionally not
+  applicable to that runtime.
+- Both production Tasks completed at `task_version=5`; all four Messages are
+  delivered and persisted in workspace v2.
+- The remaining release activity is the 24-hour observation record. Hermes and
+  dispatcher work remain separately deferred and do not change current v0.5
+  Task/Message truth.
 
 Project Hermes client workstream:
 
