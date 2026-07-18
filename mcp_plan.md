@@ -151,10 +151,11 @@ Client verification must cover:
 
 ## Protocol v0.5 Two-Layer Client Plan
 
-Status: design approved; implementation planned. Protocol v0.4 remains a
-completed historical baseline and its tools, docs, tests, and workspaces must
-not be overwritten. No v0.5 implementation begins until Server, Client, and
-public planning updates are merged and published.
+Status: core design confirmed; specification review in progress;
+implementation not started. Protocol v0.4 remains a completed historical
+baseline and its tools, docs, tests, and workspaces must not be overwritten. No
+v0.5 implementation begins until Server, Client, and public planning updates
+are merged and published.
 
 The Server-owned contract is
 `ZilingXie/agentRelay/docs/task-lifecycle-v05.md`. v0.5 becomes the only active
@@ -174,49 +175,61 @@ Planned client behavior:
 
 - Add v0.5 protocol sync, create, send Message, complete, fail, follow-up,
   lineage, and visibility tools; switch generic tools to v0.5 at cutover.
-- Reject v0.4 mutations locally with `protocol_retired`; preserve historical
-  GET, timeline, lineage, and read-only local workspaces.
+- Reject v0.3/v0.4 mutations locally with `protocol_retired`; preserve
+  historical GET, timeline, lineage, and read-only local workspaces.
 - Replace `expected_status_version` with the aggregate
   `expected_task_version`; do not add a delivery version.
 - Handle `message.pending` by fetching the complete Task/Message, taking the
   workspace lock, durably writing workspace v2, verifying the write, and only
   then sending the current-Message ACK.
+- Route intake by protocol and Event authority before ACK. A transitionable
+  v0.5 `message.pending` Event must use Message-before-ACK; the existing
+  ACK-then-sync path is permitted only for read-only legacy intake and v0.5
+  informational Events that cannot transition Message or Task state.
 - Use stable ACK idempotency over Agent, Task, Message, turn, and task version.
 - Treat task/delivery/attempt notifications as informational outbox Events whose
   ACKs cannot mutate Task or Message.
 - Store Task lifecycle and each Message's delivery separately in workspace v2;
-  preserve v0.4 workspaces as read-only legacy data.
+  preserve v0.3/v0.4 workspaces as read-only legacy data.
 - Update Inbox UI to show separate Task and delivery badges, two-dimensional
   filters, attempt/next-retry details, visibility diagnosis, and v0.5 action
   guards.
-- Require every registered Listener to advertise v0.5 capability before the
-  maintenance window opens writes. Old Listener reconnects and v0.4 ACKs must
-  fail clearly rather than downgrade.
+- Treat the Server enabled-Agent registry as the cutover admission set. Every
+  enabled Agent must advertise v0.5 and publish fresh ready Listener status;
+  unsupported/offline Agents are disabled before writes open. Old Listener
+  reconnects and v0.3/v0.4 ACKs fail clearly rather than downgrade.
+- Start workspace v2 against the new v0.5 collaboration namespace. Keep all
+  v0.3/v0.4 workspace roots read-only and never rewrite them as v0.5.
 
 The fixed delivery policy is four total attempts: initial delivery plus retries
 after 1, 5, and 10 minutes. The Listener does not schedule retries; it reports
-durable ACK or an explicit non-retryable persistence failure, while Relay owns
-attempt scheduling and exhaustion.
+durable ACK or a guarded, idempotent non-retryable persistence NACK with Event,
+Message, turn, and task-version identity. Retryable local errors send neither
+ACK nor NACK. Relay alone owns attempt scheduling and exhaustion.
 
 Planned verification:
 
 - v0.5 manifest and MCP tool contract;
 - durable local Message persistence before ACK;
 - stable duplicate ACK and stale-state recovery;
+- guarded non-retryable NACK and retryable no-ACK behavior;
 - non-recursive informational Event ACK;
-- workspace v2 and read-only v0.4 workspace preservation;
+- workspace v2 and read-only v0.3/v0.4 workspace preservation;
 - Inbox UI Task/delivery separation and action guards;
 - protocol mismatch and required-upgrade behavior;
+- enabled-Agent capability/readiness admission and stale-readiness rejection;
 - real two-Agent create/ACK/response/ACK/complete/follow-up E2E;
 - attempt-exhaustion state synchronization with Server visibility.
 
 Implementation dependency order:
 
 1. Merge and publish planning updates while preserving v0.4.
-2. Merge the Server v0.5 implementation and migration tooling.
-3. Merge MCP/Listener and workspace v2 support.
-4. Merge Inbox UI changes and complete cross-repository conformance.
-5. Upgrade all Listener installations during the maintenance window before
+2. Locate and record the deployed Hermes dispatcher repository, path, and
+   owner; treat its upgrade as a cutover blocker.
+3. Merge the Server v0.5 implementation and archive/cutover tooling.
+4. Merge MCP/Listener and workspace v2 support.
+5. Merge Inbox UI changes and complete cross-repository conformance.
+6. Upgrade all Listener installations during the maintenance window before
    Server writes open.
 
 ## Personal Agent MCP Plan
@@ -323,13 +336,15 @@ conversation, and safely submit the confirmed result. Relay remains the only
 authoritative task source; local files make the latest fetched task readable,
 recoverable, and inspectable without creating a second protocol authority.
 
-Status (2026-07-13): implemented in the MCP client. The per-task workspace,
-ACK-then-sync pipeline, one-retry recovery, manual resync, workspace-backed UI,
-prepared-action context guard, stable idempotency, post-submit sync,
-monotonic snapshot protection, index rebuild, and legacy opt-in executor
-workspace guard are covered by focused and full-suite tests. Relay-side atomic
-`409 Conflict` enforcement for artifact and close goal-version mismatches
-remains server-owned follow-up work.
+Status (2026-07-13): implemented legacy baseline in the MCP client. The
+per-task workspace, ACK-then-sync pipeline, one-retry recovery, manual resync,
+workspace-backed UI, prepared-action context guard, stable idempotency,
+post-submit sync, monotonic snapshot protection, index rebuild, and legacy
+opt-in executor workspace guard are covered by focused and full-suite tests.
+Relay-side atomic `409 Conflict` enforcement for artifact and close
+goal-version mismatches remains server-owned follow-up work. Protocol v0.5
+transitionable `message.pending` intake supersedes this ordering with
+Message-before-ACK.
 
 ### Confirmed Context Contract
 
@@ -506,7 +521,9 @@ GET Relay task
 
 ### Incoming Updates While Work Is In Progress
 
-1. Every new Relay notification follows the same ACK-then-sync pipeline.
+1. Route by protocol and Event authority: v0.5 transitionable
+   `message.pending` uses fetch-lock-persist-verify-ACK; informational and
+   read-only legacy notifications may use the legacy ACK-then-sync pipeline.
 2. A successful newer fetch atomically replaces `remote.json` and regenerates
    the readable context files.
 3. Never overwrite or delete an existing proposed action or local draft.
