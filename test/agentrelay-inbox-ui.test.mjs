@@ -18,6 +18,7 @@ import {
   scheduleInboxProcessing,
   runTaskDraftResponsesApi
 } from "../scripts/agentrelay-inbox-ui.mjs";
+import { persistTaskWorkspace, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
 test("loadInboxSnapshot returns an empty inbox when issues.json is missing", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
@@ -555,6 +556,50 @@ test("inbox UI detail reads local workspace and explicit resync fetches Relay wi
     assert.deepEqual(issue.eventIds || [], []);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("inbox UI projects v0.5 Task and Message delivery from Server visibility", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-v05-"));
+  const stateRoot = join(root, "state");
+  const task = {
+    task_id: "task_ui_v05", root_task_id: "task_ui_v05", protocol_version: "agent-collab-v0.5",
+    requester_agent_id: "zac-agent", target_agent_id: "frank-agent", done_criteria: "pong",
+    status: "open", current_message_id: "msg_ui_v05", turn_sequence: 1, task_version: 1,
+    from_agent_id: "zac-agent", to_agent_id: "frank-agent", max_turns: 3, updated_at: 1,
+    messages: [{
+      message_id: "msg_ui_v05", delivery_status: "pending", max_delivery_attempts: 4,
+      parts: [{ kind: "text", text: "ping" }]
+    }],
+    artifacts: []
+  };
+  await persistTaskWorkspace({ stateRoot, task, localAgentId: "zac-agent" });
+  const relayClient = {
+    async getTaskVisibilityBatch(taskIds) {
+      assert.deepEqual(taskIds, ["task_ui_v05"]);
+      return { items: [{
+        task: { ...task, messages: undefined, artifacts: undefined, task_version: 2 },
+        current_message: { ...task.messages[0], delivery_status: "delivered" },
+        outbox: {
+          outbox_status: "acked", outbox_attempts: 1, next_retry_at: null, last_error: null
+        },
+        diagnosis: "waiting_target_response"
+      }], errors: [] };
+    }
+  };
+  const server = createInboxUiServer({ stateRoot, localAgentId: "zac-agent", relayClient });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  try {
+    const { port } = server.address();
+    const snapshot = await (await fetch(`http://127.0.0.1:${port}/api/issues`)).json();
+    const issue = snapshot.issues[0];
+    assert.equal(issue.relayStatus, "open");
+    assert.equal(issue.taskVersion, 2);
+    assert.equal(issue.messageDeliveryStatus, "delivered");
+    assert.equal(issue.diagnosis, "waiting_target_response");
+    assert.equal(issue.deliveryAttempts, 1);
+  } finally {
+    await new Promise((resolveClose) => server.close(resolveClose));
   }
 });
 
@@ -1386,6 +1431,65 @@ test("inbox UI server accepts nested task ids in create task responses", async (
     assert.equal(inbox.issues.task_nested_id.localActions[1].type, "task_created_from_ui");
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("inbox UI sends a strict v0.5 create and persists the returned Messages in workspace v2", async () => {
+  const previousProtocol = process.env.AGENTRELAY_PROTOCOL_VERSION;
+  process.env.AGENTRELAY_PROTOCOL_VERSION = "agent-collab-v0.5";
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-create-v05-"));
+  const stateRoot = join(root, "state");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(stateRoot, { recursive: true }));
+  await writeFile(join(stateRoot, "task-drafts.json"), JSON.stringify({
+    version: 1,
+    drafts: {
+      draft_v05: {
+        draftId: "draft_v05", status: "drafted", to: "frank-agent", from: "zac-agent",
+        subject: "Ping", requestText: "ping", doneCriteria: "pong",
+        createdAt: "2026-07-19T08:00:00Z", updatedAt: "2026-07-19T08:00:00Z"
+      }
+    }
+  }));
+  let createPayload;
+  const server = createInboxUiServer({
+    stateRoot,
+    relayClient: {
+      async createTask(payload) {
+        createPayload = payload;
+        return {
+          task: {
+            task_id: "task_created_v05", root_task_id: "task_created_v05",
+            protocol_version: "agent-collab-v0.5", requester_agent_id: "zac-agent",
+            target_agent_id: "frank-agent", done_criteria: "pong", status: "open",
+            current_message_id: "msg_created_v05", turn_sequence: 1, task_version: 1,
+            from_agent_id: "zac-agent", to_agent_id: "frank-agent", max_turns: 12,
+            task_expires_at: 9999999999, updated_at: 1
+          },
+          messages: [{
+            message_id: "msg_created_v05", delivery_status: "pending",
+            max_delivery_attempts: 4, parts: [{ kind: "text", text: "ping" }]
+          }]
+        };
+      }
+    }
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/task-drafts/draft_v05/send`, { method: "POST" });
+    assert.equal(response.status, 201);
+    assert.deepEqual(Object.keys(createPayload).sort(), [
+      "done_criteria", "idempotency_key", "message", "protocol_version",
+      "requester_agent_id", "target_agent_id"
+    ]);
+    assert.equal(createPayload.protocol_version, "agent-collab-v0.5");
+    const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_created_v05" });
+    assert.equal(workspace.paths.workspaceVersion, 2);
+    assert.equal(workspace.task.messages[0].message_id, "msg_created_v05");
+  } finally {
+    await new Promise((resolveClose) => server.close(resolveClose));
+    if (previousProtocol === undefined) delete process.env.AGENTRELAY_PROTOCOL_VERSION;
+    else process.env.AGENTRELAY_PROTOCOL_VERSION = previousProtocol;
   }
 });
 

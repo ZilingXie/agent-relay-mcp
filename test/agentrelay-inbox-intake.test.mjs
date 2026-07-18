@@ -8,6 +8,121 @@ import test from "node:test";
 import { processInboxEvent } from "../scripts/agentrelay-inbox-intake.mjs";
 import { readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
+function v05Detail({ messageId = "msg_v05", taskVersion = 1, deliveryStatus = "pending" } = {}) {
+  return {
+    task: {
+      task_id: "task_v05", root_task_id: "task_v05", protocol_version: "agent-collab-v0.5",
+      requester_agent_id: "zac-agent", target_agent_id: "frank-agent", done_criteria: "pong",
+      status: "open", current_message_id: messageId, turn_sequence: 1, task_version: taskVersion,
+      from_agent_id: "zac-agent", to_agent_id: "frank-agent", max_turns: 3, updated_at: taskVersion
+    },
+    messages: [{
+      message_id: messageId, task_id: "task_v05", turn_sequence: 1,
+      from_agent_id: "zac-agent", to_agent_id: "frank-agent",
+      delivery_status: deliveryStatus, parts: [{ kind: "text", text: "ping" }]
+    }]
+  };
+}
+
+test("v0.5 current Message is verified in workspace v2 before versioned ACK", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-v05-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  const event = {
+    eventId: "evt_v05", type: "message.pending", protocolVersion: "agent-collab-v0.5",
+    taskId: "task_v05", messageId: "msg_v05", agentId: "frank-agent",
+    canTransitionMessage: true
+  };
+  await writeFile(eventPath, JSON.stringify({ event }));
+  const calls = [];
+  const detail = v05Detail();
+  const result = await processInboxEvent({
+    eventPath, stateRoot, projectPath: root, agentId: "frank-agent",
+    listenerInstanceId: "listener-1", readinessEpoch: 4, ackReceived: true,
+    relayClient: {
+      async getTask() { calls.push("get"); return detail; },
+      async ackMessage(metadata) {
+        const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_v05" });
+        assert.equal(workspace.paths.workspaceVersion, 2);
+        assert.equal(workspace.task.messages[0].message_id, "msg_v05");
+        assert.equal(metadata.payload.expected_task_version, 1);
+        assert.equal(metadata.payload.readiness_epoch, 4);
+        calls.push("ack");
+        return v05Detail({ taskVersion: 2, deliveryStatus: "delivered" });
+      }
+    }
+  });
+  assert.deepEqual(calls, ["get", "ack"]);
+  assert.equal(result.acked, true);
+  assert.equal((await readTaskWorkspace({ stateRoot, taskId: "task_v05" })).task.task_version, 2);
+});
+
+test("v0.5 stale Message Event does not ACK a newer current Message", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-v05-stale-"));
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify({ event: {
+    eventId: "evt_old", type: "message.pending", protocolVersion: "agent-collab-v0.5",
+    taskId: "task_v05", messageId: "msg_old", canTransitionMessage: true
+  } }));
+  let acked = 0;
+  const result = await processInboxEvent({
+    eventPath, stateRoot: join(root, "state"), projectPath: root, agentId: "frank-agent",
+    listenerInstanceId: "listener-1", readinessEpoch: 4, ackReceived: true,
+    relayClient: {
+      async getTask() { return v05Detail({ messageId: "msg_new", taskVersion: 3 }); },
+      async ackMessage() { acked += 1; }
+    }
+  });
+  assert.equal(acked, 0);
+  assert.equal(result.acked, false);
+});
+
+test("v0.5 informational Event uses non-recursive Event ACK", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-v05-info-"));
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify({ event: {
+    eventId: "evt_info", type: "message.delivery_changed", protocolVersion: "agent-collab-v0.5",
+    taskId: "task_v05", messageId: "msg_v05", canTransitionMessage: false
+  } }));
+  const calls = [];
+  const result = await processInboxEvent({
+    eventPath, stateRoot: join(root, "state"), projectPath: root, agentId: "zac-agent",
+    listenerInstanceId: "listener-1", readinessEpoch: 4, ackReceived: true,
+    relayClient: {
+      async ackInformationalEvent({ payload }) {
+        assert.equal(payload.listener_instance_id, "listener-1");
+        calls.push("ack-info");
+      },
+      async getTask() { calls.push("get"); return v05Detail({ taskVersion: 2, deliveryStatus: "delivered" }); }
+    }
+  });
+  assert.deepEqual(calls, ["ack-info", "get"]);
+  assert.equal(result.acked, true);
+});
+
+test("v0.5 deterministic local persistence failure sends guarded NACK", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-v05-nack-"));
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify({ event: {
+    eventId: "evt_nack", type: "message.pending", protocolVersion: "agent-collab-v0.5",
+    taskId: "task_v05", messageId: "msg_v05", canTransitionMessage: true
+  } }));
+  let nackPayload;
+  const task = { ...v05Detail().task, messages: v05Detail().messages, artifacts: [] };
+  const result = await processInboxEvent({
+    eventPath, stateRoot: join(root, "state"), projectPath: root, agentId: "frank-agent",
+    listenerInstanceId: "listener-1", readinessEpoch: 4, ackReceived: true,
+    syncTaskContext: async () => ({
+      status: "context_sync_failed", task, error: { category: "local_persistence", message: "read-only" }
+    }),
+    relayClient: {
+      async failMessageDelivery(metadata) { nackPayload = metadata.payload; return {}; }
+    }
+  });
+  assert.equal(result.nacked, true);
+  assert.equal(nackPayload.reason, "listener_persistence_failed");
+});
+
 test("v0.4 current Message is durably recorded before lifecycle ACK", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-v04-"));
   const stateRoot = join(root, "state");

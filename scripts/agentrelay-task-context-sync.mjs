@@ -21,7 +21,8 @@ export async function resyncLocalTask({
   retryDelayMs = 250,
   sleep = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms)),
   now = () => new Date().toISOString(),
-  agentsMdPath
+  agentsMdPath,
+  workspaceVersion = 1
 }) {
   if (!stateRoot) throw new Error("State root is required for local task resync");
   if (!taskId) throw new Error("Task id is required for local task resync");
@@ -30,14 +31,16 @@ export async function resyncLocalTask({
   if (inFlightResyncs.has(key)) return inFlightResyncs.get(key);
   const promise = withTaskWorkspaceLock({ stateRoot, taskId }, async () => {
     const startedAt = now();
-    await markTaskSyncPending({ stateRoot, taskId, eventId, source, at: startedAt, lock: false });
+    await markTaskSyncPending({ stateRoot, taskId, eventId, source, at: startedAt, workspaceVersion, lock: false });
     const attempts = [];
     let lastError = null;
+    let lastTask = null;
     const limit = Math.max(1, Number(maxAttempts || 1));
     for (let attempt = 1; attempt <= limit; attempt += 1) {
       const attemptedAt = now();
       try {
         const task = attempt === 1 && initialTask ? initialTask : unwrapTask(await fetchTask(taskId));
+        lastTask = task;
         validateTask(task, taskId);
         const result = await persistTaskWorkspace({
           stateRoot,
@@ -74,12 +77,14 @@ export async function resyncLocalTask({
       error: lastError,
       at: failedAt,
       agentsMdPath,
+      workspaceVersion,
       lock: false
     });
     return {
       status: "context_sync_failed",
       taskId: String(taskId),
       attempts,
+      task: lastTask,
       error: result.sync.lastError,
       handoffPrompt: result.handoffPrompt,
       paths: result.paths
@@ -94,7 +99,17 @@ export async function resyncLocalTask({
 }
 
 export function unwrapTask(response) {
-  return response?.data?.task || response?.task || response || null;
+  const envelope = response?.data || response;
+  const task = envelope?.task || envelope || null;
+  if (!task || typeof task !== "object") return task;
+  if ((task.protocol_version || task.protocolVersion) === "agent-collab-v0.5") {
+    return {
+      ...task,
+      messages: Array.isArray(envelope.messages) ? envelope.messages : (task.messages || []),
+      artifacts: []
+    };
+  }
+  return task;
 }
 
 export async function recoverPendingTaskSyncs({

@@ -17,15 +17,27 @@ export function sanitizeTaskId(taskId) {
 }
 
 export function taskWorkspacePaths(stateRoot, taskId) {
+  return buildTaskWorkspacePaths(stateRoot, taskId, 1);
+}
+
+export function taskWorkspacePathsV2(stateRoot, taskId) {
+  return buildTaskWorkspacePaths(stateRoot, taskId, 2);
+}
+
+function buildTaskWorkspacePaths(stateRoot, taskId, workspaceVersion) {
   const root = resolve(stateRoot);
   const safeTaskId = sanitizeTaskId(taskId);
-  const taskDir = join(root, "tasks", safeTaskId);
+  const workspaceRoot = workspaceVersion === 2 ? join(root, "collaboration-v2") : root;
+  const taskDir = join(workspaceRoot, "tasks", safeTaskId);
   return {
     stateRoot: root,
+    workspaceRoot,
+    workspaceVersion,
     taskId: String(taskId),
     safeTaskId,
     taskDir,
-    remotePath: join(taskDir, "remote.json"),
+    remotePath: join(taskDir, workspaceVersion === 2 ? "task.json" : "remote.json"),
+    messagesPath: workspaceVersion === 2 ? join(taskDir, "messages.json") : null,
     contextPath: join(taskDir, "context.md"),
     handoffPath: join(taskDir, "handoff.md"),
     syncPath: join(taskDir, "sync.json"),
@@ -54,11 +66,13 @@ export function deriveTaskContextEnvelope(task) {
     currentMessageId: String(task.current_message_id || task.currentMessageId || ""),
     turnSequence: numberOrNull(task.turn_sequence ?? task.turnSequence),
     statusVersion: numberOrNull(task.status_version ?? task.statusVersion),
+    taskVersion: numberOrNull(task.task_version ?? task.taskVersion),
     fromAgentId: String(task.from_agent_id || task.fromAgentId || ""),
     toAgentId: String(task.to_agent_id || task.toAgentId || ""),
     pendingOnAgentId: String(task.pending_on_agent_id || task.pendingOnAgentId || ""),
     completionOwnerAgentId: String(task.completion_owner_agent_id || task.completionOwnerAgentId || ""),
     latestMessageId: relayItemId(messages.at(-1), "message"),
+    currentMessageDeliveryStatus: String(currentMessage(task)?.delivery_status || currentMessage(task)?.deliveryStatus || ""),
     latestArtifactId: relayItemId(artifacts.at(-1), "artifact")
   };
 }
@@ -74,11 +88,13 @@ export function compareTaskContextEnvelopes(expected, current) {
     "currentMessageId",
     "turnSequence",
     "statusVersion",
+    "taskVersion",
     "fromAgentId",
     "toAgentId",
     "pendingOnAgentId",
     "completionOwnerAgentId",
     "latestMessageId",
+    "currentMessageDeliveryStatus",
     "latestArtifactId"
   ];
   const changedFields = fields.filter((field) => normalizeComparable(expected?.[field]) !== normalizeComparable(current?.[field]));
@@ -101,6 +117,7 @@ export function buildTaskContextMarkdown(task, { syncedAt = "" } = {}) {
     `- Current message: ${envelope.currentMessageId || "none"}`,
     `- Turn: ${displayValue(envelope.turnSequence)}`,
     `- Status version: ${displayValue(envelope.statusVersion)}`,
+    `- Task version: ${displayValue(envelope.taskVersion)}`,
     `- Current direction: ${envelope.fromAgentId || "none"} -> ${envelope.toAgentId || "none"}`,
     `- Goal version: ${displayValue(envelope.goalVersion)}`,
     `- Exchange epoch: ${displayValue(envelope.exchangeEpoch)}`,
@@ -168,19 +185,34 @@ export function buildTaskHandoffPrompt({
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export async function ensureTaskWorkspaceState({ stateRoot }) {
+export async function ensureTaskWorkspaceState({ stateRoot, workspaceVersion = 1 }) {
   const root = resolve(stateRoot);
-  await mkdir(join(root, "tasks"), { recursive: true, mode: 0o700 });
+  const workspaceRoot = workspaceVersion === 2 ? join(root, "collaboration-v2") : root;
+  await mkdir(join(workspaceRoot, "tasks"), { recursive: true, mode: 0o700 });
   await mkdir(join(root, ".locks"), { recursive: true, mode: 0o700 });
   if (!existsSync(join(root, "task-index.json"))) {
     await writeJsonAtomic(join(root, "task-index.json"), { version: 1, tasks: {} });
   }
 }
 
+export async function verifyWorkspaceV2Ready({ stateRoot }) {
+  await ensureTaskWorkspaceState({ stateRoot, workspaceVersion: 2 });
+  const probePath = join(resolve(stateRoot), "collaboration-v2", `.readiness-${process.pid}-${randomUUID()}.json`);
+  const nonce = randomUUID();
+  try {
+    await writeJsonAtomic(probePath, { nonce });
+    const persisted = await readJson(probePath, null);
+    if (persisted?.nonce !== nonce) throw new Error("workspace_v2_readiness_verification_failed");
+  } finally {
+    await rm(probePath, { force: true });
+  }
+  return { workspaceVersion: 2, verified: true };
+}
+
 export async function readTaskWorkspace({ stateRoot, taskId }) {
-  const paths = taskWorkspacePaths(stateRoot, taskId);
+  const paths = await locateTaskWorkspacePaths(stateRoot, taskId);
   const [task, sync, workflow, handoffPrompt] = await Promise.all([
-    readJson(paths.remotePath, null),
+    readWorkspaceTask(paths),
     readJson(paths.syncPath, defaultSync(taskId)),
     readJson(paths.workflowPath, defaultWorkflow(taskId)),
     readFile(paths.handoffPath, "utf8").catch(() => "")
@@ -219,12 +251,15 @@ export async function persistTaskWorkspace({
 }
 
 async function persistTaskWorkspaceUnlocked({ stateRoot, task, taskId, localAgentId, source, eventId, syncedAt, agentsMdPath }) {
-  await ensureTaskWorkspaceState({ stateRoot });
-  const paths = taskWorkspacePaths(stateRoot, taskId);
+  const workspaceVersion = isProtocolV05(task) ? 2 : 1;
+  await ensureTaskWorkspaceState({ stateRoot, workspaceVersion });
+  const paths = workspaceVersion === 2
+    ? taskWorkspacePathsV2(stateRoot, taskId)
+    : taskWorkspacePaths(stateRoot, taskId);
   await mkdir(paths.actionsDir, { recursive: true, mode: 0o700 });
   const previousSync = await readJson(paths.syncPath, defaultSync(taskId));
   const workflow = await readJson(paths.workflowPath, await workflowFromLegacyIssue(paths));
-  const previousTask = await readJson(paths.remotePath, null);
+  const previousTask = await readWorkspaceTask(paths);
   if (previousTask && isOlderTaskSnapshot(task, previousTask)) {
     const sync = {
       ...previousSync,
@@ -286,13 +321,20 @@ async function persistTaskWorkspaceUnlocked({ stateRoot, task, taskId, localAgen
     type: nextWorkflow.handoffType,
     sync: nextSync
   });
+  const taskWrites = paths.workspaceVersion === 2
+    ? [
+        writeJsonAtomic(paths.remotePath, taskRecord(task)),
+        writeJsonAtomic(paths.messagesPath, Array.isArray(task.messages) ? task.messages : [])
+      ]
+    : [writeJsonAtomic(paths.remotePath, task)];
   await Promise.all([
-    writeJsonAtomic(paths.remotePath, task),
+    ...taskWrites,
     writeTextAtomic(paths.contextPath, context),
     writeTextAtomic(paths.handoffPath, handoffPrompt),
     writeJsonAtomic(paths.syncPath, nextSync),
     writeJsonAtomic(paths.workflowPath, nextWorkflow)
   ]);
+  if (paths.workspaceVersion === 2) await verifyWorkspaceV2Write(paths, task);
   const issue = await projectWorkspaceState({ paths, task, sync: nextSync, workflow: nextWorkflow, handoffPrompt, localAgentId, updatedAt: syncedAt });
   return { task, sync: nextSync, workflow: nextWorkflow, handoffPrompt, issue, paths, contextEnvelope: envelope, staleActionIds };
 }
@@ -303,11 +345,14 @@ export async function markTaskSyncPending({
   eventId = "",
   source = "event",
   at = new Date().toISOString(),
+  workspaceVersion = 1,
   lock = true
 }) {
   const write = async () => {
-    await ensureTaskWorkspaceState({ stateRoot });
-    const paths = taskWorkspacePaths(stateRoot, taskId);
+    await ensureTaskWorkspaceState({ stateRoot, workspaceVersion });
+    const paths = workspaceVersion === 2
+      ? taskWorkspacePathsV2(stateRoot, taskId)
+      : await locateTaskWorkspacePaths(stateRoot, taskId);
     await mkdir(paths.actionsDir, { recursive: true, mode: 0o700 });
     const previousSync = await readJson(paths.syncPath, defaultSync(taskId));
     const workflow = await readJson(paths.workflowPath, await workflowFromLegacyIssue(paths));
@@ -330,7 +375,7 @@ export async function markTaskSyncPending({
       updatedAt: at
     };
     await Promise.all([writeJsonAtomic(paths.syncPath, sync), writeJsonAtomic(paths.workflowPath, nextWorkflow)]);
-    await projectWorkspaceState({ paths, task: await readJson(paths.remotePath, null), sync, workflow: nextWorkflow, handoffPrompt: await readFile(paths.handoffPath, "utf8").catch(() => ""), updatedAt: at });
+    await projectWorkspaceState({ paths, task: await readWorkspaceTask(paths), sync, workflow: nextWorkflow, handoffPrompt: await readFile(paths.handoffPath, "utf8").catch(() => ""), updatedAt: at });
     return { sync, workflow: nextWorkflow, paths };
   };
   return lock ? withTaskWorkspaceLock({ stateRoot, taskId }, write) : write();
@@ -345,11 +390,14 @@ export async function markTaskSyncFailed({
   error,
   at = new Date().toISOString(),
   agentsMdPath = defaultAgentsMdPath(stateRoot),
+  workspaceVersion = 1,
   lock = true
 }) {
   const write = async () => {
-    await ensureTaskWorkspaceState({ stateRoot });
-    const paths = taskWorkspacePaths(stateRoot, taskId);
+    await ensureTaskWorkspaceState({ stateRoot, workspaceVersion });
+    const paths = workspaceVersion === 2
+      ? taskWorkspacePathsV2(stateRoot, taskId)
+      : await locateTaskWorkspacePaths(stateRoot, taskId);
     await mkdir(paths.actionsDir, { recursive: true, mode: 0o700 });
     const previousSync = await readJson(paths.syncPath, defaultSync(taskId));
     const workflow = await readJson(paths.workflowPath, await workflowFromLegacyIssue(paths));
@@ -388,7 +436,7 @@ export async function markTaskSyncFailed({
       writeJsonAtomic(paths.syncPath, sync),
       writeJsonAtomic(paths.workflowPath, nextWorkflow)
     ]);
-    const issue = await projectWorkspaceState({ paths, task: await readJson(paths.remotePath, null), sync, workflow: nextWorkflow, handoffPrompt, updatedAt: at });
+    const issue = await projectWorkspaceState({ paths, task: await readWorkspaceTask(paths), sync, workflow: nextWorkflow, handoffPrompt, updatedAt: at });
     return { sync, workflow: nextWorkflow, handoffPrompt, issue, paths };
   };
   return lock ? withTaskWorkspaceLock({ stateRoot, taskId }, write) : write();
@@ -415,7 +463,8 @@ export async function prepareLocalAction({
 }) {
   if (!new Set([
     "submit_artifact", "request_revision", "amend_task", "close_task",
-    "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04"
+    "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04",
+    "send_message_v05", "complete_task_v05", "fail_task_v05", "create_followup_v05"
   ]).has(actionType)) {
     throw new Error(`Unsupported local action type: ${actionType}`);
   }
@@ -455,7 +504,7 @@ export async function prepareLocalAction({
 }
 
 export async function readLocalAction({ stateRoot, taskId, clientActionId }) {
-  const paths = taskWorkspacePaths(stateRoot, taskId);
+  const paths = await locateTaskWorkspacePaths(stateRoot, taskId);
   const actionId = sanitizeActionId(clientActionId);
   const action = await readJson(join(paths.actionsDir, `${actionId}.json`), null);
   if (!action) throw new Error(`Local action not found: ${clientActionId}`);
@@ -518,21 +567,28 @@ export async function backfillTaskWorkspaces({ stateRoot, localAgentId = "", age
 
 export async function rebuildTaskIndex({ stateRoot, localAgentId = "", now = () => new Date().toISOString() }) {
   await ensureTaskWorkspaceState({ stateRoot });
+  await ensureTaskWorkspaceState({ stateRoot, workspaceVersion: 2 });
   const root = resolve(stateRoot);
-  const taskDirs = await readdir(join(root, "tasks"), { withFileTypes: true }).catch(() => []);
   const candidates = [];
-  for (const entry of taskDirs) {
-    if (!entry.isDirectory()) continue;
-    const taskDir = join(root, "tasks", entry.name);
-    const [task, sync, workflow, handoffPrompt] = await Promise.all([
-      readJson(join(taskDir, "remote.json"), null),
-      readJson(join(taskDir, "sync.json"), null),
-      readJson(join(taskDir, "workflow.json"), null),
-      readFile(join(taskDir, "handoff.md"), "utf8").catch(() => "")
-    ]);
-    const taskId = task?.task_id || task?.taskId || sync?.taskId || workflow?.taskId;
-    if (!taskId) continue;
-    candidates.push({ taskId: String(taskId), task, sync, workflow, handoffPrompt });
+  for (const workspaceVersion of [1, 2]) {
+    const workspaceRoot = workspaceVersion === 2 ? join(root, "collaboration-v2") : root;
+    const taskDirs = await readdir(join(workspaceRoot, "tasks"), { withFileTypes: true }).catch(() => []);
+    for (const entry of taskDirs) {
+      if (!entry.isDirectory()) continue;
+      const taskDir = join(workspaceRoot, "tasks", entry.name);
+      const paths = workspaceVersion === 2
+        ? taskWorkspacePathsV2(stateRoot, entry.name)
+        : taskWorkspacePaths(stateRoot, entry.name);
+      const [task, sync, workflow, handoffPrompt] = await Promise.all([
+        readWorkspaceTask(paths),
+        readJson(join(taskDir, "sync.json"), null),
+        readJson(join(taskDir, "workflow.json"), null),
+        readFile(join(taskDir, "handoff.md"), "utf8").catch(() => "")
+      ]);
+      const taskId = task?.task_id || task?.taskId || sync?.taskId || workflow?.taskId;
+      if (!taskId) continue;
+      candidates.push({ taskId: String(taskId), task, sync, workflow, handoffPrompt, paths });
+    }
   }
   const rebuiltAt = now();
   const indexPath = join(root, "task-index.json");
@@ -542,9 +598,8 @@ export async function rebuildTaskIndex({ stateRoot, localAgentId = "", now = () 
     updatedAt: rebuiltAt
   }));
   for (const candidate of candidates) {
-    const paths = taskWorkspacePaths(stateRoot, candidate.taskId);
     await projectWorkspaceState({
-      paths,
+      paths: candidate.paths,
       task: candidate.task,
       sync: candidate.sync || defaultSync(candidate.taskId),
       workflow: candidate.workflow || defaultWorkflow(candidate.taskId),
@@ -576,6 +631,7 @@ export function sanitizeSyncError(error) {
   else if (/502|503|504|server unavailable|bad gateway/i.test(message)) category = "server_unavailable";
   else if (/timeout|timed out|abort/i.test(message)) category = "timeout";
   else if (/fetch failed|network|econn|enotfound|socket/i.test(message)) category = "network";
+  else if (error?.code && new Set(["EACCES", "EPERM", "EROFS", "ENOSPC"]).has(error.code)) category = "local_persistence";
   else if (/missing task|invalid.*task|response shape/i.test(message)) category = "invalid_response";
   const messages = {
     authentication: "Relay authentication failed.",
@@ -584,6 +640,7 @@ export function sanitizeSyncError(error) {
     server_unavailable: "Relay server was unavailable.",
     timeout: "Relay request timed out.",
     network: "Relay network request failed.",
+    local_persistence: "The local v0.5 workspace cannot be persisted.",
     invalid_response: "Relay returned an invalid task response.",
     unknown: "Relay task synchronization failed."
   };
@@ -656,6 +713,13 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
     currentMessageId: String(task?.current_message_id || task?.currentMessageId || existingIssue.currentMessageId || ""),
     turnSequence: task?.turn_sequence ?? task?.turnSequence ?? existingIssue.turnSequence ?? null,
     statusVersion: task?.status_version ?? task?.statusVersion ?? existingIssue.statusVersion ?? null,
+    taskVersion: task?.task_version ?? task?.taskVersion ?? existingIssue.taskVersion ?? null,
+    currentMessageDeliveryStatus: String(
+      currentMessage(task)?.delivery_status
+      || currentMessage(task)?.deliveryStatus
+      || existingIssue.currentMessageDeliveryStatus
+      || ""
+    ),
     fromAgentId: String(task?.from_agent_id || task?.fromAgentId || existingIssue.fromAgentId || ""),
     toAgentId: String(task?.to_agent_id || task?.toAgentId || existingIssue.toAgentId || ""),
     localStatus,
@@ -747,7 +811,7 @@ export function isOlderTaskSnapshot(candidate, current) {
   if (!candidate || !current) return false;
   const candidateEnvelope = deriveTaskContextEnvelope(candidate);
   const currentEnvelope = deriveTaskContextEnvelope(current);
-  for (const field of ["goalVersion", "exchangeEpoch"]) {
+  for (const field of ["taskVersion", "goalVersion", "exchangeEpoch"]) {
     const next = candidateEnvelope[field];
     const previous = currentEnvelope[field];
     if (next === null || previous === null || next === previous) continue;
@@ -763,6 +827,45 @@ export function isOlderTaskSnapshot(candidate, current) {
   const candidateArtifacts = Array.isArray(candidate.artifacts) ? candidate.artifacts.length : 0;
   const currentArtifacts = Array.isArray(current.artifacts) ? current.artifacts.length : 0;
   return candidateMessages < currentMessages || candidateArtifacts < currentArtifacts;
+}
+
+async function locateTaskWorkspacePaths(stateRoot, taskId) {
+  const v2 = taskWorkspacePathsV2(stateRoot, taskId);
+  if (existsSync(v2.remotePath) || existsSync(v2.syncPath) || existsSync(v2.workflowPath)) return v2;
+  return taskWorkspacePaths(stateRoot, taskId);
+}
+
+async function readWorkspaceTask(paths) {
+  const record = await readJson(paths.remotePath, null);
+  if (!record || paths.workspaceVersion !== 2) return record;
+  const messages = await readJson(paths.messagesPath, []);
+  return { ...record, messages, artifacts: [] };
+}
+
+function taskRecord(task) {
+  const { messages: _messages, artifacts: _artifacts, ...record } = task;
+  return record;
+}
+
+async function verifyWorkspaceV2Write(paths, expected) {
+  const actual = await readWorkspaceTask(paths);
+  const expectedEnvelope = deriveTaskContextEnvelope(expected);
+  const actualEnvelope = deriveTaskContextEnvelope(actual);
+  const comparison = compareTaskContextEnvelopes(expectedEnvelope, actualEnvelope);
+  if (!comparison.matches || (actual.messages || []).length !== (expected.messages || []).length) {
+    throw new Error(`workspace_v2_verification_failed: ${comparison.changedFields.join(",") || "message_count"}`);
+  }
+}
+
+function isProtocolV05(task) {
+  return (task?.protocol_version || task?.protocolVersion) === "agent-collab-v0.5";
+}
+
+function currentMessage(task) {
+  const messageId = task?.current_message_id || task?.currentMessageId;
+  return (Array.isArray(task?.messages) ? task.messages : []).find((message) => (
+    message.message_id || message.messageId
+  ) === messageId);
 }
 
 function taskUpdatedAt(task) {

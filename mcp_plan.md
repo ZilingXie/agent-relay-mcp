@@ -151,11 +151,12 @@ Client verification must cover:
 
 ## Protocol v0.5 Two-Layer Client Plan
 
-Status: design complete and independently reviewed; implementation not started.
+Status: core MCP/Listener/workspace v2/Inbox UI implementation completed on the
+Protocol v0.5 task branch on 2026-07-19; Hermes and production cutover are
+deferred to separate pre-production workstreams.
 Protocol v0.4 remains a completed historical baseline and its tools, docs,
-tests, and workspaces must not be overwritten. No v0.5 implementation begins
-until Server, Client, and public planning updates are merged/published and the
-Hermes baseline gate is complete.
+tests, and workspaces must not be overwritten. Core implementation may proceed
+with production mutations closed; Hermes remains mandatory before cutover.
 
 The Server-owned contract is
 `ZilingXie/agentRelay/docs/task-lifecycle-v05.md`. v0.5 becomes the only active
@@ -232,7 +233,33 @@ Why these client rules exist:
   the Listener has positively determined that retry cannot make local durable
   persistence succeed without intervention. Transient I/O, lock contention,
   timeout, process restart, and uncertain outcomes send no ACK or NACK and let
-  Relay retry. This avoids both false delivery and premature Task failure.
+Relay retry. This avoids both false delivery and premature Task failure.
+
+Implemented core evidence:
+
+- explicit v0.5 protocol sync, mutation, full Task, lineage, and visibility
+  MCP tools using aggregate `task_version`;
+- isolated `state/collaboration-v2` Task/Message storage with write/read
+  verification and legacy roots preserved;
+- epoch-bound WS/recovery plus 60-second readiness publication;
+- durable Message-before-ACK, stale Event rejection, informational ACK, and
+  guarded non-retryable persistence NACK;
+- Inbox UI Task/delivery filters, badges, attempt/next-retry details, and
+  Server diagnosis projection;
+- full Client test suite, desktop/390px browser verification, and local
+  cross-repository create/ACK/response/ACK/complete/follow-up E2E.
+- active v0.5 mode routes generic create through the native v0.5 payload and
+  locally rejects legacy mutation tools with `protocol_retired`;
+- Listener readiness now requires a real workspace v2 write/read probe,
+  ACK/NACK endpoint compatibility probes, and successful authenticated Event
+  recovery before publishing `ready=true`.
+
+Still required at maintenance/cutover:
+
+- upgrade installed Listeners and confirm fresh readiness for every enabled
+  Agent;
+- complete Hermes/dispatcher work and live production rehearsal before opening
+  production writes.
 
 Project Hermes client workstream:
 
@@ -271,13 +298,13 @@ Planned verification:
 
 Implementation dependency order:
 
-1. Complete Task 0: merge/publish Server, Client, and public planning updates;
-   secret-scan, obtain user approval for, preserve, and reconcile the identified
-   Hermes dirty baseline. No v0.5 code begins before both parts finish.
+1. Complete Task 0 Server, Client, and public planning publication; keep
+   production mutations closed throughout core implementation.
 2. Merge the Server v0.5 implementation and archive/cutover tooling.
 3. Merge MCP/Listener and workspace v2 support.
 4. Merge Inbox UI changes and complete cross-repository conformance.
-5. Upgrade all Listener installations during the maintenance window before
+5. Preserve and upgrade Hermes in its independent workstream.
+6. Upgrade all Listener installations during the maintenance window before
    Server writes open.
 
 ## Personal Agent MCP Plan

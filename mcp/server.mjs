@@ -19,6 +19,15 @@ import {
   buildMessagePayloadV04,
   validatePreparedActionV04
 } from "../scripts/agentrelay-v04.mjs";
+import {
+  buildCompletePayloadV05,
+  buildCreatePayloadV05,
+  buildFailPayloadV05,
+  buildFollowupPayloadV05,
+  buildMessagePayloadV05,
+  validateFollowupSourceV05,
+  validatePreparedActionV05
+} from "../scripts/agentrelay-v05.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -26,6 +35,7 @@ loadDotEnv(process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const PROTOCOL_VERSION = "agent-collab-v0.3";
+const ACTIVE_PROTOCOL_VERSION = process.env.AGENTRELAY_PROTOCOL_VERSION || PROTOCOL_VERSION;
 const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL);
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
@@ -129,6 +139,15 @@ function registerTools(mcpServer) {
       if (!requesterAgentId || !targetAgentId) {
         throw new Error("agentrelay_create_task requires requester_agent_id/target_agent_id or legacy from/to");
       }
+      if (ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5") {
+        return jsonResult(await relayPost("/tasks", buildCreatePayloadV05({
+          requesterAgentId,
+          targetAgentId,
+          requestText: args.requestText,
+          doneCriteria: args.doneCriteria,
+          maxTurns: args.maxTurns
+        }, `mcp-v05-create-${randomUUID()}`)));
+      }
       const requestedCompletionOwnerAgentId = args.completionOwnerAgentId;
       const warnings = [];
       if (requestedCompletionOwnerAgentId && requestedCompletionOwnerAgentId !== requesterAgentId) {
@@ -185,6 +204,7 @@ function registerTools(mcpServer) {
       }
     },
     async (args) => {
+      assertLegacyMutationAvailable("agentrelay_create_task_v04");
       const key = `mcp-v04-create-${args.clientRequestId || randomUUID()}`;
       return jsonResult(await relayPost("/tasks", buildCreatePayloadV04(args, key)));
     }
@@ -204,13 +224,16 @@ function registerTools(mcpServer) {
         confirmationRef: z.string().min(1)
       }
     },
-    async (args) => jsonResult(await executeMcpTaskAction({
-      args,
-      actionType: "send_message_v04",
-      validateCurrentTask: (task) => validatePreparedActionV04("send_message_v04", task, args),
-      remotePayloadBuilder: (key) => buildMessagePayloadV04(args, key),
-      path: `/tasks/${encodeURIComponent(args.taskId)}/messages`
-    }))
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_send_message_v04");
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "send_message_v04",
+        validateCurrentTask: (task) => validatePreparedActionV04("send_message_v04", task, args),
+        remotePayloadBuilder: (key) => buildMessagePayloadV04(args, key),
+        path: `/tasks/${encodeURIComponent(args.taskId)}/messages`
+      }));
+    }
   );
 
   mcpServer.registerTool(
@@ -227,13 +250,16 @@ function registerTools(mcpServer) {
         confirmationRef: z.string().min(1)
       }
     },
-    async (args) => jsonResult(await executeMcpTaskAction({
-      args,
-      actionType: "complete_task_v04",
-      validateCurrentTask: (task) => validatePreparedActionV04("complete_task_v04", task, args),
-      remotePayloadBuilder: (key) => buildCompletePayloadV04(args, key),
-      path: `/tasks/${encodeURIComponent(args.taskId)}/complete`
-    }))
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_complete_task_v04");
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "complete_task_v04",
+        validateCurrentTask: (task) => validatePreparedActionV04("complete_task_v04", task, args),
+        remotePayloadBuilder: (key) => buildCompletePayloadV04(args, key),
+        path: `/tasks/${encodeURIComponent(args.taskId)}/complete`
+      }));
+    }
   );
 
   mcpServer.registerTool(
@@ -250,13 +276,16 @@ function registerTools(mcpServer) {
         confirmationRef: z.string().min(1)
       }
     },
-    async (args) => jsonResult(await executeMcpTaskAction({
-      args,
-      actionType: "fail_task_v04",
-      validateCurrentTask: (task) => validatePreparedActionV04("fail_task_v04", task, args),
-      remotePayloadBuilder: (key) => buildFailPayloadV04(args, key),
-      path: `/tasks/${encodeURIComponent(args.taskId)}/fail`
-    }))
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_fail_task_v04");
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "fail_task_v04",
+        validateCurrentTask: (task) => validatePreparedActionV04("fail_task_v04", task, args),
+        remotePayloadBuilder: (key) => buildFailPayloadV04(args, key),
+        path: `/tasks/${encodeURIComponent(args.taskId)}/fail`
+      }));
+    }
   );
 
   mcpServer.registerTool(
@@ -275,14 +304,17 @@ function registerTools(mcpServer) {
         confirmationRef: z.string().min(1)
       }
     },
-    async (args) => jsonResult(await executeMcpTaskAction({
-      args,
-      actionType: "create_followup_v04",
-      validateCurrentTask: (task) => validatePreparedActionV04("create_followup_v04", task, args),
-      resultTaskMode: "new_task",
-      remotePayloadBuilder: (key) => buildFollowupPayloadV04(args, key),
-      path: `/tasks/${encodeURIComponent(args.taskId)}/followups`
-    }))
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_create_followup_v04");
+      return jsonResult(await executeMcpTaskAction({
+        args,
+        actionType: "create_followup_v04",
+        validateCurrentTask: (task) => validatePreparedActionV04("create_followup_v04", task, args),
+        resultTaskMode: "new_task",
+        remotePayloadBuilder: (key) => buildFollowupPayloadV04(args, key),
+        path: `/tasks/${encodeURIComponent(args.taskId)}/followups`
+      }));
+    }
   );
 
   mcpServer.registerTool(
@@ -293,6 +325,171 @@ function registerTools(mcpServer) {
       inputSchema: { taskId: z.string().min(1) }
     },
     async ({ taskId }) => jsonResult(await relayGet(`/tasks/${encodeURIComponent(taskId)}/lineage`))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_protocol_sync_v05",
+    {
+      title: "Sync AgentRelay Protocol v0.5 bundle",
+      description: "Fetch and cache the Protocol v0.5 bundle used by the maintenance-window client.",
+      inputSchema: {}
+    },
+    async () => jsonResult(await syncProtocolVersion({ version: "agent-collab-v0.5", baseUrl }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_create_task_v05",
+    {
+      title: "Create Protocol v0.5 Task",
+      description: "Create a native two-Agent v0.5 Task and its first pending Message.",
+      inputSchema: {
+        requesterAgentId: z.string().min(1),
+        targetAgentId: z.string().min(1),
+        requestText: z.string().min(1),
+        doneCriteria: z.string().min(1),
+        maxTurns: z.number().int().positive().optional(),
+        taskExpiresAt: z.number().int().positive().optional(),
+        clientRequestId: z.string().min(1).optional()
+      }
+    },
+    async (args) => jsonResult(await relayPost(
+      "/tasks",
+      buildCreatePayloadV05(args, `mcp-v05-create-${args.clientRequestId || randomUUID()}`)
+    ))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_send_message_v05",
+    {
+      title: "Send Protocol v0.5 Message",
+      description: "Send the strictly alternating next Message from the exact current Task version.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        text: z.string().min(1),
+        ...v05MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "send_message_v05",
+      validateCurrentTask: (task) => validatePreparedActionV05("send_message_v05", task, args),
+      remotePayloadBuilder: (key) => buildMessagePayloadV05(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/messages`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_complete_task_v05",
+    {
+      title: "Complete Protocol v0.5 Task",
+      description: "Record requester confirmation against the current delivered target Message.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        completedAgainstMessageId: z.string().min(1),
+        ...v05MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "complete_task_v05",
+      validateCurrentTask: (task) => validatePreparedActionV05("complete_task_v05", task, args),
+      remotePayloadBuilder: (key) => buildCompletePayloadV05(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/complete`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_fail_task_v05",
+    {
+      title: "Fail Protocol v0.5 Task",
+      description: "End a v0.5 Task with a Relay-authorized failure reason.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        actorAgentId: z.string().min(1),
+        reason: z.enum(["agent_reported_failure", "max_turns_exhausted"]),
+        ...v05MutationContextSchema(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "fail_task_v05",
+      validateCurrentTask: (task) => validatePreparedActionV05("fail_task_v05", task, args),
+      remotePayloadBuilder: (key) => buildFailPayloadV05(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/fail`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_create_followup_v05",
+    {
+      title: "Create Protocol v0.5 follow-up",
+      description: "Create a new Task under a terminal v0.5 root lineage.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        requestText: z.string().min(1),
+        doneCriteria: z.string().min(1),
+        maxTurns: z.number().int().positive().optional(),
+        taskExpiresAt: z.number().int().positive().optional(),
+        clientActionId: z.string().min(1),
+        confirmationRef: z.string().min(1)
+      }
+    },
+    async (args) => jsonResult(await executeMcpTaskAction({
+      args,
+      actionType: "create_followup_v05",
+      validateCurrentTask: validateFollowupSourceV05,
+      resultTaskMode: "new_task",
+      remotePayloadBuilder: (key) => buildFollowupPayloadV05(args, key),
+      path: `/tasks/${encodeURIComponent(args.taskId)}/followups`
+    }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_v05",
+    {
+      title: "Get Protocol v0.5 Task",
+      description: "Fetch the authoritative Task and complete ordered Message history.",
+      inputSchema: { taskId: z.string().min(1) }
+    },
+    async ({ taskId }) => jsonResult(await relayGet(`/tasks/${encodeURIComponent(taskId)}`))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_lineage_v05",
+    {
+      title: "Get Protocol v0.5 Task lineage",
+      description: "List a v0.5 root Task and all follow-ups by root_task_id.",
+      inputSchema: { taskId: z.string().min(1) }
+    },
+    async ({ taskId }) => jsonResult(await relayGet(`/tasks/${encodeURIComponent(taskId)}/lineage`))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_visibility_v05",
+    {
+      title: "Get Protocol v0.5 Task visibility",
+      description: "Fetch Server-computed Task, Message delivery, outbox, and diagnosis state.",
+      inputSchema: { taskId: z.string().min(1) }
+    },
+    async ({ taskId }) => jsonResult(await relayGet(`/tasks/${encodeURIComponent(taskId)}/visibility`))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_visibility_batch_v05",
+    {
+      title: "Get Protocol v0.5 Task visibility batch",
+      description: "Fetch Server-computed diagnosis for a de-duplicated Task list.",
+      inputSchema: { taskIds: z.array(z.string().min(1)).min(1).max(100) }
+    },
+    async ({ taskIds }) => jsonResult(await relayPost("/task-visibility/batch", { task_ids: [...new Set(taskIds)] }))
   );
 
   mcpServer.registerTool(
@@ -336,7 +533,8 @@ function registerTools(mcpServer) {
         taskId: z.string().min(1),
         actionType: z.enum([
           "submit_artifact", "request_revision", "amend_task", "close_task",
-          "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04"
+          "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04",
+          "send_message_v05", "complete_task_v05", "fail_task_v05", "create_followup_v05"
         ]),
         payloadJson: z.string().min(2).describe("Exact JSON object of mutation arguments excluding taskId, clientActionId, and confirmationRef"),
         clientActionId: z.string().min(1).optional(),
@@ -377,7 +575,10 @@ function registerTools(mcpServer) {
         agentId: z.string().min(1)
       }
     },
-    async ({ agentId }) => jsonResult(await relayGet(`/workers/${encodeURIComponent(agentId)}/claim`))
+    async ({ agentId }) => {
+      assertLegacyMutationAvailable("agentrelay_claim_task");
+      return jsonResult(await relayGet(`/workers/${encodeURIComponent(agentId)}/claim`));
+    }
   );
 
   mcpServer.registerTool(
@@ -402,8 +603,10 @@ function registerTools(mcpServer) {
         taskId: z.string().min(1)
       }
     },
-    async ({ agentId, taskId }) =>
-      jsonResult(await relayPost(`/workers/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/claim`, {}))
+    async ({ agentId, taskId }) => {
+      assertLegacyMutationAvailable("agentrelay_claim_task_by_id");
+      return jsonResult(await relayPost(`/workers/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/claim`, {}));
+    }
   );
 
   mcpServer.registerTool(
@@ -417,13 +620,15 @@ function registerTools(mcpServer) {
         threadId: z.string().min(1)
       }
     },
-    async ({ agentId, taskId, threadId }) =>
-      jsonResult(
+    async ({ agentId, taskId, threadId }) => {
+      assertLegacyMutationAvailable("agentrelay_set_target_thread");
+      return jsonResult(
         await relayPost(
           `/workers/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/thread`,
           { threadId }
         )
-      )
+      );
+    }
   );
 
   mcpServer.registerTool(
@@ -451,6 +656,7 @@ function registerTools(mcpServer) {
       }
     },
     async (args) => {
+      assertLegacyMutationAvailable("agentrelay_submit_artifact");
       const actorAgentId = args.actor_agent_id || args.from;
       if (!actorAgentId) {
         throw new Error("agentrelay_submit_artifact requires actor_agent_id or legacy from");
@@ -517,6 +723,7 @@ function registerTools(mcpServer) {
       }
     },
     async (args) => {
+      assertLegacyMutationAvailable("agentrelay_amend_task");
       const humanAuthority = buildHumanAuthority(args);
       const payload = {
         protocol_version: PROTOCOL_VERSION,
@@ -555,8 +762,9 @@ function registerTools(mcpServer) {
         error: z.string().optional()
       }
     },
-    async (args) =>
-      jsonResult(
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_mark_delivery");
+      return jsonResult(
         await relayPost(
           `/tasks/${encodeURIComponent(args.taskId)}/deliveries`,
           compact({
@@ -569,7 +777,8 @@ function registerTools(mcpServer) {
             error: args.error
           })
         )
-      )
+      );
+    }
   );
 
   mcpServer.registerTool(
@@ -586,8 +795,9 @@ function registerTools(mcpServer) {
         terminalReason: z.string().optional()
       }
     },
-    async (args) =>
-      jsonResult(
+    async (args) => {
+      assertLegacyMutationAvailable("agentrelay_update_status");
+      return jsonResult(
         await relayPost(
           `/tasks/${encodeURIComponent(args.taskId)}/status`,
           compact({
@@ -598,7 +808,8 @@ function registerTools(mcpServer) {
             terminalReason: args.terminalReason
           })
         )
-      )
+      );
+    }
   );
 
   mcpServer.registerTool(
@@ -623,6 +834,7 @@ function registerTools(mcpServer) {
       }
     },
     async (args) => {
+      assertLegacyMutationAvailable("agentrelay_close_task");
       const completionAuthority = buildCompletionAuthority(args);
       const finalArtifact = parseOptionalJsonObject(args.finalArtifactJson, "finalArtifactJson");
       return jsonResult(await executeMcpTaskAction({
@@ -682,13 +894,15 @@ function registerTools(mcpServer) {
         projectPath: z.string().optional()
       }
     },
-    async ({ agentId, eventId, taskId, status, threadId, threadRole, projectPath }) =>
-      jsonResult(
+    async ({ agentId, eventId, taskId, status, threadId, threadRole, projectPath }) => {
+      assertLegacyMutationAvailable("agentrelay_ack_event");
+      return jsonResult(
         await relayPost(
           `/workers/${encodeURIComponent(agentId)}/events/${encodeURIComponent(eventId)}/ack`,
           compact({ taskId, status, threadId, threadRole, projectPath })
         )
-      )
+      );
+    }
   );
 }
 
@@ -729,6 +943,14 @@ function v04MutationContextSchema() {
     currentMessageId: z.string().min(1),
     turnSequence: z.number().int().positive(),
     expectedStatusVersion: z.number().int().positive()
+  };
+}
+
+function v05MutationContextSchema() {
+  return {
+    currentMessageId: z.string().min(1),
+    turnSequence: z.number().int().positive(),
+    expectedTaskVersion: z.number().int().positive()
   };
 }
 
@@ -1152,4 +1374,9 @@ function compact(value) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== null)
   );
+}
+
+function assertLegacyMutationAvailable(toolName) {
+  if (ACTIVE_PROTOCOL_VERSION !== "agent-collab-v0.5") return;
+  throw new Error(`protocol_retired: ${toolName} uses the retired v0.3/v0.4 mutation contract; use the Protocol v0.5 tools`);
 }

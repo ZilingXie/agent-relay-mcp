@@ -32,6 +32,28 @@ test("syncProtocolVersion fetches accepted non-default v0.4 explicitly", async (
   assert.equal(result.version, "agent-collab-v0.4");
 });
 
+test("syncProtocolVersion fetches the v0.5 maintenance bundle explicitly", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-v05-"));
+  const manifestUrl = "https://relay.example/agentrelay/api/protocols/agent-collab/v0.5/manifest";
+  const bundleUrl = "https://relay.example/agentrelay/api/protocols/agent-collab/v0.5/bundle";
+  const bundle = fakeBundle();
+  bundle.manifest.version = "agent-collab-v0.5";
+  bundle.manifest.schema_digest = "sha256:test-v05";
+  bundle.manifest.urls.bundle = bundleUrl;
+  const result = await syncProtocolVersion({
+    version: "agent-collab-v0.5",
+    baseUrl: "https://relay.example/agentrelay/api",
+    cacheRoot: root,
+    fetchImpl: fakeFetch({
+      [manifestUrl]: { urls: { bundle: bundleUrl } },
+      [bundleUrl]: bundle
+    }),
+    log: null
+  });
+  assert.equal(result.version, "agent-collab-v0.5");
+  assert.equal(result.schema_digest, "sha256:test-v05");
+});
+
 test("syncProtocolBundle writes manifest, bundle, schemas, examples, and docs", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-"));
   const result = await syncProtocolBundle({

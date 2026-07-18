@@ -110,7 +110,7 @@ export async function executePreparedTaskAction({
   try {
     relayResponse = await mutate(action.idempotencyKey);
   } catch (error) {
-    if (error?.code === "stale_task_state") {
+    if (new Set(["stale_task_state", "stale_task_version", "stale_message", "stale_turn"]).has(error?.code)) {
       const currentTask = error.currentTask;
       const syncResult = await resyncLocalTask({
         stateRoot,
@@ -130,7 +130,9 @@ export async function executePreparedTaskAction({
         patch: {
           status: "stale",
           staleAt: now(),
-          changedFields: ["currentMessageId", "turnSequence", "statusVersion"],
+          changedFields: (action.baseContextEnvelope?.protocolVersion === "agent-collab-v0.5")
+            ? ["currentMessageId", "turnSequence", "taskVersion"]
+            : ["currentMessageId", "turnSequence", "statusVersion"],
           relayConflictCode: error.code
         },
         at: now()
