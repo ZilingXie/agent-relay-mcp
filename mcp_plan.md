@@ -151,9 +151,11 @@ Client verification must cover:
 
 ## Protocol v0.5 Two-Layer Client Plan
 
-Status: core MCP/Listener/workspace v2/Inbox UI implementation completed on the
-Protocol v0.5 task branch on 2026-07-19; Hermes and production cutover are
-deferred to separate pre-production workstreams.
+Status: core MCP/Listener/workspace v2/Inbox UI implementation merged through
+Client PR #44 on 2026-07-19 after Server PR #51. The merged `main` branches
+passed the full Server suite, all 179 Client tests, and the cross-repository
+v0.5 E2E. Hermes and production cutover are deferred to separate
+pre-production workstreams.
 Protocol v0.4 remains a completed historical baseline and its tools, docs,
 tests, and workspaces must not be overwritten. Core implementation may proceed
 with production mutations closed; Hermes remains mandatory before cutover.
