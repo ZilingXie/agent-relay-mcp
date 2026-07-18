@@ -7,16 +7,20 @@
 2. This development worktree is primarily for building the AgentRelay MCP used
    by personal agents: Codex installation, notifier-first local inbox flows,
    user approval surfaces, local listener/intake, and guarded Relay actions.
-3. It owns the public MCP server, Codex install flow, local inbox UI, listener,
+3. The Service Worker Kit is the main new-development direction for
+   `service_agent` workers. Build it on the shared listener, intake, workspace,
+   and guardrail primitives while preserving personal-agent notifier-first
+   defaults.
+4. It owns the public MCP server, Codex install flow, local inbox UI, listener,
    intake, processor, executor guardrail, local service installers, templates,
    schemas, examples, and tests.
-4. It is not the AgentRelay server/cloud relay. Server-side protocol authority,
+5. It is not the AgentRelay server/cloud relay. Server-side protocol authority,
    HTTP/WSS relay, SQLite cloud state, auth, delivery reliability, audit,
    dashboard, Docker deployment, and server roadmap work belong in the separate
    server repo.
-5. Server repo reference:
+6. Server repo reference:
    `/home/ubuntu/projects/agentrelay/agentRelay`.
-6. MCP repo reference on tx-server:
+7. MCP repo reference on tx-server:
    `/home/ubuntu/projects/agentrelay/agent-relay-mcp`.
 
 ## Source Of Truth
