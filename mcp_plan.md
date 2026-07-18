@@ -161,6 +161,9 @@ The Server-owned contract is
 `ZilingXie/agentRelay/docs/task-lifecycle-v05.md`. v0.5 becomes the only active
 write protocol during a maintenance-window cutover.
 
+The cross-component implementation order and release gates are in
+`ZilingXie/agentRelay/docs/protocol-v05-rollout-plan.md`.
+
 Client state boundaries:
 
 - Task lifecycle comes from Server `tasks.status` and is rendered as open,
@@ -200,6 +203,11 @@ Planned client behavior:
   reconnects and v0.3/v0.4 ACKs fail clearly rather than downgrade.
 - Start workspace v2 against the new v0.5 collaboration namespace. Keep all
   v0.3/v0.4 workspace roots read-only and never rewrite them as v0.5.
+- Register a new v0.5 Listener process instance at startup, retain the returned
+  readiness epoch, and publish every 60 seconds with both values; the Server uses
+  the confirmed 300-second maximum age and rejects stale epochs. Report ready
+  only after protocol, workspace, authenticated recovery, and ACK/NACK
+  self-checks.
 
 The fixed delivery policy is four total attempts: initial delivery plus retries
 after 1, 5, and 10 minutes. The Listener does not schedule retries; it reports
@@ -222,9 +230,10 @@ Why these client rules exist:
 
 Project Hermes client workstream:
 
-1. Inventory the exact deployed Hermes Listener version, service definition,
-   workspace root, capability advertisement, readiness publisher, and rollback
-   command together with the dispatcher ownership discovery.
+1. Preserve and review the current dirty `ZilingXie/heremes-deploy` production
+   baseline before editing it. The deployed runtime is
+   `/home/ubuntu/projects/hermes/project-hermes-worker` under `ubuntu` user
+   systemd; reconcile the tracked worker unit's obsolete path.
 2. Upgrade Hermes intake to v0.5 protocol routing, complete Message fetch,
    workspace lock/persist/verify, versioned ACK, guarded NACK, and stale-state
    resync. Local execution progress remains local and is not added to Relay.
@@ -256,8 +265,8 @@ Planned verification:
 Implementation dependency order:
 
 1. Merge and publish planning updates while preserving v0.4.
-2. Locate and record the deployed Hermes dispatcher repository, path, and
-   owner; treat its upgrade as a cutover blocker.
+2. Preserve and reconcile the identified Hermes dirty production baseline;
+   treat its upgrade as a cutover blocker.
 3. Merge the Server v0.5 implementation and archive/cutover tooling.
 4. Merge MCP/Listener and workspace v2 support.
 5. Merge Inbox UI changes and complete cross-repository conformance.
