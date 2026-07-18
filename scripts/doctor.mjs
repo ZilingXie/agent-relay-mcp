@@ -9,7 +9,7 @@ import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
 import { syncCurrentProtocol } from "./protocol-sync.mjs";
-import { listenerStatusHealth, readJsonFrame } from "./agentrelay-listener-core.mjs";
+import { listenerStatusHealth, readJsonFrame, v05ReadinessHealth } from "./agentrelay-listener-core.mjs";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,6 +26,9 @@ const listenerInactivityMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_INA
 const inboxUiHost = process.env.AGENTRELAY_INBOX_UI_HOST || "127.0.0.1";
 const inboxUiPort = process.env.AGENTRELAY_INBOX_UI_PORT || "8787";
 let ok = true;
+let currentProtocolVersion = "";
+let localListenerStatus = null;
+let registeredAgent = null;
 
 check("Node.js >= 18", Number.parseInt(process.versions.node.split(".")[0], 10) >= 18, `found ${process.versions.node}`);
 check("mcp/server.mjs exists", existsSync(resolve(repoRoot, "mcp/server.mjs")), resolve(repoRoot, "mcp/server.mjs"));
@@ -39,8 +42,8 @@ check("Local inbox state exists", existsSync(resolve(stateDir, "issues.json")), 
 check("Local inbox listener hook configured", Boolean(process.env.AGENTRELAY_LISTENER_HOOK), process.env.AGENTRELAY_LISTENER_HOOK ? "present" : "missing");
 
 try {
-  const listenerStatus = JSON.parse(await readFile(listenerStatusPath, "utf8"));
-  const health = listenerStatusHealth(listenerStatus, { staleAfterMs: Math.max(listenerInactivityMs * 2, 180000) });
+  localListenerStatus = JSON.parse(await readFile(listenerStatusPath, "utf8"));
+  const health = listenerStatusHealth(localListenerStatus, { staleAfterMs: Math.max(listenerInactivityMs * 2, 180000) });
   check("Local listener connection is fresh", health.healthy, health.healthy ? `${health.ageMs}ms since activity` : health.reason);
 } catch (error) {
   check("Local listener status exists", false, `${error.message} at ${listenerStatusPath}`);
@@ -60,6 +63,7 @@ try {
   const health = await readJsonResponse(response);
   check("AgentRelay HTTP health", response.ok, `${response.status} ${response.statusText} at ${baseUrl}`);
   const protocol = health.protocol || {};
+  currentProtocolVersion = protocol.version || "";
   check("AgentRelay protocol published", Boolean(protocol.version && protocol.schema_digest), `${protocol.version || "missing"} ${protocol.schema_digest || ""}`.trim());
 } catch (error) {
   check("AgentRelay HTTP health", false, `${error.message} at ${baseUrl}`);
@@ -75,15 +79,28 @@ try {
 try {
   const response = await fetch(`${baseUrl}/agents`, { headers: relayHeaders() });
   check("AgentRelay authenticated agents", response.ok, `${response.status} ${response.statusText} at ${baseUrl}/agents`);
+  if (response.ok) {
+    const payload = await readJsonResponse(response);
+    registeredAgent = (payload.agents || []).find((agent) => agent.agent_id === process.env.AGENTRELAY_AGENT_ID) || null;
+  }
 } catch (error) {
   check("AgentRelay authenticated agents", false, `${error.message} at ${baseUrl}/agents`);
 }
 
-try {
-  const hello = await websocketHello(`${wsBaseUrl}/workers/${encodeURIComponent(process.env.AGENTRELAY_AGENT_ID || "")}/events/ws`);
-  check("AgentRelay WebSocket hello", hello.type === "hello" && hello.agentId === process.env.AGENTRELAY_AGENT_ID, `${wsBaseUrl} as ${process.env.AGENTRELAY_AGENT_ID}`);
-} catch (error) {
-  check("AgentRelay WebSocket hello", false, `${error.message} at ${wsBaseUrl}`);
+if (currentProtocolVersion === "agent-collab-v0.5") {
+  const readiness = v05ReadinessHealth(registeredAgent, localListenerStatus);
+  check(
+    "AgentRelay v0.5 Listener readiness",
+    readiness.healthy,
+    readiness.healthy ? "local Listener identity matches fresh Relay readiness" : readiness.reason
+  );
+} else {
+  try {
+    const hello = await websocketHello(`${wsBaseUrl}/workers/${encodeURIComponent(process.env.AGENTRELAY_AGENT_ID || "")}/events/ws`);
+    check("AgentRelay WebSocket hello", hello.type === "hello" && hello.agentId === process.env.AGENTRELAY_AGENT_ID, `${wsBaseUrl} as ${process.env.AGENTRELAY_AGENT_ID}`);
+  } catch (error) {
+    check("AgentRelay WebSocket hello", false, `${error.message} at ${wsBaseUrl}`);
+  }
 }
 
 try {
