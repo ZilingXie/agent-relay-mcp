@@ -71,6 +71,50 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   assert.equal(result.issue.direction, "incoming");
 });
 
+test("v0.5 workspace projection follows the current to_agent_id and clears terminal pending owner", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-v05-pending-"));
+  const stateRoot = join(root, "state");
+  const initial = v05Task("task_v05_pending", {
+    taskVersion: 2,
+    fromAgentId: "zac-agent",
+    toAgentId: "project-hermes"
+  });
+
+  const initialResult = await persistTaskWorkspace({
+    stateRoot,
+    task: initial,
+    localAgentId: "zac-agent",
+    syncedAt: "2026-07-19T10:48:51.000Z"
+  });
+  assert.equal(initialResult.issue.pendingOnAgentId, "project-hermes");
+  assert.equal(initialResult.contextEnvelope.pendingOnAgentId, "project-hermes");
+
+  const replied = v05Task("task_v05_pending", {
+    taskVersion: 4,
+    turnSequence: 1,
+    fromAgentId: "project-hermes",
+    toAgentId: "zac-agent"
+  });
+  const repliedResult = await persistTaskWorkspace({
+    stateRoot,
+    task: replied,
+    localAgentId: "zac-agent",
+    syncedAt: "2026-07-19T10:49:04.000Z"
+  });
+  assert.equal(repliedResult.issue.pendingOnAgentId, "zac-agent");
+  assert.equal(repliedResult.contextEnvelope.pendingOnAgentId, "zac-agent");
+  assert.equal((await readTaskIndex({ stateRoot })).tasks.task_v05_pending.pendingOnAgentId, "zac-agent");
+
+  const completedResult = await persistTaskWorkspace({
+    stateRoot,
+    task: { ...replied, status: "completed", task_version: 5 },
+    localAgentId: "zac-agent",
+    syncedAt: "2026-07-19T10:50:00.000Z"
+  });
+  assert.equal(completedResult.issue.pendingOnAgentId, "");
+  assert.equal(completedResult.contextEnvelope.pendingOnAgentId, "");
+});
+
 test("resyncLocalTask retries exactly once then writes an investigation handoff", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
   const stateRoot = join(root, "state");
@@ -301,6 +345,38 @@ function sampleTask(taskId) {
       to_agent_id: "zac-agent",
       parts: [{ kind: "text", text: "Initial evidence" }]
     }]
+  };
+}
+
+function v05Task(taskId, {
+  status = "open",
+  taskVersion = 1,
+  turnSequence = 0,
+  fromAgentId,
+  toAgentId
+}) {
+  const messageId = `message_${taskVersion}`;
+  return {
+    task_id: taskId,
+    root_task_id: taskId,
+    protocol_version: "agent-collab-v0.5",
+    requester_agent_id: "zac-agent",
+    target_agent_id: "project-hermes",
+    done_criteria: "Hermes returns an ACK.",
+    status,
+    task_version: taskVersion,
+    turn_sequence: turnSequence,
+    current_message_id: messageId,
+    from_agent_id: fromAgentId,
+    to_agent_id: toAgentId,
+    messages: [{
+      message_id: messageId,
+      from_agent_id: fromAgentId,
+      to_agent_id: toAgentId,
+      delivery_status: "delivered",
+      parts: [{ kind: "text", text: "ACK" }]
+    }],
+    artifacts: []
   };
 }
 
