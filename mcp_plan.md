@@ -814,11 +814,11 @@ The kit should preserve the existing product boundary:
 
 ## Protocol Automatic Upgrade
 
-Status: implementation and verification complete in Client PR
-[`#50`](https://github.com/ZilingXie/agent-relay-mcp/pull/50), pending the
-Server negotiation and bundle contract in
-[`agentRelay#61`](https://github.com/ZilingXie/agentRelay/pull/61). Merge Server
-first, then Client.
+Status: implementation merged in Server PR
+[`agentRelay#61`](https://github.com/ZilingXie/agentRelay/pull/61) at `2a8c789`,
+followed by Client PR
+[`#50`](https://github.com/ZilingXie/agent-relay-mcp/pull/50) at `087bd2c`.
+Production rollout and installed-client verification remain pending.
 
 - Stable semantic create/reply/complete/fail/follow-up tools sit above a
   versioned wire adapter. Local identity and current Task context supply protocol
