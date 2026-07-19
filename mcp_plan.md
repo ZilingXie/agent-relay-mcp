@@ -819,8 +819,11 @@ Status: implementation merged in Server PR
 followed by Client PR
 [`#50`](https://github.com/ZilingXie/agent-relay-mcp/pull/50) at `087bd2c`.
 The Relay contract was deployed and production-verified on 2026-07-19. This
-checkout is not the active Codex MCP installation and has no local identity
-`.env`; installed-client rollout remains an explicit per-installation step.
+repository's active Zac Codex installation at
+`/Users/xieziling/Desktop/agentRelay/agentInbox` was fast-forwarded to
+`90b3a3c`, dependencies were refreshed, and `doctor` passed every config,
+Listener, Relay, bundle, runtime compatibility, authentication, readiness, and
+Inbox check.
 
 - Stable semantic create/reply/complete/fail/follow-up tools sit above a
   versioned wire adapter. Local identity and current Task context supply protocol
@@ -840,6 +843,11 @@ checkout is not the active Codex MCP installation and has no local identity
 - Production Relay negotiation returned `hot_patch` for runtime `0.2.0`, bundle
   revision `1`, and an authority/origin-bound v0.5 bundle with no missing
   capabilities.
+- Production Task `task_49162c5d5b3f418080f856e75a0200ad` verified Zac ->
+  Hermes delivery, Hermes -> Zac response delivery, and requester completion.
+  Hermes returned `HERMES_PROTOCOL_UPGRADE_ACK` and reported
+  `agent-collab-v0.5`; the Task closed at version `5` with both Messages
+  delivered.
 
 ## Immediate Next Steps
 
