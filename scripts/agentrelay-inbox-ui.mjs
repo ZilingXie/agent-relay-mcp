@@ -14,7 +14,9 @@ import { resyncLocalTask, unwrapTask } from "./agentrelay-task-context-sync.mjs"
 import { buildCreatePayloadV05, PROTOCOL_V05 } from "./agentrelay-v05.mjs";
 import {
   archiveTaskWorkspace,
+  approveLocalAction,
   backfillTaskWorkspaces,
+  listLocalActions,
   persistTaskWorkspace,
   readTaskIndex,
   readTaskWorkspace
@@ -248,6 +250,25 @@ export function createInboxUiServer({
         return;
       }
 
+      const approvalMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/actions\/([^/]+)\/approve$/);
+      if (req.method === "POST" && approvalMatch) {
+        if (req.headers["x-agentrelay-local-approval"] !== "1") {
+          sendJson(res, 403, { error: "trusted_local_approval_header_required" });
+          return;
+        }
+        const taskId = decodeURIComponent(approvalMatch[1]);
+        const clientActionId = decodeURIComponent(approvalMatch[2]);
+        const result = await approveLocalAction({
+          stateRoot,
+          taskId,
+          clientActionId,
+          approvedBy: "local_user",
+          at: now()
+        });
+        sendJson(res, 200, result);
+        return;
+      }
+
       const deleteIssueMatch = url.pathname.match(/^\/api\/issues\/([^/]+)$/);
       if (req.method === "DELETE" && deleteIssueMatch) {
         const taskId = decodeURIComponent(deleteIssueMatch[1]);
@@ -289,6 +310,7 @@ export function createInboxUiServer({
           return;
         }
         const detail = await loadIssueDetail({ stateRoot, taskId, issue, localAgentId, now });
+        detail.actions = await listLocalActions({ stateRoot, taskId });
         sendJson(res, 200, detail);
         return;
       }
@@ -3663,6 +3685,7 @@ async function selectIssue(taskId, { keepView = false } = {}) {
   bindHandoffPromptControls();
   bindContextSyncControls(taskId);
   bindFileAccessRequestControls(taskId);
+  bindLocalApprovalControls(taskId);
   restoreMessageScrollState(scrollState);
   renderDashboard();
   if (!keepView) setView("inbox");
@@ -3729,7 +3752,7 @@ function issueRow(issue) {
   '</article>';
 }
 
-function renderChat({ issue, timeline }) {
+function renderChat({ issue, timeline, actions = [] }) {
   return '<header class="chat-head">' +
     '<div class="chat-title-row">' +
       '<div><h2>' + escapeHtml(issue.subject || "(untitled)") + '</h2><div class="chat-meta">' + escapeHtml(issue.counterpartAgentId || "no counterpart") + ' · ' + escapeHtml(issue.taskId) + '</div></div>' +
@@ -3743,7 +3766,21 @@ function renderChat({ issue, timeline }) {
   '</section>' +
   '<section class="detail-section prompt-section" aria-label="Prompt ready for your local agent">' +
     renderHandoffPrompt(issue) +
+    renderLocalApprovals(actions) +
   '</section>';
+}
+
+function renderLocalApprovals(actions) {
+  const pending = (actions || []).filter((action) => action.status === "awaiting_confirmation");
+  if (!pending.length) return "";
+  return '<div class="local-approval-list">' + pending.map((action) =>
+    '<div class="local-approval-item">' +
+      '<strong>' + escapeHtml(action.actionType || "AgentRelay action") + '</strong>' +
+      '<pre>' + escapeHtml(JSON.stringify(action.payload || {}, null, 2)) + '</pre>' +
+      '<button type="button" data-approve-local-action="' + escapeAttr(action.clientActionId || "") + '">Approve once</button>' +
+      '<span class="status-text" data-approval-status></span>' +
+    '</div>'
+  ).join("") + '</div>';
 }
 
 function renderHandoffPrompt(issue) {
@@ -3944,6 +3981,30 @@ function bindFileAccessRequestControls(taskId) {
       } catch (error) {
         window.alert(error.message);
         for (const item of buttons) item.disabled = false;
+      }
+    });
+  }
+}
+
+function bindLocalApprovalControls(taskId) {
+  for (const button of document.querySelectorAll("[data-approve-local-action]")) {
+    button.addEventListener("click", async () => {
+      const actionId = button.dataset.approveLocalAction;
+      const status = button.parentElement?.querySelector("[data-approval-status]");
+      button.disabled = true;
+      if (status) status.textContent = "Approving...";
+      try {
+        const response = await fetch("/api/issues/" + encodeURIComponent(taskId) + "/actions/" + encodeURIComponent(actionId) + "/approve", {
+          method: "POST",
+          headers: { "X-AgentRelay-Local-Approval": "1" }
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || body.message || "Approval failed");
+        if (status) status.textContent = "Approved until " + body.expiresAt;
+        await selectIssue(taskId, { keepView: true });
+      } catch (error) {
+        button.disabled = false;
+        if (status) status.textContent = error.message;
       }
     });
   }

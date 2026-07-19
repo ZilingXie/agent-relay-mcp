@@ -4,15 +4,15 @@ import test from "node:test";
 import {
   buildNegotiationRequest,
   buildSemanticRequest,
-  canonicalDigest,
   validateAdapterDefinition,
   validateNegotiationResponse,
   validateProtocolBundle,
   validateSemanticTransition
 } from "../scripts/protocol-runtime.mjs";
+import { protocolV2Bundle } from "./protocol-v2-fixture.mjs";
 
 test("stable reply builds the v0.5 wire payload from trusted sources", () => {
-  const bundle = fakeV05Bundle();
+  const bundle = protocolV2Bundle();
   const request = buildSemanticRequest({
     bundle,
     operation: "reply",
@@ -22,7 +22,7 @@ test("stable reply builds the v0.5 wire payload from trusted sources", () => {
     runtime: { idempotency_key: "reply-key" }
   });
 
-  assert.deepEqual(request, {
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), {
     method: "POST",
     path: "/tasks/task-1/messages",
     payload: {
@@ -37,7 +37,7 @@ test("stable reply builds the v0.5 wire payload from trusted sources", () => {
 });
 
 test("bundle verification rejects content that does not match its digest", () => {
-  const bundle = fakeV05Bundle();
+  const bundle = protocolV2Bundle();
   bundle.adapters.operations.reply.bindings.at(-1).value = "remote override";
   assert.throws(() => validateProtocolBundle(bundle, {
     expectedTarget: targetFor(bundle),
@@ -46,20 +46,84 @@ test("bundle verification rejects content that does not match its digest", () =>
   }), /digest mismatch/);
 });
 
-test("adapter rejects remote control of protected identity fields", () => {
-  const bundle = fakeV05Bundle();
+test("adapter rejects remote control of protected Task context slots", () => {
+  const bundle = protocolV2Bundle();
   const actor = bundle.adapters.operations.reply.bindings.find((item) => item.to === "/actor_agent_id");
   actor.from = "input.actorAgentId";
-  assert.throws(() => validateAdapterDefinition(bundle.adapters), /Protected protocol target/);
+  assert.throws(() => validateAdapterDefinition(bundle.adapters), /must use identity.agent_id/);
+  const messageBundle = protocolV2Bundle();
+  const message = messageBundle.adapters.operations.reply.bindings.find((item) => item.slot === "message_id");
+  message.from = "input.text";
+  assert.throws(() => validateAdapterDefinition(messageBundle.adapters), /must use task.current_message_id/);
+});
+
+test("adapter rejects prototype pollution, duplicate targets, and unknown slots", () => {
+  const polluted = protocolV2Bundle();
+  polluted.adapters.operations.reply.bindings.find((item) => item.slot === "reply_text").to = "/__proto__/polluted";
+  assert.throws(() => validateAdapterDefinition(polluted.adapters), /Unsafe JSON Pointer/);
+  assert.equal(Object.prototype.polluted, undefined);
+
+  const duplicate = protocolV2Bundle();
+  duplicate.adapters.operations.reply.bindings.find((item) => item.slot === "reply_text").to = "/message_id";
+  assert.throws(() => validateAdapterDefinition(duplicate.adapters), /Duplicate protocol adapter target/);
+
+  const unknown = protocolV2Bundle();
+  unknown.adapters.operations.reply.bindings.push({ slot: "remote_code", to: "/code", from: "input.text" });
+  assert.throws(() => validateAdapterDefinition(unknown.adapters), /slot is not allowed/);
+
+  const script = protocolV2Bundle();
+  script.adapters.script = "run remote code";
+  assert.throws(() => validateAdapterDefinition(script.adapters), /Unknown protocol adapter field: script/);
 });
 
 test("negotiation requires bundle and Relay to share an origin", () => {
-  const bundle = fakeV05Bundle();
+  const bundle = protocolV2Bundle();
   assert.throws(() => validateNegotiationResponse({
     action: "hot_patch",
     authority: bundle.manifest.authority,
     target: { ...targetFor(bundle), bundle_url: "https://attacker.example/bundle" }
-  }, { baseUrl: "https://relay.example/agentrelay/api" }), /configured Relay origin/);
+  }, { baseUrl: "https://relay.example/agentrelay/api" }), /authority path/);
+});
+
+test("negotiation rejects a same-origin bundle outside the configured Relay path", () => {
+  const bundle = protocolV2Bundle();
+  assert.throws(() => validateNegotiationResponse({
+    action: "hot_patch",
+    authority: bundle.manifest.authority,
+    target: { ...targetFor(bundle), bundle_url: "https://relay.example/other/bundle" }
+  }, { baseUrl: "https://relay.example/agentrelay/api" }), /authority path/);
+});
+
+test("adapter v2 rejects future, expired, and target-mismatched validity windows", () => {
+  const future = protocolV2Bundle({ publishedAt: "2999-01-01T00:00:00Z" });
+  assert.throws(() => validateNegotiationResponse({
+    action: "hot_patch",
+    authority: future.manifest.authority,
+    target: targetFor(future)
+  }, { baseUrl: "https://relay.example/agentrelay/api" }), /cannot be in the future/);
+
+  const expired = protocolV2Bundle({
+    publishedAt: "2020-01-01T00:00:00Z",
+    expiresAt: "2021-01-01T00:00:00Z"
+  });
+  assert.throws(() => validateProtocolBundle(expired, {
+    expectedTarget: targetFor(expired),
+    authority: expired.manifest.authority,
+    baseUrl: "https://relay.example/agentrelay/api"
+  }), /has expired/);
+
+  const mismatch = protocolV2Bundle();
+  assert.throws(() => validateProtocolBundle(mismatch, {
+    expectedTarget: { ...targetFor(mismatch), expires_at: "2031-01-01T00:00:00Z" },
+    authority: mismatch.manifest.authority,
+    baseUrl: "https://relay.example/agentrelay/api"
+  }), /validity window does not match/);
+
+  const unbound = protocolV2Bundle();
+  assert.throws(() => validateProtocolBundle(unbound, {
+    authority: unbound.manifest.authority,
+    baseUrl: "https://relay.example/agentrelay/api"
+  }), /requires a verified negotiation target/);
 });
 
 test("negotiation request advertises only compiled runtime capabilities", () => {
@@ -67,7 +131,8 @@ test("negotiation request advertises only compiled runtime capabilities", () => 
   assert.deepEqual(request.supported_protocol_versions, ["agent-collab-v0.5"]);
   assert.deepEqual(request.runtime_capabilities, [
     "dynamic_protocol_bundle_v0.1",
-    "semantic_protocol_adapter_v1"
+    "semantic_protocol_adapter_v2",
+    "local_authorization_v1"
   ]);
 });
 
@@ -89,71 +154,17 @@ test("stable semantic guards preserve max-turn and delivered-message invariants"
   );
 });
 
-function fakeV05Bundle() {
-  const bundle = {
-    manifest: {
-      protocol: "agent-collab",
-      version: "agent-collab-v0.5",
-      semver: "0.5.0",
-      bundle_revision: 1,
-      schema_digest: "",
-      bundle_digest: "",
-      authority: { id: "relay.example/agentrelay", origin: "https://relay.example/agentrelay" },
-      required_client_capabilities: ["dynamic_protocol_bundle_v0.1", "semantic_protocol_adapter_v1"]
-    },
-    schemas: {
-      "task-message-v05.schema.json": {
-        "$id": "https://relay.example/schemas/task-message-v05.schema.json",
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["actor_agent_id", "message_id", "turn_sequence", "expected_task_version", "idempotency_key", "parts"],
-        "properties": {
-          "actor_agent_id": { "type": "string" },
-          "message_id": { "type": "string" },
-          "turn_sequence": { "type": "integer" },
-          "expected_task_version": { "type": "integer" },
-          "idempotency_key": { "type": "string" },
-          "parts": { "type": "array", "items": { "type": "object" } }
-        }
-      }
-    },
-    examples: {},
-    docs: {},
-    adapters: {
-      engine: "semantic_protocol_adapter_v1",
-      allowed_binding_sources: ["input", "identity", "task", "runtime"],
-      protected_targets: ["/actor_agent_id", "/idempotency_key"],
-      operations: {
-        reply: {
-          method: "POST",
-          path: "/tasks/{task_id}/messages",
-          request_schema: "task-message-v05.schema.json",
-          bindings: [
-            { to: "/actor_agent_id", from: "identity.agent_id" },
-            { to: "/message_id", from: "task.current_message_id" },
-            { to: "/turn_sequence", from: "task.turn_sequence" },
-            { to: "/expected_task_version", from: "task.task_version" },
-            { to: "/idempotency_key", from: "runtime.idempotency_key" },
-            { to: "/parts/0/kind", value: "text" },
-            { to: "/parts/0/text", from: "input.text" }
-          ]
-        }
-      }
-    }
-  };
-  bundle.manifest.schema_digest = canonicalDigest(bundle.schemas);
-  bundle.manifest.bundle_digest = canonicalDigest(Object.fromEntries(
-    Object.entries(bundle).filter(([key]) => key !== "manifest")
-  ));
-  return bundle;
-}
-
 function targetFor(bundle) {
   return {
     version: bundle.manifest.version,
     bundle_revision: bundle.manifest.bundle_revision,
     bundle_digest: bundle.manifest.bundle_digest,
-    required_client_capabilities: bundle.manifest.required_client_capabilities
+    schema_digest: bundle.manifest.schema_digest,
+    adapter_contract_version: bundle.manifest.adapter_contract_version,
+    published_at: bundle.manifest.published_at,
+    expires_at: bundle.manifest.expires_at,
+    required_client_capabilities: bundle.manifest.required_client_capabilities,
+    bundle_url: bundle.manifest.urls.bundle,
   };
 }
 

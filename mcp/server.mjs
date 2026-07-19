@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
+import { executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
 import { resyncLocalTask } from "../scripts/agentrelay-task-context-sync.mjs";
 import { prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
@@ -48,8 +48,12 @@ const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
 const bearerToken = process.env.AGENTRELAY_TOKEN || "";
+const allowDirectCreate = new Set(["1", "true", "yes"]).has(String(process.env.AGENTRELAY_ALLOW_DIRECT_CREATE || "").toLowerCase());
 const stateRoot = resolve(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));
 const localInboxAgentsMdPath = resolve(process.env.AGENTRELAY_AGENTS_MD_PATH || resolve(repoRoot, "templates/local-inbox/AGENTS.md"));
+const servicePolicyPath = process.env.AGENTRELAY_SERVICE_POLICY_PATH
+  ? resolve(process.env.AGENTRELAY_SERVICE_POLICY_PATH)
+  : (agentId === "project-hermes" ? resolve(repoRoot, "policies/project-hermes.service-policy.json") : "");
 let protocolRuntimeStatus = { status: "checking", checked_at: new Date().toISOString() };
 let protocolStartupPromise = null;
 
@@ -166,6 +170,7 @@ function registerTools(mcpServer) {
       const requesterAgentId = args.requester_agent_id || args.from;
       const targetAgentId = args.target_agent_id || args.to;
       if (ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5") {
+        assertDirectCreateAuthorized();
         const idempotencyKey = `mcp-v05-create-${randomUUID()}`;
         return jsonResult(await executeSemanticRelayRequest(() => buildActiveSemanticRequest({
           operation: "create_task",
@@ -255,7 +260,7 @@ function registerTools(mcpServer) {
         text: z.string().min(1),
         ...v04MutationContextSchema(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => {
@@ -281,7 +286,7 @@ function registerTools(mcpServer) {
         completedAgainstMessageId: z.string().min(1),
         ...v04MutationContextSchema(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => {
@@ -307,7 +312,7 @@ function registerTools(mcpServer) {
         reason: z.enum(["agent_reported_failure", "max_turns_exhausted"]),
         ...v04MutationContextSchema(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => {
@@ -335,7 +340,7 @@ function registerTools(mcpServer) {
         maxTurns: z.number().int().positive().optional(),
         taskExpiresAt: z.number().int().positive().optional(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => {
@@ -386,10 +391,13 @@ function registerTools(mcpServer) {
         clientRequestId: z.string().min(1).optional()
       }
     },
-    async (args) => jsonResult(await relayPost(
-      "/tasks",
-      buildCreatePayloadV05(args, `mcp-v05-create-${args.clientRequestId || randomUUID()}`)
-    ))
+    async (args) => {
+      assertDirectCreateAuthorized();
+      return jsonResult(await relayPost(
+        "/tasks",
+        buildCreatePayloadV05(args, `mcp-v05-create-${args.clientRequestId || randomUUID()}`)
+      ));
+    }
   );
 
   mcpServer.registerTool(
@@ -403,7 +411,7 @@ function registerTools(mcpServer) {
         text: z.string().min(1),
         ...v05MutationContextSchema(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => jsonResult(await executeMcpTaskAction({
@@ -426,7 +434,7 @@ function registerTools(mcpServer) {
         completedAgainstMessageId: z.string().min(1),
         ...v05MutationContextSchema(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => jsonResult(await executeMcpTaskAction({
@@ -449,7 +457,7 @@ function registerTools(mcpServer) {
         reason: z.enum(["agent_reported_failure", "max_turns_exhausted"]),
         ...v05MutationContextSchema(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => jsonResult(await executeMcpTaskAction({
@@ -473,7 +481,7 @@ function registerTools(mcpServer) {
         maxTurns: z.number().int().positive().optional(),
         taskExpiresAt: z.number().int().positive().optional(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => jsonResult(await executeMcpTaskAction({
@@ -495,7 +503,7 @@ function registerTools(mcpServer) {
         taskId: z.string().min(1),
         text: z.string().min(1),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => jsonResult(await executeSemanticTaskAction({ args, operation: "reply" }))
@@ -509,7 +517,7 @@ function registerTools(mcpServer) {
       inputSchema: {
         taskId: z.string().min(1),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => jsonResult(await executeSemanticTaskAction({ args, operation: "complete_task" }))
@@ -524,7 +532,7 @@ function registerTools(mcpServer) {
         taskId: z.string().min(1),
         reason: z.string().min(1),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => jsonResult(await executeSemanticTaskAction({ args, operation: "fail_task" }))
@@ -542,7 +550,7 @@ function registerTools(mcpServer) {
         maxTurns: z.number().int().positive().optional(),
         taskExpiresAt: z.number().int().positive().optional(),
         clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1)
+        confirmationRef: z.string().min(1).optional()
       }
     },
     async (args) => jsonResult(await executeSemanticTaskAction({
@@ -1052,15 +1060,17 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
       validateCurrentTask,
       resultTaskMode,
       localAgentId: agentId,
+      servicePolicyPath,
       agentsMdPath: localInboxAgentsMdPath
     });
   }
-  const idempotencyKey = legacyActionIdempotencyKey({
-    taskId: args.taskId,
-    actionType,
-    payload: preparedPayload
-  });
-  return mutate(idempotencyKey);
+  return {
+    ok: false,
+    status: "rejected",
+    code: "LOCAL_AUTHORIZATION_REQUIRED",
+    taskId: String(args.taskId || ""),
+    message: "Prepare the exact action and approve it through the trusted Local Inbox before submission."
+  };
 }
 
 async function refreshProtocolRuntime() {
@@ -1103,6 +1113,9 @@ async function activeProtocolBundle() {
   }
   let active = protocolRuntimeStatus.active;
   if (!active?.cache_dir) {
+    if (protocolRuntimeStatus.status === "hot_update_disabled") {
+      throw new Error("Protocol hot update is disabled and no verified active bundle is available");
+    }
     const synced = await syncProtocolVersion({
       version: "agent-collab-v0.5",
       baseUrl,
@@ -1119,7 +1132,7 @@ async function activeProtocolBundle() {
   }
   const bundle = JSON.parse(await readFile(active.bundle_path || resolve(active.cache_dir, "bundle.json"), "utf8"));
   validateProtocolBundle(bundle, { expectedTarget: active, authority: active.authority, baseUrl });
-  if (bundle.adapters?.engine !== "semantic_protocol_adapter_v1") {
+  if (bundle.adapters?.engine !== "semantic_protocol_adapter_v2") {
     throw new Error("The active protocol bundle does not provide the semantic protocol adapter");
   }
   return bundle;
@@ -1223,6 +1236,12 @@ function relayHeaders() {
     headers["X-AgentRelay-Username"] = username;
   }
   return headers;
+}
+
+function assertDirectCreateAuthorized() {
+  if (!allowDirectCreate) {
+    throw new Error("LOCAL_APPROVAL_REQUIRED: create v0.5 Tasks from the Local Inbox reviewed-draft Send action");
+  }
 }
 
 function jsonResult(data) {

@@ -43,6 +43,7 @@ function buildTaskWorkspacePaths(stateRoot, taskId, workspaceVersion) {
     syncPath: join(taskDir, "sync.json"),
     workflowPath: join(taskDir, "workflow.json"),
     actionsDir: join(taskDir, "actions"),
+    approvalsDir: join(taskDir, "approvals"),
     indexPath: join(root, "task-index.json"),
     inboxPath: join(root, "issues.json"),
     taskLockPath: join(root, ".locks", `task-${safeTaskId}.lock`),
@@ -457,7 +458,7 @@ export async function prepareLocalAction({
   taskId,
   actionType,
   payload,
-  confirmationRef = "",
+  confirmationRef: _untrustedConfirmationRef = "",
   clientActionId = `action_${randomUUID()}`,
   at = new Date().toISOString()
 }) {
@@ -486,7 +487,8 @@ export async function prepareLocalAction({
       payloadHash: hashStableJson(payload && typeof payload === "object" ? payload : {}),
       baseContextEnvelope: deriveTaskContextEnvelope(workspace.task),
       idempotencyKey: `local-${actionType}-${sanitizeTaskId(taskId)}-${actionId}`,
-      confirmationRef: String(confirmationRef || ""),
+      confirmationRef: "",
+      authorization: null,
       status: "awaiting_confirmation",
       createdAt: at,
       updatedAt: at
@@ -504,12 +506,80 @@ export async function prepareLocalAction({
   });
 }
 
+export async function approveLocalAction({
+  stateRoot,
+  taskId,
+  clientActionId,
+  approvedBy = "local_user",
+  ttlSeconds = 600,
+  at = new Date().toISOString()
+}) {
+  return withTaskWorkspaceLock({ stateRoot, taskId }, async () => {
+    const workspace = await readTaskWorkspace({ stateRoot, taskId });
+    const { action, path } = await readLocalAction({ stateRoot, taskId, clientActionId });
+    if (action.status !== "awaiting_confirmation") {
+      throw new Error(`Local action cannot be approved from status: ${action.status}`);
+    }
+    if (action.authorization?.status === "active") throw new Error("Local action is already approved");
+    const issuedAt = new Date(at);
+    if (Number.isNaN(issuedAt.getTime())) throw new Error("Approval timestamp is invalid");
+    const approvalId = `approval_${randomUUID()}`;
+    const authorization = {
+      version: 1,
+      type: "human_approval",
+      approvalId,
+      approvedBy: String(approvedBy || "local_user"),
+      actionType: action.actionType,
+      payloadHash: action.payloadHash,
+      contextHash: hashStableJson(action.baseContextEnvelope),
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(issuedAt.getTime() + Math.max(1, Number(ttlSeconds)) * 1000).toISOString(),
+      status: "active"
+    };
+    const confirmationRef = `local-approval:${approvalId}`;
+    const nextAction = { ...action, authorization, confirmationRef, updatedAt: at };
+    await mkdir(workspace.paths.approvalsDir, { recursive: true, mode: 0o700 });
+    await writeJsonAtomic(join(workspace.paths.approvalsDir, `${approvalId}.json`), {
+      ...authorization,
+      taskId: String(taskId),
+      clientActionId: action.clientActionId
+    });
+    await writeJsonAtomic(path, nextAction);
+    return {
+      approvalId,
+      confirmationRef,
+      expiresAt: authorization.expiresAt,
+      action: nextAction
+    };
+  });
+}
+
+export async function listLocalActions({ stateRoot, taskId }) {
+  const workspace = await readTaskWorkspace({ stateRoot, taskId });
+  await mkdir(workspace.paths.actionsDir, { recursive: true, mode: 0o700 });
+  const names = (await readdir(workspace.paths.actionsDir)).filter((name) => name.endsWith(".json") && !name.startsWith("."));
+  const actions = [];
+  for (const name of names) {
+    const action = await readJson(join(workspace.paths.actionsDir, name), null);
+    if (action) actions.push(action);
+  }
+  return actions.sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
+}
+
 export async function readLocalAction({ stateRoot, taskId, clientActionId }) {
   const paths = await locateTaskWorkspacePaths(stateRoot, taskId);
   const actionId = sanitizeActionId(clientActionId);
   const action = await readJson(join(paths.actionsDir, `${actionId}.json`), null);
   if (!action) throw new Error(`Local action not found: ${clientActionId}`);
   return { action, path: join(paths.actionsDir, `${actionId}.json`), paths };
+}
+
+export async function readLocalApproval({ stateRoot, taskId, approvalId }) {
+  const paths = await locateTaskWorkspacePaths(stateRoot, taskId);
+  const id = sanitizeActionId(approvalId);
+  const approval = await readJson(join(paths.approvalsDir, `${id}.json`), null);
+  if (!approval) throw new Error(`Local approval not found: ${approvalId}`);
+  return { approval, path: join(paths.approvalsDir, `${id}.json`), paths };
 }
 
 export async function updateLocalAction({ stateRoot, taskId, clientActionId, patch, at = new Date().toISOString() }) {

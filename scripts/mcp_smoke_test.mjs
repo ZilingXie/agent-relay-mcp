@@ -8,7 +8,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { canonicalDigest } from "./protocol-runtime.mjs";
+import { approveLocalAction } from "./agentrelay-task-workspace.mjs";
+import { protocolV2Bundle } from "../test/protocol-v2-fixture.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -101,10 +102,13 @@ try {
     payloadJson: JSON.stringify(withoutTaskId(artifactArgs))
   });
   assert(preparedArtifact.action.status === "awaiting_confirmation", "artifact action was not prepared");
+  const artifactApproval = await approveLocalAction({
+    stateRoot: localStateRoot, taskId, clientActionId: "smoke_artifact"
+  });
   const afterArtifactResult = await callJson("agentrelay_submit_artifact", {
     ...artifactArgs,
     clientActionId: "smoke_artifact",
-    confirmationRef: "smoke-user-confirmed-artifact"
+    confirmationRef: artifactApproval.confirmationRef
   });
   const afterArtifact = afterArtifactResult.relayResponse;
   assert(afterArtifact.task.status === "delivery_pending", "artifact should produce delivery_pending");
@@ -153,10 +157,13 @@ try {
     clientActionId: "smoke_close",
     payloadJson: JSON.stringify(withoutTaskId(closeArgs))
   });
+  const closeApproval = await approveLocalAction({
+    stateRoot: localStateRoot, taskId, clientActionId: "smoke_close"
+  });
   const closedResult = await callJson("agentrelay_close_task", {
     ...closeArgs,
     clientActionId: "smoke_close",
-    confirmationRef: "smoke-user-confirmed-close"
+    confirmationRef: closeApproval.confirmationRef
   });
   const closed = closedResult.relayResponse;
   assert(closed.task.status === "completed", "task did not close");
@@ -172,6 +179,23 @@ try {
     threadId: "frank-thread-smoke"
   });
   assert(ack.event?.acked_at, "event ack did not return acked event");
+
+  const guardedCreateSession = await startMcpClient(relayBaseUrl, localStateRoot, "agent-collab-v0.5", false);
+  try {
+    const deniedCreate = await guardedCreateSession.client.callTool({
+      name: "agentrelay_create_task",
+      arguments: {
+        target_agent_id: "frank-agent",
+        requestText: "must require reviewed draft",
+        doneCriteria: "must not send"
+      }
+    });
+    assert(deniedCreate.isError === true, "direct v0.5 create should be disabled by default");
+    assert(deniedCreate.content?.[0]?.text.includes("LOCAL_APPROVAL_REQUIRED"), "direct create rejection should name the local approval boundary");
+  } finally {
+    await guardedCreateSession.transport.close().catch(() => {});
+    await guardedCreateSession.client.close().catch(() => {});
+  }
 
   const v05Session = await startMcpClient(relayBaseUrl, localStateRoot, "agent-collab-v0.5");
   try {
@@ -190,11 +214,14 @@ try {
       clientActionId: "smoke_v05_reply",
       payloadJson: JSON.stringify({ text: "v0.5 stable reply" })
     }, v05Session.client);
+    const replyApproval = await approveLocalAction({
+      stateRoot: localStateRoot, taskId: "task_smoke_v05", clientActionId: "smoke_v05_reply"
+    });
     const v05Reply = await callJson("agentrelay_reply", {
       taskId: "task_smoke_v05",
       text: "v0.5 stable reply",
       clientActionId: "smoke_v05_reply",
-      confirmationRef: "smoke-v05-reply-confirmed"
+      confirmationRef: replyApproval.confirmationRef
     }, v05Session.client);
     assert(v05Reply.status === "sent", "stable reply did not use the prepared action path");
     assert(v05Reply.relayResponse.task.task_version === 2, "stable reply did not advance task version");
@@ -218,7 +245,7 @@ try {
   if (localStateRoot) await rm(localStateRoot, { recursive: true, force: true });
 }
 
-async function startMcpClient(relayBaseUrl, stateRoot, protocolVersion = "") {
+async function startMcpClient(relayBaseUrl, stateRoot, protocolVersion = "", allowDirectCreate = true) {
   const mcpClient = new Client({ name: "agent-relay-mcp-smoke", version: "0.1.0" });
   const mcpTransport = new StdioClientTransport({
     command: "node",
@@ -228,6 +255,7 @@ async function startMcpClient(relayBaseUrl, stateRoot, protocolVersion = "") {
       ...process.env,
       AGENTRELAY_BASE_URL: relayBaseUrl,
       AGENTRELAY_AGENT_ID: smokeAuth.agentId,
+      AGENTRELAY_ALLOW_DIRECT_CREATE: allowDirectCreate ? "1" : "",
       AGENTRELAY_USERNAME: smokeAuth.username,
       AGENTRELAY_TOKEN: smokeAuth.token,
       AGENTRELAY_STATE_DIR: stateRoot,
@@ -282,6 +310,9 @@ function startFakeRelay() {
             schema_digest: protocolBundle.manifest.schema_digest,
             bundle_digest: protocolBundle.manifest.bundle_digest,
             bundle_url: protocolBundle.manifest.urls.bundle,
+            adapter_contract_version: protocolBundle.manifest.adapter_contract_version,
+            published_at: protocolBundle.manifest.published_at,
+            expires_at: protocolBundle.manifest.expires_at,
             required_client_capabilities: protocolBundle.manifest.required_client_capabilities
           },
           retry_policy: { max_automatic_retries: 1, preserve_idempotency_key: true }
@@ -488,92 +519,8 @@ function startFakeRelay() {
 }
 
 function fakeProtocolBundle(baseUrl, revision = 1) {
-  const bundle = {
-    manifest: {
-      protocol: "agent-collab",
-      version: "agent-collab-v0.5",
-      semver: "0.5.0",
-      bundle_revision: revision,
-      schema_digest: "",
-      bundle_digest: "",
-      authority: { id: "mcp-smoke-relay", origin: baseUrl },
-      required_client_capabilities: ["dynamic_protocol_bundle_v0.1", "semantic_protocol_adapter_v1"],
-      urls: { bundle: `${baseUrl}/protocols/agent-collab/v0.5/bundle` }
-    },
-    schemas: {
-      "task-create-v05.schema.json": {
-        "$id": `${baseUrl}/schemas/task-create-v05.schema.json`,
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["protocol_version", "idempotency_key", "requester_agent_id", "target_agent_id", "done_criteria", "message"],
-        "properties": {
-          "protocol_version": { "const": "agent-collab-v0.5" },
-          "idempotency_key": { "type": "string" },
-          "requester_agent_id": { "type": "string" },
-          "target_agent_id": { "type": "string" },
-          "done_criteria": { "type": "string" },
-          "max_turns": { "type": "integer" },
-          "message": { "type": "object" }
-        }
-      },
-      "task-message-v05.schema.json": {
-        "$id": `${baseUrl}/schemas/task-message-v05.schema.json`,
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["actor_agent_id", "message_id", "turn_sequence", "expected_task_version", "idempotency_key", "parts"],
-        "properties": {
-          "actor_agent_id": { "type": "string" },
-          "message_id": { "type": "string" },
-          "turn_sequence": { "type": "integer" },
-          "expected_task_version": { "type": "integer" },
-          "idempotency_key": { "type": "string" },
-          "parts": { "type": "array", "items": { "type": "object" } }
-        }
-      }
-    },
-    examples: {},
-    docs: { "revision.txt": String(revision) },
-    adapters: {
-      engine: "semantic_protocol_adapter_v1",
-      allowed_binding_sources: ["input", "identity", "runtime"],
-      protected_targets: ["/requester_agent_id", "/target_agent_id", "/idempotency_key"],
-      operations: {
-        create_task: {
-          method: "POST",
-          path: "/tasks",
-          request_schema: "task-create-v05.schema.json",
-          bindings: [
-            { to: "/protocol_version", value: "agent-collab-v0.5" },
-            { to: "/idempotency_key", from: "runtime.idempotency_key" },
-            { to: "/requester_agent_id", from: "identity.agent_id" },
-            { to: "/target_agent_id", from: "input.targetAgentId" },
-            { to: "/done_criteria", from: "input.doneCriteria" },
-            { to: "/max_turns", from: "input.maxTurns", optional: true },
-            { to: "/message/parts/0/kind", value: "text" },
-            { to: "/message/parts/0/text", from: "input.requestText" }
-          ]
-        },
-        reply: {
-          method: "POST",
-          path: "/tasks/{task_id}/messages",
-          request_schema: "task-message-v05.schema.json",
-          bindings: [
-            { to: "/actor_agent_id", from: "identity.agent_id" },
-            { to: "/message_id", from: "task.current_message_id" },
-            { to: "/turn_sequence", from: "task.turn_sequence" },
-            { to: "/expected_task_version", from: "task.task_version" },
-            { to: "/idempotency_key", from: "runtime.idempotency_key" },
-            { to: "/parts/0/kind", value: "text" },
-            { to: "/parts/0/text", from: "input.text" }
-          ]
-        }
-      }
-    }
-  };
-  bundle.manifest.schema_digest = canonicalDigest(bundle.schemas);
-  bundle.manifest.bundle_digest = canonicalDigest(Object.fromEntries(
-    Object.entries(bundle).filter(([key]) => key !== "manifest")
-  ));
+  const bundle = protocolV2Bundle({ origin: baseUrl, authorityId: "mcp-smoke-relay", revision });
+  bundle.manifest.urls.bundle = `${baseUrl}/protocols/agent-collab/v0.5/bundle`;
   return bundle;
 }
 

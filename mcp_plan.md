@@ -849,9 +849,60 @@ Inbox check.
   `agent-collab-v0.5`; the Task closed at version `5` with both Messages
   delivered.
 
+## Guardrail Hardening
+
+Status: implementation complete on the Guardrail task branch; full-suite,
+cross-repository, PR, deployment, and production verification remain release
+gates. Protocol automatic upgrade is part of this Guardrail.
+
+1. Adapter sandbox and activation.
+   - Require adapter v2's exact operation and semantic-slot contracts.
+   - Reject scripts, unknown fields, protected-slot rebinding, duplicate or
+     missing slots, duplicate targets, unsafe JSON Pointers, oversized bundles,
+     authority-path mismatch, digest mismatch, future publication, expiry,
+     unauthorized downgrade, and same-revision digest replacement.
+   - Preserve staging, atomic activation, last-known-good, authorized rollback,
+     and local/Server emergency-disable switches.
+2. Trusted local human approval.
+   - Ignore confirmation refs supplied while preparing an action.
+   - Let only the Local Inbox issue the approval record, bound to exact action,
+     payload hash, Task context hash, expiry, and confirmation ref.
+   - Resync context and require the embedded authorization to match the
+     independent approval record before mutation; consume it after success and
+     reuse it only for an ambiguous same-idempotency retry.
+   - Keep direct v0.5 create disabled by default; reviewed-draft Send is the
+     normal create authority.
+3. Hermes service policy.
+   - Allow only a bounded reply or `agent_reported_failure` for an open v0.5
+     Task whose current delivered Message is owned by `project-hermes`.
+   - Deny create, complete, follow-up, goal or participant changes, requester
+     authority, non-delivered Messages, changed context, oversized replies,
+     unknown reasons, and local side effects.
+   - Bind each 60-second grant to policy/rule/agent/action/payload/context and
+     regenerate the initial grant inside MCP Core.
+4. Accepted trust model.
+   - Relay remains the trusted protocol publisher. TLS, path binding, digests,
+     and validity windows do not protect against total Relay-host compromise.
+     Independent bundle signing and KMS are deferred.
+   - Local approval protects against remote content and normal MCP calls, not a
+     malicious process with write access as the same OS user. Stronger isolation
+     requires a separate OS identity or external approval service.
+5. Release gate.
+   - Run Client full tests, Server full tests, and a real cross-repo HTTP E2E.
+   - Merge Server before Client, deploy Relay, then upgrade Zac MCP.
+   - Preserve Hermes' current dirty canonical baseline before any Hermes code
+     change; merge and deploy its policy integration independently.
+   - Verify Zac and Hermes only: allowed reply/failure, denied requester-owned
+     operations, hot patch, malicious-bundle rejection, last-known-good,
+     rollback, and both emergency-disable paths. Vivi is not in this gate.
+
+The detailed boundary is [`docs/guardrail.md`](docs/guardrail.md).
+
 ## Immediate Next Steps
 
-1. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
+1. Complete the Guardrail release gate above without mixing Hermes' uncommitted
+   production baseline into the change.
+2. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
    into the MCP client.
-2. Return to the Service Worker Kit after the personal-agent local-context path
+3. Return to the Service Worker Kit after the personal-agent local-context path
    is stable.

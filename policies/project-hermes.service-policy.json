@@ -1,0 +1,25 @@
+{
+  "policy_version": 1,
+  "agent_id": "project-hermes",
+  "rules": [
+    {
+      "id": "reply-assigned-delivered-task",
+      "operation": "reply",
+      "max_text_bytes": 20000,
+      "side_effects": "none"
+    },
+    {
+      "id": "report-assigned-task-failure",
+      "operation": "fail_task",
+      "allowed_reasons": ["agent_reported_failure"],
+      "side_effects": "none"
+    }
+  ],
+  "denied_operations": [
+    "create_task",
+    "complete_task",
+    "create_followup",
+    "amend_task",
+    "change_participants"
+  ]
+}

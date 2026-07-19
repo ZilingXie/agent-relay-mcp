@@ -18,7 +18,7 @@ import {
   scheduleInboxProcessing,
   runTaskDraftResponsesApi
 } from "../scripts/agentrelay-inbox-ui.mjs";
-import { persistTaskWorkspace, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
+import { persistTaskWorkspace, prepareLocalAction, readLocalAction, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
 test("loadInboxSnapshot returns an empty inbox when issues.json is missing", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
@@ -556,6 +556,53 @@ test("inbox UI detail reads local workspace and explicit resync fetches Relay wi
     assert.deepEqual(issue.eventIds || [], []);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("Local Inbox is the trusted issuer for one-time action approvals", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-approval-"));
+  const stateRoot = join(root, "state");
+  const task = {
+    task_id: "task_approval",
+    root_task_id: "task_approval",
+    protocol_version: "agent-collab-v0.5",
+    requester_agent_id: "zac-agent",
+    target_agent_id: "project-hermes",
+    status: "open",
+    current_message_id: "msg_approval",
+    turn_sequence: 1,
+    task_version: 2,
+    from_agent_id: "project-hermes",
+    to_agent_id: "zac-agent",
+    max_turns: 4,
+    messages: [{ message_id: "msg_approval", delivery_status: "delivered", parts: [{ kind: "text", text: "done" }] }]
+  };
+  await persistTaskWorkspace({ stateRoot, task, localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot,
+    taskId: task.task_id,
+    actionType: "complete_task",
+    payload: {},
+    clientActionId: "approve_complete"
+  });
+  const server = createInboxUiServer({ stateRoot, localAgentId: "zac-agent", now: () => "2026-07-19T00:00:00.000Z" });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  try {
+    const { port } = server.address();
+    const path = `http://127.0.0.1:${port}/api/issues/task_approval/actions/approve_complete/approve`;
+    assert.equal((await fetch(path, { method: "POST" })).status, 403);
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "X-AgentRelay-Local-Approval": "1" }
+    });
+    assert.equal(response.status, 200);
+    const approval = await response.json();
+    assert.match(approval.confirmationRef, /^local-approval:approval_/);
+    const { action } = await readLocalAction({ stateRoot, taskId: task.task_id, clientActionId: "approve_complete" });
+    assert.equal(action.authorization.type, "human_approval");
+    assert.equal(action.authorization.status, "active");
+  } finally {
+    await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
   }
 });
 

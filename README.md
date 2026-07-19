@@ -213,7 +213,7 @@ npm run check              # syntax and unit tests
 npm test                   # check + MCP smoke test
 ```
 
-MCP runtime v0.2 negotiates the current protocol at startup and after protocol
+MCP runtime v0.3 negotiates the current protocol at startup and after protocol
 errors. Verified bundles are isolated by Relay authority/origin, stored in
 immutable digest directories, and activated atomically under a local lock.
 Stable semantic tools use restricted bundle bindings to assemble wire payloads;
@@ -221,6 +221,9 @@ identity, confirmation, authorization guardrails, idempotency, endpoint
 allowlists, and local side effects remain in non-hot-updatable MCP core. Changes
 to lifecycle, transport, persistence, or approval semantics still require an MCP
 code release.
+
+Protocol activation, trusted Local Inbox approval, and the bounded Hermes
+service policy are documented in [`docs/guardrail.md`](docs/guardrail.md).
 
 ## Legacy Codex App Thread Receiver
 

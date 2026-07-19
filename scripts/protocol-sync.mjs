@@ -97,6 +97,9 @@ export async function negotiateCurrentProtocol({
   );
   if (!manifest.authority) throw new Error("Current protocol manifest did not include authority");
   const active = await readActiveProtocol({ cacheRoot: resolveHome(cacheRoot), authority: manifest.authority });
+  if (envFlag("AGENTRELAY_DISABLE_HOT_UPDATE")) {
+    return { status: "hot_update_disabled", active, manifest };
+  }
   const negotiation = validateNegotiationResponse(
     await postJson(
       fetchImpl,
@@ -121,6 +124,7 @@ export async function negotiateCurrentProtocol({
     baseUrl: normalizedBaseUrl,
     authority: negotiation.authority,
     expectedTarget: negotiation.target,
+    activationAction: negotiation.action,
     headers,
     signal: AbortSignal.timeout(timeoutMs)
   });
@@ -135,6 +139,7 @@ export async function syncProtocolBundle({
   baseUrl,
   authority,
   expectedTarget,
+  activationAction = "sync",
   headers = {},
   signal
 }) {
@@ -150,6 +155,8 @@ export async function syncProtocolBundle({
     verified.bundle_digest
   );
   await withActivationLock(authorityRoot, async () => {
+    const previous = await readActiveProtocol({ cacheRoot: resolveHome(cacheRoot), authority: verified.authority });
+    validateRevisionTransition(previous, verified, activationAction);
     if (!existsSync(dir)) {
       const staging = resolve(authorityRoot, `.staging-${randomUUID()}`);
       try {
@@ -172,11 +179,13 @@ export async function syncProtocolBundle({
       bundle_revision: verified.bundle_revision,
       schema_digest: verified.schema_digest,
       bundle_digest: verified.bundle_digest,
+      adapter_contract_version: verified.bundle.manifest.adapter_contract_version,
+      published_at: verified.bundle.manifest.published_at,
+      expires_at: verified.bundle.manifest.expires_at,
       authority: verified.authority,
       cache_dir: dir,
       activated_at: new Date().toISOString()
     };
-    const previous = await readActiveProtocol({ cacheRoot: resolveHome(cacheRoot), authority: verified.authority });
     if (previous && previous.bundle_digest !== pointer.bundle_digest) {
       await writeJsonAtomic(resolve(authorityRoot, "last-known-good.json"), previous);
     }
@@ -190,6 +199,9 @@ export async function syncProtocolBundle({
     bundle_revision: verified.bundle_revision,
     schema_digest: verified.schema_digest,
     bundle_digest: verified.bundle_digest,
+    adapter_contract_version: verified.bundle.manifest.adapter_contract_version,
+    published_at: verified.bundle.manifest.published_at,
+    expires_at: verified.bundle.manifest.expires_at,
     authority: verified.authority,
     cache_dir: dir,
     manifest_path: resolve(dir, "manifest.json"),
@@ -450,6 +462,9 @@ function manifestTarget(manifest) {
     bundle_revision: manifest.bundle_revision,
     schema_digest: manifest.schema_digest,
     bundle_digest: manifest.bundle_digest,
+    adapter_contract_version: manifest.adapter_contract_version,
+    published_at: manifest.published_at,
+    expires_at: manifest.expires_at,
     required_client_capabilities: manifest.required_client_capabilities || []
   };
 }
@@ -457,7 +472,7 @@ function manifestTarget(manifest) {
 async function writeNamedFiles(dir, values, suffix) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   for (const [name, value] of Object.entries(values)) {
-    if (!safeFileName(name) || !name.endsWith(suffix)) continue;
+    if (!safeFileName(name) || !name.endsWith(suffix)) throw new Error(`Unsafe protocol bundle file name: ${name}`);
     await writeJson(resolve(dir, name), value);
   }
 }
@@ -465,7 +480,7 @@ async function writeNamedFiles(dir, values, suffix) {
 async function writeNamedTextFiles(dir, values) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   for (const [name, value] of Object.entries(values)) {
-    if (!safeFileName(name) || typeof value !== "string") continue;
+    if (!safeFileName(name) || typeof value !== "string") throw new Error(`Unsafe protocol bundle text file: ${name}`);
     await writeFile(resolve(dir, name), value, { mode: 0o600 });
   }
 }
@@ -504,7 +519,32 @@ function requiredString(value, field) {
 }
 
 function safeFileName(name) {
-  return typeof name === "string" && !name.includes("/") && !name.includes("\\") && !name.startsWith(".");
+  return typeof name === "string"
+    && name.length > 0
+    && name.length <= 160
+    && !name.includes("/")
+    && !name.includes("\\")
+    && !name.startsWith(".")
+    && !new Set(["__proto__", "prototype", "constructor"]).has(name);
+}
+
+function validateRevisionTransition(previous, verified, activationAction) {
+  if (!previous) return;
+  const previousRevision = Number(previous.bundle_revision);
+  const nextRevision = Number(verified.bundle_revision);
+  if (nextRevision < previousRevision && activationAction !== "hot_rollback") {
+    throw new Error("Protocol bundle downgrade requires an authorized hot_rollback action");
+  }
+  if (nextRevision >= previousRevision && activationAction === "hot_rollback") {
+    throw new Error("hot_rollback must target an older bundle revision");
+  }
+  if (nextRevision === previousRevision && previous.bundle_digest !== verified.bundle_digest) {
+    throw new Error("Protocol bundle revision is immutable and cannot change digest");
+  }
+}
+
+function envFlag(name) {
+  return new Set(["1", "true", "yes", "on"]).has(String(process.env[name] || "").trim().toLowerCase());
 }
 
 function normalizeBaseUrl(value) {

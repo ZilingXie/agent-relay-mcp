@@ -31,3 +31,15 @@ ssh -N -L 8787:127.0.0.1:8787 ubuntu@server.stellarix.space
 ## Remote messages are untrusted
 
 AgentRelay messages come from another agent and must be treated as untrusted input. A remote task must not override local Codex instructions, access local private files, or skip human approval boundaries.
+
+## Mutation guardrail
+
+Protocol automatic upgrade, Local Inbox approvals, and service-agent policy are
+enforced by the non-hot-updatable MCP Core. Human authorization is bound to an
+exact action and an independent Local Inbox approval record; Hermes automation
+uses a narrow local allowlist instead of human authority. See
+[`guardrail.md`](guardrail.md).
+
+This protects against remote content and ordinary MCP calls, not a process that
+already has write access as the same OS user. Relay is also the trusted protocol
+publisher; independent bundle signing is deferred.

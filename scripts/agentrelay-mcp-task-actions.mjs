@@ -2,9 +2,15 @@ import {
   compareTaskContextEnvelopes,
   hashStableJson,
   readLocalAction,
+  readLocalApproval,
   updateLocalAction
 } from "./agentrelay-task-workspace.mjs";
 import { resyncLocalTask, unwrapTask } from "./agentrelay-task-context-sync.mjs";
+import {
+  authorizeServiceAction,
+  loadServicePolicy,
+  validateLocalAuthorization
+} from "./agentrelay-service-policy.mjs";
 
 export async function executePreparedTaskAction({
   stateRoot,
@@ -18,6 +24,7 @@ export async function executePreparedTaskAction({
   validateCurrentTask,
   resultTaskMode = "same_task",
   localAgentId = "",
+  servicePolicyPath = "",
   now = () => new Date().toISOString(),
   agentsMdPath
 }) {
@@ -93,13 +100,60 @@ export async function executePreparedTaskAction({
     }
   }
 
+  let authorizedAction = action;
+  if (authorizedAction.authorization?.type === "service_policy_grant" && !servicePolicyPath) {
+    return rejection("LOCAL_AUTHORIZATION_REQUIRED", taskId, clientActionId);
+  }
+  if (servicePolicyPath
+    && action.status === "awaiting_confirmation") {
+    const policy = await loadServicePolicy(servicePolicyPath);
+    const decision = authorizeServiceAction({
+      policy,
+      action: authorizedAction,
+      task: syncResult.task,
+      localAgentId,
+      at: now()
+    });
+    if (!decision.ok) return rejection(decision.code, taskId, clientActionId);
+    authorizedAction = { ...authorizedAction, authorization: decision.grant };
+    await updateLocalAction({
+      stateRoot,
+      taskId,
+      clientActionId,
+      patch: { authorization: decision.grant },
+      at: now()
+    });
+  }
+  let approvalRecord = null;
+  if (authorizedAction.authorization?.type === "human_approval") {
+    try {
+      ({ approval: approvalRecord } = await readLocalApproval({
+        stateRoot,
+        taskId,
+        approvalId: authorizedAction.authorization.approvalId
+      }));
+    } catch {
+      return rejection("LOCAL_APPROVAL_RECORD_MISMATCH", taskId, clientActionId);
+    }
+  }
+  const authorizationCheck = validateLocalAuthorization({
+    action: authorizedAction,
+    confirmationRef,
+    approvalRecord,
+    localAgentId,
+    now: now()
+  });
+  if (!authorizationCheck.ok) return rejection(authorizationCheck.code, taskId, clientActionId);
+  const submittingAuthorization = { ...authorizationCheck.authorization, status: "submitting" };
+
   await updateLocalAction({
     stateRoot,
     taskId,
     clientActionId,
     patch: {
       status: "submitting",
-      confirmationRef: String(confirmationRef || action.confirmationRef || ""),
+      confirmationRef: String(authorizedAction.confirmationRef || ""),
+      authorization: submittingAuthorization,
       lastSubmissionAt: now(),
       submissionAttempts: Number(action.submissionAttempts || 0) + 1
     },
@@ -179,6 +233,7 @@ export async function executePreparedTaskAction({
     clientActionId,
     patch: {
       status: "sent",
+      authorization: { ...submittingAuthorization, status: "consumed", consumedAt: now() },
       sentAt: now(),
       relayResponse: relayResponseSummary,
       postSubmitSyncStatus: postSync.status
