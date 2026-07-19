@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
-import { persistTaskWorkspace, prepareLocalAction, readLocalAction, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
+import { approveLocalAction, persistTaskWorkspace, prepareLocalAction, readLocalAction, readLocalApproval, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
 function task(overrides = {}) {
   return {
@@ -31,6 +32,7 @@ test("prepared action submits once with stable idempotency and refreshes local c
     payload,
     clientActionId: "confirmed_1"
   });
+  const approval = await approveLocalAction({ stateRoot, taskId: "task_guard", clientActionId: "confirmed_1" });
   const mutationCalls = [];
   const result = await executePreparedTaskAction({
     stateRoot,
@@ -38,7 +40,7 @@ test("prepared action submits once with stable idempotency and refreshes local c
     clientActionId: "confirmed_1",
     actionType: "submit_artifact",
     payload,
-    confirmationRef: "user-confirmed-in-current-session",
+    confirmationRef: approval.confirmationRef,
     fetchTask: async () => task(),
     mutate: async (idempotencyKey) => {
       mutationCalls.push(idempotencyKey);
@@ -50,7 +52,8 @@ test("prepared action submits once with stable idempotency and refreshes local c
   assert.deepEqual(mutationCalls, [prepared.action.idempotencyKey]);
   const stored = await readLocalAction({ stateRoot, taskId: "task_guard", clientActionId: "confirmed_1" });
   assert.equal(stored.action.status, "sent");
-  assert.equal(stored.action.confirmationRef, "user-confirmed-in-current-session");
+  assert.equal(stored.action.confirmationRef, approval.confirmationRef);
+  assert.equal(stored.action.authorization.status, "consumed");
 
   const repeated = await executePreparedTaskAction({
     stateRoot,
@@ -114,6 +117,98 @@ test("prepared action rejects changed payload before fetching or mutating", asyn
   assert.equal(result.code, "ACTION_PAYLOAD_CHANGED");
 });
 
+test("prepared action rejects missing and expired trusted local authorization", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-authorization-"));
+  const payload = { text: "Guarded response" };
+  await persistTaskWorkspace({ stateRoot, task: task(), localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot, taskId: "task_guard", actionType: "request_revision", payload, clientActionId: "auth_required"
+  });
+  let mutated = false;
+  const missing = await executePreparedTaskAction({
+    stateRoot, taskId: "task_guard", clientActionId: "auth_required", actionType: "request_revision", payload,
+    fetchTask: async () => task(), mutate: async () => { mutated = true; }
+  });
+  assert.equal(missing.code, "LOCAL_AUTHORIZATION_REQUIRED");
+  assert.equal(mutated, false);
+
+  await approveLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "auth_required",
+    ttlSeconds: 1,
+    at: "2026-07-19T00:00:00.000Z"
+  });
+  const expired = await executePreparedTaskAction({
+    stateRoot, taskId: "task_guard", clientActionId: "auth_required", actionType: "request_revision", payload,
+    fetchTask: async () => task(), mutate: async () => { mutated = true; },
+    now: () => "2026-07-19T00:00:02.000Z"
+  });
+  assert.equal(expired.code, "LOCAL_AUTHORIZATION_EXPIRED");
+  assert.equal(mutated, false);
+});
+
+test("prepared action rejects an embedded approval without its Local Inbox record", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-approval-record-"));
+  const payload = { text: "record-bound" };
+  await persistTaskWorkspace({ stateRoot, task: task(), localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot, taskId: "task_guard", actionType: "request_revision", payload, clientActionId: "record_required"
+  });
+  const approved = await approveLocalAction({
+    stateRoot, taskId: "task_guard", clientActionId: "record_required"
+  });
+  const record = await readLocalApproval({
+    stateRoot, taskId: "task_guard", approvalId: approved.approvalId
+  });
+  await rm(record.path);
+  let mutated = false;
+  const result = await executePreparedTaskAction({
+    stateRoot, taskId: "task_guard", clientActionId: "record_required", actionType: "request_revision", payload,
+    fetchTask: async () => task(), mutate: async () => { mutated = true; }, localAgentId: "zac-agent"
+  });
+  assert.equal(result.code, "LOCAL_APPROVAL_RECORD_MISMATCH");
+  assert.equal(mutated, false);
+});
+
+test("Hermes service policy remains a maximum permission even with human approval", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-hermes-policy-ceiling-"));
+  const current = {
+    task_id: "task_hermes",
+    protocol_version: "agent-collab-v0.5",
+    status: "open",
+    requester_agent_id: "zac-agent",
+    target_agent_id: "project-hermes",
+    from_agent_id: "zac-agent",
+    to_agent_id: "project-hermes",
+    current_message_id: "msg_hermes",
+    turn_sequence: 2,
+    task_version: 2,
+    max_turns: 12,
+    messages: [{ message_id: "msg_hermes", delivery_status: "delivered", parts: [{ kind: "text", text: "done" }] }],
+    artifacts: []
+  };
+  await persistTaskWorkspace({ stateRoot, task: current, localAgentId: "project-hermes" });
+  await prepareLocalAction({
+    stateRoot, taskId: "task_hermes", actionType: "complete_task", payload: {}, clientActionId: "human_override"
+  });
+  await approveLocalAction({ stateRoot, taskId: "task_hermes", clientActionId: "human_override" });
+  let mutated = false;
+  const result = await executePreparedTaskAction({
+    stateRoot,
+    taskId: "task_hermes",
+    clientActionId: "human_override",
+    actionType: "complete_task",
+    payload: {},
+    fetchTask: async () => current,
+    mutate: async () => { mutated = true; },
+    localAgentId: "project-hermes",
+    servicePolicyPath: fileURLToPath(new URL("../policies/project-hermes.service-policy.json", import.meta.url))
+  });
+  assert.equal(result.code, "SERVICE_POLICY_OPERATION_DENIED");
+  assert.equal(mutated, false);
+});
+
 test("ambiguous submission remains retryable with one stable idempotency key", async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-action-"));
   const payload = { text: "Retry me" };
@@ -125,6 +220,7 @@ test("ambiguous submission remains retryable with one stable idempotency key", a
     payload,
     clientActionId: "retry_1"
   });
+  await approveLocalAction({ stateRoot, taskId: "task_guard", clientActionId: "retry_1" });
   const keys = [];
   await assert.rejects(executePreparedTaskAction({
     stateRoot,
@@ -182,6 +278,7 @@ test("Relay stale_task_state refreshes v0.4 workspace and invalidates the prepar
     payload,
     clientActionId: "v04_stale"
   });
+  await approveLocalAction({ stateRoot, taskId: "task_guard", clientActionId: "v04_stale" });
   const current = {
     ...initial,
     status: "submitted",
@@ -233,6 +330,7 @@ test("follow-up action persists the returned child in its own workspace", async 
     stateRoot, taskId: "task_guard", actionType: "create_followup_v04",
     payload, clientActionId: "followup_1"
   });
+  await approveLocalAction({ stateRoot, taskId: "task_guard", clientActionId: "followup_1" });
   const child = {
     ...source,
     task_id: "task_child",
@@ -274,6 +372,7 @@ test("Relay stale_task_version refreshes v0.5 workspace and invalidates the prep
     stateRoot, taskId: "task_v05_guard", actionType: "send_message_v05",
     payload, clientActionId: "v05_stale"
   });
+  await approveLocalAction({ stateRoot, taskId: "task_v05_guard", clientActionId: "v05_stale" });
   const current = {
     ...initial, current_message_id: "msg_2", task_version: 3,
     messages: [...initial.messages, { message_id: "msg_2", delivery_status: "pending", parts: [] }]

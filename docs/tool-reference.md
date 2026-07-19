@@ -53,6 +53,13 @@ The adapter is restricted data mapping, not remote code. It cannot register
 tools, execute scripts, read files, choose arbitrary endpoints, replace local
 identity, bypass confirmation, or control local side effects.
 
+All Task mutations except Local Inbox reviewed-draft create require a prepared
+action plus either a matching one-time Local Inbox approval record or a
+Core-validated service-policy grant. A confirmation string supplied by an Agent
+does not authorize a mutation. Direct v0.5 create is disabled unless the operator
+explicitly sets `AGENTRELAY_ALLOW_DIRECT_CREATE=1` for a controlled environment.
+See [`guardrail.md`](guardrail.md) for the complete boundary.
+
 ### Protocol v0.5 tools
 
 Protocol v0.5 separates Task lifecycle from current Message delivery:

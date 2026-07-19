@@ -9,12 +9,14 @@ import {
   buildAutoRedraftedPayload,
   inferProtocolOperation,
   maybeHandleProtocolNegotiation,
+  negotiateCurrentProtocol,
   resolveProtocolDir,
   syncCurrentProtocol,
   syncProtocolBundle,
   syncProtocolVersion
 } from "../scripts/protocol-sync.mjs";
 import { canonicalDigest, protocolAuthorityRoot } from "../scripts/protocol-runtime.mjs";
+import { protocolV2Bundle } from "./protocol-v2-fixture.mjs";
 
 test("syncProtocolVersion fetches accepted non-default v0.4 explicitly", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-"));
@@ -37,10 +39,7 @@ test("syncProtocolVersion fetches the v0.5 maintenance bundle explicitly", async
   const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-v05-"));
   const manifestUrl = "https://relay.example/agentrelay/api/protocols/agent-collab/v0.5/manifest";
   const bundleUrl = "https://relay.example/agentrelay/api/protocols/agent-collab/v0.5/bundle";
-  const bundle = fakeBundle();
-  bundle.manifest.version = "agent-collab-v0.5";
-  bundle.manifest.schema_digest = "sha256:test-v05";
-  bundle.manifest.urls.bundle = bundleUrl;
+  const bundle = protocolV2Bundle();
   const result = await syncProtocolVersion({
     version: "agent-collab-v0.5",
     baseUrl: "https://relay.example/agentrelay/api",
@@ -52,7 +51,7 @@ test("syncProtocolVersion fetches the v0.5 maintenance bundle explicitly", async
     log: null
   });
   assert.equal(result.version, "agent-collab-v0.5");
-  assert.equal(result.schema_digest, "sha256:test-v05");
+  assert.equal(result.schema_digest, canonicalDigest(bundle.schemas));
 });
 
 test("syncProtocolBundle writes manifest, bundle, schemas, examples, and docs", async () => {
@@ -87,17 +86,13 @@ test("syncProtocolBundle writes manifest, bundle, schemas, examples, and docs", 
 
 test("syncCurrentProtocol follows the server manifest bundle URL", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-"));
+  const bundle = fakeBundle();
   const result = await syncCurrentProtocol({
     baseUrl: "https://relay.example/agentrelay/api",
     cacheRoot: root,
     fetchImpl: fakeFetch({
-      "https://relay.example/agentrelay/api/protocols/current": {
-        protocol: "agent-collab",
-        version: "agent-collab-v0.4",
-        schema_digest: "sha256:test-v04",
-        urls: { bundle: "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle" }
-      },
-      "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle": fakeBundle()
+      "https://relay.example/agentrelay/api/protocols/current": bundle.manifest,
+      "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle": bundle
     }),
     log: null
   });
@@ -166,6 +161,53 @@ test("activating a new bundle preserves the prior verified pointer", async () =>
     "utf8"
   ));
   assert.equal(lastKnownGood.bundle_digest, first.manifest.bundle_digest);
+});
+
+test("protocol activation rejects unsafe cache names and unauthorized downgrade", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-guardrail-"));
+  const bundleUrl = "https://relay.example/agentrelay/api/protocols/agent-collab/v0.4/bundle";
+  const unsafe = fakeBundle({ revision: 3 });
+  unsafe.docs["../escape.md"] = "no";
+  refreshDigests(unsafe);
+  await assert.rejects(syncProtocolBundle({
+    bundleUrl, cacheRoot: root, fetchImpl: fakeFetch({ [bundleUrl]: unsafe }), log: null
+  }), /Unsafe protocol bundle text file/);
+
+  const current = fakeBundle({ revision: 2 });
+  await syncProtocolBundle({ bundleUrl, cacheRoot: root, fetchImpl: fakeFetch({ [bundleUrl]: current }), log: null });
+  const older = fakeBundle({ revision: 1 });
+  await assert.rejects(syncProtocolBundle({
+    bundleUrl, cacheRoot: root, fetchImpl: fakeFetch({ [bundleUrl]: older }), log: null
+  }), /downgrade requires an authorized hot_rollback/);
+  const rolledBack = await syncProtocolBundle({
+    bundleUrl,
+    cacheRoot: root,
+    fetchImpl: fakeFetch({ [bundleUrl]: older }),
+    activationAction: "hot_rollback",
+    log: null
+  });
+  assert.equal(rolledBack.bundle_revision, 1);
+});
+
+test("local emergency disable prevents negotiation and bundle activation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-disabled-"));
+  const bundle = protocolV2Bundle();
+  const manifestUrl = "https://relay.example/agentrelay/api/protocols/current";
+  const previous = process.env.AGENTRELAY_DISABLE_HOT_UPDATE;
+  process.env.AGENTRELAY_DISABLE_HOT_UPDATE = "1";
+  try {
+    const result = await negotiateCurrentProtocol({
+      baseUrl: "https://relay.example/agentrelay/api",
+      cacheRoot: root,
+      fetchImpl: fakeFetch({ [manifestUrl]: bundle.manifest }),
+      log: null
+    });
+    assert.equal(result.status, "hot_update_disabled");
+    assert.equal(result.active, null);
+  } finally {
+    if (previous === undefined) delete process.env.AGENTRELAY_DISABLE_HOT_UPDATE;
+    else process.env.AGENTRELAY_DISABLE_HOT_UPDATE = previous;
+  }
 });
 
 test("maybeHandleProtocolNegotiation auto-redrafts safe task create payloads and retries", async () => {
@@ -295,6 +337,14 @@ function fakeBundle({
   const content = Object.fromEntries(Object.entries(bundle).filter(([key]) => key !== "manifest"));
   bundle.manifest.schema_digest = canonicalDigest(bundle.schemas);
   bundle.manifest.bundle_digest = canonicalDigest(content);
+  return bundle;
+}
+
+function refreshDigests(bundle) {
+  bundle.manifest.schema_digest = canonicalDigest(bundle.schemas);
+  bundle.manifest.bundle_digest = canonicalDigest(Object.fromEntries(
+    Object.entries(bundle).filter(([key]) => key !== "manifest")
+  ));
   return bundle;
 }
 
