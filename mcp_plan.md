@@ -851,9 +851,12 @@ Inbox check.
 
 ## Guardrail Hardening
 
-Status: implementation complete on the Guardrail task branch; full-suite,
-cross-repository, PR, deployment, and production verification remain release
-gates. Protocol automatic upgrade is part of this Guardrail.
+Status: Server PR [`agentRelay#64`](https://github.com/ZilingXie/agentRelay/pull/64)
+and Client PR [`#54`](https://github.com/ZilingXie/agent-relay-mcp/pull/54)
+are merged. Relay and Zac are deployed on adapter v2 revision `2`; Hermes policy
+integration and its positive/negative production E2E remain pending preservation
+of the dirty canonical Hermes baseline. Protocol automatic upgrade is part of
+this Guardrail.
 
 1. Adapter sandbox and activation.
    - Require adapter v2's exact operation and semantic-slot contracts.
@@ -888,11 +891,16 @@ gates. Protocol automatic upgrade is part of this Guardrail.
      malicious process with write access as the same OS user. Stronger isolation
      requires a separate OS identity or external approval service.
 5. Release gate.
-   - Run Client full tests, Server full tests, and a real cross-repo HTTP E2E.
-   - Merge Server before Client, deploy Relay, then upgrade Zac MCP.
+   - **Complete.** Client full tests passed 204/204 plus MCP smoke; Server full
+     tests passed; the real cross-repo HTTP E2E applied `hot_patch`, activated
+     revision `2`, assembled protected reply fields, then returned `up_to_date`.
+   - **Complete.** Server merged before Client. Relay and Zac were upgraded;
+     Zac `doctor` passed bundle activation, runtime compatibility,
+     authentication, Listener readiness, and Inbox checks.
    - Preserve Hermes' current dirty canonical baseline before any Hermes code
      change; merge and deploy its policy integration independently.
-   - Verify Zac and Hermes only: allowed reply/failure, denied requester-owned
+   - **Pending Hermes.** Verify Zac and Hermes only: allowed reply/failure,
+     denied requester-owned
      operations, hot patch, malicious-bundle rejection, last-known-good,
      rollback, and both emergency-disable paths. Vivi is not in this gate.
 
@@ -900,8 +908,9 @@ The detailed boundary is [`docs/guardrail.md`](docs/guardrail.md).
 
 ## Immediate Next Steps
 
-1. Complete the Guardrail release gate above without mixing Hermes' uncommitted
-   production baseline into the change.
+1. Decide how to preserve Hermes' uncommitted production baseline, then land its
+   policy integration and complete the Zac/Hermes positive/negative E2E without
+   mixing unrelated changes.
 2. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
    into the MCP client.
 3. Return to the Service Worker Kit after the personal-agent local-context path
