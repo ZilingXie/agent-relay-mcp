@@ -70,7 +70,7 @@ export function deriveTaskContextEnvelope(task) {
     taskVersion: numberOrNull(task.task_version ?? task.taskVersion),
     fromAgentId: String(task.from_agent_id || task.fromAgentId || ""),
     toAgentId: String(task.to_agent_id || task.toAgentId || ""),
-    pendingOnAgentId: String(task.pending_on_agent_id || task.pendingOnAgentId || ""),
+    pendingOnAgentId: pendingAgentIdForTask(task),
     completionOwnerAgentId: String(task.completion_owner_agent_id || task.completionOwnerAgentId || ""),
     latestMessageId: relayItemId(messages.at(-1), "message"),
     currentMessageDeliveryStatus: String(currentMessage(task)?.delivery_status || currentMessage(task)?.deliveryStatus || ""),
@@ -752,12 +752,7 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
   const taskId = String(task?.task_id || task?.taskId || sync?.taskId || workflow?.taskId || existingIssue.taskId || paths.taskId);
   const requesterAgentId = String(task?.requester_agent_id || existingIssue.requesterAgentId || "");
   const targetAgentId = String(task?.target_agent_id || existingIssue.targetAgentId || "");
-  const isV04 = (task?.protocol_version || task?.protocolVersion) === "agent-collab-v0.4";
-  const pendingOnAgentId = isV04
-    ? String(task?.to_agent_id || task?.toAgentId || "")
-    : task && (Object.hasOwn(task, "pending_on_agent_id") || Object.hasOwn(task, "pendingOnAgentId"))
-      ? String(task.pending_on_agent_id ?? task.pendingOnAgentId ?? "")
-      : String(existingIssue.pendingOnAgentId || "");
+  const pendingOnAgentId = pendingAgentIdForTask(task, existingIssue.pendingOnAgentId);
   const localStatus = workflow?.localStatus || existingIssue.localStatus || (task ? "received" : "sync_pending");
   const direction = requesterAgentId === localAgentId
     ? "outgoing"
@@ -930,6 +925,19 @@ async function verifyWorkspaceV2Write(paths, expected) {
 
 function isProtocolV05(task) {
   return (task?.protocol_version || task?.protocolVersion) === "agent-collab-v0.5";
+}
+
+function pendingAgentIdForTask(task, fallback = "") {
+  if (isProtocolV05(task)) {
+    return task?.status === "open" ? String(task?.to_agent_id || task?.toAgentId || "") : "";
+  }
+  if ((task?.protocol_version || task?.protocolVersion) === "agent-collab-v0.4") {
+    return String(task?.to_agent_id || task?.toAgentId || "");
+  }
+  if (task && (Object.hasOwn(task, "pending_on_agent_id") || Object.hasOwn(task, "pendingOnAgentId"))) {
+    return String(task.pending_on_agent_id ?? task.pendingOnAgentId ?? "");
+  }
+  return String(fallback || "");
 }
 
 function currentMessage(task) {
