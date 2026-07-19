@@ -854,9 +854,12 @@ Inbox check.
 Status: Server PR [`agentRelay#64`](https://github.com/ZilingXie/agentRelay/pull/64)
 and Client PR [`#54`](https://github.com/ZilingXie/agent-relay-mcp/pull/54)
 are merged. Relay and Zac are deployed on adapter v2 revision `2`; Hermes policy
-integration and its positive/negative production E2E remain pending preservation
-of the dirty canonical Hermes baseline. Protocol automatic upgrade is part of
-this Guardrail.
+integration merged in [`heremes-deploy#4`](https://github.com/ZilingXie/heremes-deploy/pull/4),
+with process-level enforcement coverage in
+[`#5`](https://github.com/ZilingXie/heremes-deploy/pull/5) and
+[`#6`](https://github.com/ZilingXie/heremes-deploy/pull/6). Relay, Zac, and
+Hermes are deployed and verified. Protocol automatic upgrade is part of this
+Guardrail.
 
 1. Adapter sandbox and activation.
    - Require adapter v2's exact operation and semantic-slot contracts.
@@ -881,8 +884,11 @@ this Guardrail.
    - Deny create, complete, follow-up, goal or participant changes, requester
      authority, non-delivered Messages, changed context, oversized replies,
      unknown reasons, and local side effects.
-   - Bind each 60-second grant to policy/rule/agent/action/payload/context and
-     regenerate the initial grant inside MCP Core.
+   - MCP service-policy grants are bound for 60 seconds to
+     policy/rule/agent/action/payload/context. The standalone Hermes worker
+     enforces the same maximum permission directly before first send and outbox
+     replay, including actor, Message, turn, Task version, idempotency, payload
+     shape, and text-size binding.
 4. Accepted trust model.
    - Relay remains the trusted protocol publisher. TLS, path binding, digests,
      and validity windows do not protect against total Relay-host compromise.
@@ -897,21 +903,26 @@ this Guardrail.
    - **Complete.** Server merged before Client. Relay and Zac were upgraded;
      Zac `doctor` passed bundle activation, runtime compatibility,
      authentication, Listener readiness, and Inbox checks.
-   - Preserve Hermes' current dirty canonical baseline before any Hermes code
-     change; merge and deploy its policy integration independently.
-   - **Pending Hermes.** Verify Zac and Hermes only: allowed reply/failure,
-     denied requester-owned
-     operations, hot patch, malicious-bundle rejection, last-known-good,
-     rollback, and both emergency-disable paths. Vivi is not in this gate.
+   - **Complete.** Hermes was built and deployed from an isolated clean worktree;
+     the dirty canonical Agent overlay baseline was not pulled, committed, or
+     modified. Runtime worker/policy hashes match merged source.
+   - **Complete.** The deployed worker returned
+     `HERMES_GUARDRAIL_ACK_20260719` in production Task
+     `task_da25ff6e44ca41d981a7182afd4b0e06`; both Messages were delivered and
+     Zac completed the Task through prepare, one-time Local Inbox approval, and
+     same-idempotency MCP submission at Task version `5`.
+   - **Complete.** Exact worker-process E2E proves bounded reply and
+     `agent_reported_failure` each send one permitted POST, while `close_task`,
+     legacy complete replay, and actor-tampered replay send zero POSTs and
+     persist `policy_denied`. Adapter malicious-bundle, last-known-good,
+     rollback, and both emergency-disable paths remain covered by deterministic
+     Server/Client tests. Vivi is not in this gate.
 
 The detailed boundary is [`docs/guardrail.md`](docs/guardrail.md).
 
 ## Immediate Next Steps
 
-1. Decide how to preserve Hermes' uncommitted production baseline, then land its
-   policy integration and complete the Zac/Hermes positive/negative E2E without
-   mixing unrelated changes.
-2. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
+1. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
    into the MCP client.
-3. Return to the Service Worker Kit after the personal-agent local-context path
+2. Return to the Service Worker Kit after the personal-agent local-context path
    is stable.
