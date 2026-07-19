@@ -814,7 +814,11 @@ The kit should preserve the existing product boundary:
 
 ## Protocol Automatic Upgrade
 
-Status: implementation in progress on `codex/protocol-auto-upgrade`.
+Status: implementation and verification complete in Client PR
+[`#50`](https://github.com/ZilingXie/agent-relay-mcp/pull/50), pending the
+Server negotiation and bundle contract in
+[`agentRelay#61`](https://github.com/ZilingXie/agentRelay/pull/61). Merge Server
+first, then Client.
 
 - Stable semantic create/reply/complete/fail/follow-up tools sit above a
   versioned wire adapter. Local identity and current Task context supply protocol
@@ -828,6 +832,9 @@ Status: implementation in progress on `codex/protocol-auto-upgrade`.
 - New lifecycle, transport, persistence, approval, or local execution semantics
   return `client_release_required`; compatible wire changes may use hot patch.
 - Runtime, sync, MCP smoke, and real Relay negotiation checks gate release.
+- Verified 2026-07-19 with 190 unit tests, MCP smoke coverage for same-key
+  one-time 426 retry, and real HTTP negotiation/assembly of all five v0.5
+  semantic operations.
 
 ## Immediate Next Steps
 
