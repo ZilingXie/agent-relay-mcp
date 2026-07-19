@@ -818,7 +818,9 @@ Status: implementation merged in Server PR
 [`agentRelay#61`](https://github.com/ZilingXie/agentRelay/pull/61) at `2a8c789`,
 followed by Client PR
 [`#50`](https://github.com/ZilingXie/agent-relay-mcp/pull/50) at `087bd2c`.
-Production rollout and installed-client verification remain pending.
+The Relay contract was deployed and production-verified on 2026-07-19. This
+checkout is not the active Codex MCP installation and has no local identity
+`.env`; installed-client rollout remains an explicit per-installation step.
 
 - Stable semantic create/reply/complete/fail/follow-up tools sit above a
   versioned wire adapter. Local identity and current Task context supply protocol
@@ -835,6 +837,9 @@ Production rollout and installed-client verification remain pending.
 - Verified 2026-07-19 with 190 unit tests, MCP smoke coverage for same-key
   one-time 426 retry, and real HTTP negotiation/assembly of all five v0.5
   semantic operations.
+- Production Relay negotiation returned `hot_patch` for runtime `0.2.0`, bundle
+  revision `1`, and an authority/origin-bound v0.5 bundle with no missing
+  capabilities.
 
 ## Immediate Next Steps
 
