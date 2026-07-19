@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
-import { syncCurrentProtocol } from "./protocol-sync.mjs";
+import { negotiateCurrentProtocol, syncCurrentProtocol } from "./protocol-sync.mjs";
 import { listenerStatusHealth, readJsonFrame, v05ReadinessHealth } from "./agentrelay-listener-core.mjs";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
@@ -74,6 +74,17 @@ try {
   check("AgentRelay protocol bundle sync", true, `${result.version} ${result.schema_digest} -> ${result.cache_dir}`);
 } catch (error) {
   check("AgentRelay protocol bundle sync", false, error.message);
+}
+
+try {
+  const result = await negotiateCurrentProtocol({ baseUrl, headers: relayHeaders(), log: null });
+  check(
+    "AgentRelay protocol runtime compatibility",
+    result.status !== "client_release_required",
+    `${result.status} ${result.negotiation?.target?.version || ""}`.trim()
+  );
+} catch (error) {
+  check("AgentRelay protocol runtime compatibility", false, error.message);
 }
 
 try {

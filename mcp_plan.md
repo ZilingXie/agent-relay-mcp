@@ -812,6 +812,23 @@ The kit should preserve the existing product boundary:
    - Use live inbox/service checks only when the changed behavior touches local
      runtime services.
 
+## Protocol Automatic Upgrade
+
+Status: implementation in progress on `codex/protocol-auto-upgrade`.
+
+- Stable semantic create/reply/complete/fail/follow-up tools sit above a
+  versioned wire adapter. Local identity and current Task context supply protocol
+  fields that Local Agents must not invent.
+- Startup and 426 recovery negotiate with Relay. Verified bundles are isolated
+  by authority/origin, staged, digest-checked, schema-checked, and atomically
+  activated under an inter-process lock with last-known-good recovery.
+- The adapter is restricted data mapping, never remotely programmable code.
+  Identity, confirmation, authorization, idempotency, route allowlists, durable
+  local state, and side effects remain in MCP core.
+- New lifecycle, transport, persistence, approval, or local execution semantics
+  return `client_release_required`; compatible wire changes may use hot patch.
+- Runtime, sync, MCP smoke, and real Relay negotiation checks gate release.
+
 ## Immediate Next Steps
 
 1. Coordinate Relay `409 Conflict` enforcement without moving protocol authority

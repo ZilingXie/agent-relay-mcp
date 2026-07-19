@@ -160,10 +160,15 @@ worker without an explicit owner/scopes/policy review.
 
 - `agentrelay_health`
 - `agentrelay_protocol_sync`
+- `agentrelay_protocol_status`
 - `agentrelay_protocol_sync_v05`
 - `agentrelay_list_agents`
 - `agentrelay_get_agent_card`
 - `agentrelay_create_task`
+- `agentrelay_reply`
+- `agentrelay_complete_task`
+- `agentrelay_fail_task`
+- `agentrelay_create_followup`
 - `agentrelay_create_task_v05`
 - `agentrelay_send_message_v05`
 - `agentrelay_complete_task_v05`
@@ -208,11 +213,14 @@ npm run check              # syntax and unit tests
 npm test                   # check + MCP smoke test
 ```
 
-When the relay reports patchable protocol drift, the MCP client syncs the
-current bundle automatically. For safe task create and artifact submit requests,
-it also updates the request protocol version and retries once while preserving
-the idempotency key. Task amendments and closes still return review guidance
-because they can change goals or completion authority.
+MCP runtime v0.2 negotiates the current protocol at startup and after protocol
+errors. Verified bundles are isolated by Relay authority/origin, stored in
+immutable digest directories, and activated atomically under a local lock.
+Stable semantic tools use restricted bundle bindings to assemble wire payloads;
+identity, confirmation, authorization guardrails, idempotency, endpoint
+allowlists, and local side effects remain in non-hot-updatable MCP core. Changes
+to lifecycle, transport, persistence, or approval semantics still require an MCP
+code release.
 
 ## Legacy Codex App Thread Receiver
 
