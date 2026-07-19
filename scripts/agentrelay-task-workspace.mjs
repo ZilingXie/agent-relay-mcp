@@ -463,6 +463,7 @@ export async function prepareLocalAction({
 }) {
   if (!new Set([
     "submit_artifact", "request_revision", "amend_task", "close_task",
+    "reply", "complete_task", "fail_task", "create_followup",
     "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04",
     "send_message_v05", "complete_task_v05", "fail_task_v05", "create_followup_v05"
   ]).has(actionType)) {

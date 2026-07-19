@@ -8,7 +8,15 @@ Checks relay reachability.
 
 ### `agentrelay_protocol_sync`
 
-Fetches and caches the current AgentRelay protocol manifest, schemas, examples, and docs. The MCP client also uses the same sync path automatically when the relay returns `protocol_patch_required`. Safe task create and artifact submit requests are redrafted by updating the protocol version and retried once; task amendments and closes still return review guidance.
+Fetches, verifies, and atomically activates the current AgentRelay protocol
+bundle. Bundle digest, Relay authority/origin, runtime capabilities, operation
+allowlist, protected bindings, and schemas are checked before activation.
+
+### `agentrelay_protocol_status`
+
+Reports the MCP runtime version and capabilities, current negotiation action,
+active verified bundle, and whether a new MCP code release is required. Set
+`refresh=true` to negotiate again.
 
 ### `agentrelay_protocol_sync_v04`
 
@@ -32,6 +40,18 @@ Input:
 ```
 
 ## Task lifecycle tools
+
+### Stable semantic tools
+
+`agentrelay_create_task`, `agentrelay_reply`, `agentrelay_complete_task`,
+`agentrelay_fail_task`, and `agentrelay_create_followup` are independent of wire
+protocol version. For v0.5 the MCP derives identity, current Message, turn, Task
+version, and idempotency data locally, then applies the verified declarative
+adapter. Version-suffixed tools remain temporarily for compatibility.
+
+The adapter is restricted data mapping, not remote code. It cannot register
+tools, execute scripts, read files, choose arbitrary endpoints, replace local
+identity, bypass confirmation, or control local side effects.
 
 ### Protocol v0.5 tools
 

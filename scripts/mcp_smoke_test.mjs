@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { canonicalDigest } from "./protocol-runtime.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -182,6 +183,22 @@ try {
       doneCriteria: "v0.5 response"
     }, v05Session.client);
     assert(v05Created.task.protocol_version === "agent-collab-v0.5", "generic create did not switch to v0.5");
+    await callJson("agentrelay_resync_local_task", { taskId: "task_smoke_v05" }, v05Session.client);
+    await callJson("agentrelay_prepare_local_action", {
+      taskId: "task_smoke_v05",
+      actionType: "reply",
+      clientActionId: "smoke_v05_reply",
+      payloadJson: JSON.stringify({ text: "v0.5 stable reply" })
+    }, v05Session.client);
+    const v05Reply = await callJson("agentrelay_reply", {
+      taskId: "task_smoke_v05",
+      text: "v0.5 stable reply",
+      clientActionId: "smoke_v05_reply",
+      confirmationRef: "smoke-v05-reply-confirmed"
+    }, v05Session.client);
+    assert(v05Reply.status === "sent", "stable reply did not use the prepared action path");
+    assert(v05Reply.relayResponse.task.task_version === 2, "stable reply did not advance task version");
+    assert(fakeRelay.protocolState.replyAttempts === 2, "stable reply did not retry exactly once after hot patch");
     const retired = await v05Session.client.callTool({
       name: "agentrelay_claim_task",
       arguments: { agentId: "frank-agent" }
@@ -226,7 +243,10 @@ async function startMcpClient(relayBaseUrl, stateRoot, protocolVersion = "") {
 function startFakeRelay() {
   const state = {
     task: null,
-    events: []
+    events: [],
+    protocolRevision: 1,
+    replyAttempts: 0,
+    replyIdempotencyKey: ""
   };
 
   const server = http.createServer(async (request, response) => {
@@ -235,6 +255,38 @@ function startFakeRelay() {
       const path = url.pathname.replace(/\/+$/, "") || "/";
       const payload = await readJson(request);
       assertRelayAuth(request);
+
+      const protocolBundle = fakeProtocolBundle(`http://${request.headers.host}/agentrelay`, state.protocolRevision);
+      if (request.method === "GET" && path === "/agentrelay/protocols/current") {
+        return sendJson(response, protocolBundle.manifest);
+      }
+      if (request.method === "GET" && path === "/agentrelay/protocols/agent-collab/v0.5/manifest") {
+        return sendJson(response, protocolBundle.manifest);
+      }
+      if (request.method === "GET" && path === "/agentrelay/protocols/agent-collab/v0.5/bundle") {
+        return sendJson(response, protocolBundle);
+      }
+      if (request.method === "POST" && path === "/agentrelay/protocols/negotiate") {
+        const current = payload.active?.bundle_digest === protocolBundle.manifest.bundle_digest;
+        return sendJson(response, {
+          action: current ? "up_to_date" : "hot_patch",
+          reason: current ? "current" : "sync required",
+          runtime_version: payload.runtime_version,
+          missing_capabilities: [],
+          authority: protocolBundle.manifest.authority,
+          target: {
+            protocol: protocolBundle.manifest.protocol,
+            version: protocolBundle.manifest.version,
+            semver: protocolBundle.manifest.semver,
+            bundle_revision: protocolBundle.manifest.bundle_revision,
+            schema_digest: protocolBundle.manifest.schema_digest,
+            bundle_digest: protocolBundle.manifest.bundle_digest,
+            bundle_url: protocolBundle.manifest.urls.bundle,
+            required_client_capabilities: protocolBundle.manifest.required_client_capabilities
+          },
+          retry_policy: { max_automatic_retries: 1, preserve_idempotency_key: true }
+        });
+      }
 
       if (request.method === "GET" && path === "/agentrelay/health") {
         return sendJson(response, { ok: true, service: "agentrelay-fake" });
@@ -262,9 +314,20 @@ function startFakeRelay() {
             status: "open",
             current_message_id: "msg_smoke_v05",
             turn_sequence: 1,
-            task_version: 1
+            task_version: 1,
+            max_turns: 12,
+            from_agent_id: "frank-agent",
+            to_agent_id: "zac-agent",
+            messages: [{
+              message_id: "msg_smoke_v05",
+              from_agent_id: "frank-agent",
+              to_agent_id: "zac-agent",
+              delivery_status: "delivered",
+              parts: [{ kind: "text", text: "target response" }]
+            }],
+            artifacts: []
           };
-          return sendJson(response, { task: state.task, messages: [] }, 201);
+          return sendJson(response, { task: state.task }, 201);
         }
         assert(payload.protocol_version === "agent-collab-v0.3", "MCP create payload missing protocol version");
         assert(payload.idempotency_key, "MCP create payload missing idempotency_key");
@@ -359,6 +422,50 @@ function startFakeRelay() {
       if (request.method === "GET" && path === "/agentrelay/tasks/task_smoke") {
         return sendJson(response, { task: state.task });
       }
+      if (request.method === "GET" && path === "/agentrelay/tasks/task_smoke_v05") {
+        return sendJson(response, { task: state.task });
+      }
+      if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke_v05/messages") {
+        assert(payload.actor_agent_id === "zac-agent", "stable reply must derive actor from local identity");
+        assert(payload.message_id === "msg_smoke_v05", "stable reply must derive current Message id");
+        assert(payload.turn_sequence === 1, "stable reply must derive current turn");
+        assert(payload.expected_task_version === 1, "stable reply must derive current Task version");
+        assert(payload.idempotency_key, "stable reply must preserve a prepared idempotency key");
+        assert(payload.parts?.[0]?.text === "v0.5 stable reply", "stable reply text missing");
+        state.replyAttempts += 1;
+        if (state.replyAttempts === 1) {
+          state.replyIdempotencyKey = payload.idempotency_key;
+          state.protocolRevision = 2;
+          return sendJson(response, {
+            ok: false,
+            error: {
+              type: "protocol_negotiation",
+              code: "protocol_patch_required",
+              detail: { server_protocol: { version: "agent-collab-v0.5" } }
+            }
+          }, 426);
+        }
+        assert(payload.idempotency_key === state.replyIdempotencyKey, "semantic retry changed idempotency key");
+        state.task = {
+          ...state.task,
+          current_message_id: "msg_smoke_v05_reply",
+          turn_sequence: 2,
+          task_version: 2,
+          from_agent_id: "zac-agent",
+          to_agent_id: "frank-agent",
+          messages: [
+            ...state.task.messages,
+            {
+              message_id: "msg_smoke_v05_reply",
+              from_agent_id: "zac-agent",
+              to_agent_id: "frank-agent",
+              delivery_status: "pending",
+              parts: payload.parts
+            }
+          ]
+        };
+        return sendJson(response, { task: state.task }, 201);
+      }
       if (request.method === "GET" && path === "/agentrelay/tasks/task_smoke/events") {
         return sendJson(response, { events: state.events });
       }
@@ -376,7 +483,98 @@ function startFakeRelay() {
     }
   });
 
+  server.protocolState = state;
   return new Promise((resolveListen) => server.listen(0, "127.0.0.1", () => resolveListen(server)));
+}
+
+function fakeProtocolBundle(baseUrl, revision = 1) {
+  const bundle = {
+    manifest: {
+      protocol: "agent-collab",
+      version: "agent-collab-v0.5",
+      semver: "0.5.0",
+      bundle_revision: revision,
+      schema_digest: "",
+      bundle_digest: "",
+      authority: { id: "mcp-smoke-relay", origin: baseUrl },
+      required_client_capabilities: ["dynamic_protocol_bundle_v0.1", "semantic_protocol_adapter_v1"],
+      urls: { bundle: `${baseUrl}/protocols/agent-collab/v0.5/bundle` }
+    },
+    schemas: {
+      "task-create-v05.schema.json": {
+        "$id": `${baseUrl}/schemas/task-create-v05.schema.json`,
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["protocol_version", "idempotency_key", "requester_agent_id", "target_agent_id", "done_criteria", "message"],
+        "properties": {
+          "protocol_version": { "const": "agent-collab-v0.5" },
+          "idempotency_key": { "type": "string" },
+          "requester_agent_id": { "type": "string" },
+          "target_agent_id": { "type": "string" },
+          "done_criteria": { "type": "string" },
+          "max_turns": { "type": "integer" },
+          "message": { "type": "object" }
+        }
+      },
+      "task-message-v05.schema.json": {
+        "$id": `${baseUrl}/schemas/task-message-v05.schema.json`,
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["actor_agent_id", "message_id", "turn_sequence", "expected_task_version", "idempotency_key", "parts"],
+        "properties": {
+          "actor_agent_id": { "type": "string" },
+          "message_id": { "type": "string" },
+          "turn_sequence": { "type": "integer" },
+          "expected_task_version": { "type": "integer" },
+          "idempotency_key": { "type": "string" },
+          "parts": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    },
+    examples: {},
+    docs: { "revision.txt": String(revision) },
+    adapters: {
+      engine: "semantic_protocol_adapter_v1",
+      allowed_binding_sources: ["input", "identity", "runtime"],
+      protected_targets: ["/requester_agent_id", "/target_agent_id", "/idempotency_key"],
+      operations: {
+        create_task: {
+          method: "POST",
+          path: "/tasks",
+          request_schema: "task-create-v05.schema.json",
+          bindings: [
+            { to: "/protocol_version", value: "agent-collab-v0.5" },
+            { to: "/idempotency_key", from: "runtime.idempotency_key" },
+            { to: "/requester_agent_id", from: "identity.agent_id" },
+            { to: "/target_agent_id", from: "input.targetAgentId" },
+            { to: "/done_criteria", from: "input.doneCriteria" },
+            { to: "/max_turns", from: "input.maxTurns", optional: true },
+            { to: "/message/parts/0/kind", value: "text" },
+            { to: "/message/parts/0/text", from: "input.requestText" }
+          ]
+        },
+        reply: {
+          method: "POST",
+          path: "/tasks/{task_id}/messages",
+          request_schema: "task-message-v05.schema.json",
+          bindings: [
+            { to: "/actor_agent_id", from: "identity.agent_id" },
+            { to: "/message_id", from: "task.current_message_id" },
+            { to: "/turn_sequence", from: "task.turn_sequence" },
+            { to: "/expected_task_version", from: "task.task_version" },
+            { to: "/idempotency_key", from: "runtime.idempotency_key" },
+            { to: "/parts/0/kind", value: "text" },
+            { to: "/parts/0/text", from: "input.text" }
+          ]
+        }
+      }
+    }
+  };
+  bundle.manifest.schema_digest = canonicalDigest(bundle.schemas);
+  bundle.manifest.bundle_digest = canonicalDigest(Object.fromEntries(
+    Object.entries(bundle).filter(([key]) => key !== "manifest")
+  ));
+  return bundle;
 }
 
 function assertRelayAuth(request) {

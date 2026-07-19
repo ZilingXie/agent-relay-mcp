@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import {
+  buildNegotiationRequest,
+  protocolAuthorityRoot,
+  readActiveProtocol,
+  validateNegotiationResponse,
+  validateProtocolBundle
+} from "./protocol-runtime.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -25,15 +33,25 @@ export async function syncCurrentProtocol({
   baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
   cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
   fetchImpl = fetch,
-  log = console.error
+  log = console.error,
+  headers = {}
 } = {}) {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
-  const manifest = await fetchJson(fetchImpl, `${normalizedBaseUrl}/protocols/current`);
+  const manifest = await fetchJson(fetchImpl, `${normalizedBaseUrl}/protocols/current`, headers);
   const bundleUrl = manifest?.urls?.bundle;
   if (!bundleUrl) {
     throw new Error(`Protocol manifest did not include urls.bundle: ${JSON.stringify(manifest)}`);
   }
-  return syncProtocolBundle({ bundleUrl, cacheRoot, fetchImpl, log });
+  return syncProtocolBundle({
+    bundleUrl,
+    cacheRoot,
+    fetchImpl,
+    log,
+    baseUrl: normalizedBaseUrl,
+    authority: manifest.authority,
+    expectedTarget: manifestTarget(manifest),
+    headers
+  });
 }
 
 export async function syncProtocolVersion({
@@ -41,48 +59,138 @@ export async function syncProtocolVersion({
   baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
   cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
   fetchImpl = fetch,
-  log = console.error
+  log = console.error,
+  headers = {}
 } = {}) {
   const match = /^agent-collab-(v\d+\.\d+)$/.exec(String(version || ""));
   if (!match) throw new Error("version must look like agent-collab-v0.4");
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
-  const manifest = await fetchJson(fetchImpl, `${normalizedBaseUrl}/protocols/agent-collab/${match[1]}/manifest`);
+  const manifest = await fetchJson(fetchImpl, `${normalizedBaseUrl}/protocols/agent-collab/${match[1]}/manifest`, headers);
   const bundleUrl = manifest?.urls?.bundle;
   if (!bundleUrl) throw new Error(`Protocol manifest did not include urls.bundle: ${JSON.stringify(manifest)}`);
-  return syncProtocolBundle({ bundleUrl, cacheRoot, fetchImpl, log });
+  return syncProtocolBundle({
+    bundleUrl,
+    cacheRoot,
+    fetchImpl,
+    log,
+    baseUrl: normalizedBaseUrl,
+    authority: manifest.authority,
+    expectedTarget: manifestTarget(manifest),
+    headers
+  });
+}
+
+export async function negotiateCurrentProtocol({
+  baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
+  cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
+  fetchImpl = fetch,
+  headers = {},
+  log = console.error,
+  timeoutMs = 5000
+} = {}) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const manifest = await fetchJson(
+    fetchImpl,
+    `${normalizedBaseUrl}/protocols/current`,
+    headers,
+    AbortSignal.timeout(timeoutMs)
+  );
+  if (!manifest.authority) throw new Error("Current protocol manifest did not include authority");
+  const active = await readActiveProtocol({ cacheRoot: resolveHome(cacheRoot), authority: manifest.authority });
+  const negotiation = validateNegotiationResponse(
+    await postJson(
+      fetchImpl,
+      `${normalizedBaseUrl}/protocols/negotiate`,
+      buildNegotiationRequest({ active }),
+      headers,
+      AbortSignal.timeout(timeoutMs)
+    ),
+    { baseUrl: normalizedBaseUrl }
+  );
+  if (negotiation.action === "client_release_required") {
+    return { status: "client_release_required", negotiation, active };
+  }
+  if (negotiation.action === "up_to_date") {
+    return { status: "up_to_date", negotiation, active };
+  }
+  const synced = await syncProtocolBundle({
+    bundleUrl: negotiation.target.bundle_url,
+    cacheRoot,
+    fetchImpl,
+    log,
+    baseUrl: normalizedBaseUrl,
+    authority: negotiation.authority,
+    expectedTarget: negotiation.target,
+    headers,
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  return { status: negotiation.action === "hot_rollback" ? "hot_rollback_applied" : "hot_patch_applied", negotiation, active: synced };
 }
 
 export async function syncProtocolBundle({
   bundleUrl,
   cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
   fetchImpl = fetch,
-  log = console.error
+  log = console.error,
+  baseUrl,
+  authority,
+  expectedTarget,
+  headers = {},
+  signal
 }) {
   if (!bundleUrl) throw new Error("syncProtocolBundle requires bundleUrl");
-  const bundle = await fetchJson(fetchImpl, bundleUrl);
-  const manifest = bundle.manifest || {};
-  const protocol = requiredString(manifest.protocol, "manifest.protocol");
-  const version = requiredString(manifest.version, "manifest.version");
-  const digest = requiredString(manifest.schema_digest, "manifest.schema_digest");
-  const dir = resolveProtocolDir(cacheRoot, protocol, version);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await writeJson(resolve(dir, "manifest.json"), manifest);
-  await writeJson(resolve(dir, "bundle.json"), bundle);
-  await writeJson(resolve(resolveHome(cacheRoot), "latest.json"), {
-    protocol,
-    version,
-    schema_digest: digest,
-    cache_dir: dir,
-    synced_at: new Date().toISOString(),
+  const bundle = await fetchJson(fetchImpl, bundleUrl, headers, signal);
+  const verified = validateProtocolBundle(bundle, { expectedTarget, authority, baseUrl });
+  const authorityRoot = protocolAuthorityRoot(resolveHome(cacheRoot), verified.authority);
+  const dir = resolveProtocolDir(
+    cacheRoot,
+    verified.protocol,
+    verified.version,
+    verified.authority,
+    verified.bundle_digest
+  );
+  await withActivationLock(authorityRoot, async () => {
+    if (!existsSync(dir)) {
+      const staging = resolve(authorityRoot, `.staging-${randomUUID()}`);
+      try {
+        await mkdir(staging, { recursive: true, mode: 0o700 });
+        await writeJson(resolve(staging, "manifest.json"), bundle.manifest);
+        await writeJson(resolve(staging, "bundle.json"), bundle);
+        await writeNamedFiles(resolve(staging, "schemas"), bundle.schemas || {}, ".json");
+        await writeNamedFiles(resolve(staging, "examples"), bundle.examples || {}, ".json");
+        await writeNamedTextFiles(resolve(staging, "docs"), bundle.docs || {});
+        await mkdir(dirname(dir), { recursive: true, mode: 0o700 });
+        await rename(staging, dir);
+      } finally {
+        await rm(staging, { recursive: true, force: true });
+      }
+    }
+    const pointer = {
+      protocol: verified.protocol,
+      version: verified.version,
+      semver: verified.semver,
+      bundle_revision: verified.bundle_revision,
+      schema_digest: verified.schema_digest,
+      bundle_digest: verified.bundle_digest,
+      authority: verified.authority,
+      cache_dir: dir,
+      activated_at: new Date().toISOString()
+    };
+    const previous = await readActiveProtocol({ cacheRoot: resolveHome(cacheRoot), authority: verified.authority });
+    if (previous && previous.bundle_digest !== pointer.bundle_digest) {
+      await writeJsonAtomic(resolve(authorityRoot, "last-known-good.json"), previous);
+    }
+    await writeJsonAtomic(resolve(authorityRoot, "active.json"), pointer);
   });
-  await writeNamedFiles(resolve(dir, "schemas"), bundle.schemas || {}, ".json");
-  await writeNamedFiles(resolve(dir, "examples"), bundle.examples || {}, ".json");
-  await writeNamedTextFiles(resolve(dir, "docs"), bundle.docs || {});
-  log?.(`AgentRelay protocol bundle synced: ${protocol} ${version} ${digest} -> ${dir}`);
+  log?.(`AgentRelay protocol bundle activated: ${verified.protocol} ${verified.version} ${verified.bundle_digest} -> ${dir}`);
   return {
-    protocol,
-    version,
-    schema_digest: digest,
+    protocol: verified.protocol,
+    version: verified.version,
+    semver: verified.semver,
+    bundle_revision: verified.bundle_revision,
+    schema_digest: verified.schema_digest,
+    bundle_digest: verified.bundle_digest,
+    authority: verified.authority,
     cache_dir: dir,
     manifest_path: resolve(dir, "manifest.json"),
     bundle_path: resolve(dir, "bundle.json"),
@@ -98,7 +206,8 @@ export async function maybeHandleProtocolNegotiation({
   baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
   fetchImpl = fetch,
   cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
-  log = console.error
+  log = console.error,
+  headers = {}
 }) {
   const error = responseData?.error;
   if (!error || error.type !== "protocol_negotiation") return null;
@@ -108,7 +217,7 @@ export async function maybeHandleProtocolNegotiation({
     let synced = null;
     let syncError = null;
     try {
-      synced = await syncProtocolBundle({ bundleUrl, cacheRoot, fetchImpl, log });
+      synced = await syncProtocolBundle({ bundleUrl, cacheRoot, fetchImpl, log, baseUrl, headers });
     } catch (error_) {
       syncError = error_.message;
     }
@@ -249,8 +358,14 @@ function nextProtocolRecoveryAction({ operation, repairedPayload, retryRequest }
   return "Synced the protocol bundle. Retry with the redrafted payload and preserve idempotency.";
 }
 
-export function resolveProtocolDir(cacheRoot, protocol, version) {
-  return resolve(resolveHome(cacheRoot), protocol, version);
+export function resolveProtocolDir(cacheRoot, protocol, version, authority, bundleDigest) {
+  if (!authority || !bundleDigest) return resolve(resolveHome(cacheRoot), protocol, version);
+  return resolve(
+    protocolAuthorityRoot(resolveHome(cacheRoot), authority),
+    protocol,
+    version,
+    bundleDigest.replace(":", "-")
+  );
 }
 
 async function runCli() {
@@ -262,8 +377,8 @@ async function runCli() {
   console.log(JSON.stringify({ ok: true, protocol: result }, null, 2));
 }
 
-async function fetchJson(fetchImpl, url) {
-  const response = await fetchImpl(url, { headers: { Accept: "application/json" } });
+async function fetchJson(fetchImpl, url, headers = {}, signal) {
+  const response = await fetchImpl(url, { headers: { Accept: "application/json", ...headers }, signal });
   const text = await response.text();
   let data;
   try {
@@ -277,9 +392,66 @@ async function fetchJson(fetchImpl, url) {
   return data;
 }
 
+async function postJson(fetchImpl, url, payload, headers = {}, signal) {
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(payload),
+    signal
+  });
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`Protocol negotiation returned non-JSON (${response.status}): ${text}`);
+  }
+  if (!response.ok) throw new Error(`Protocol negotiation failed (${response.status}): ${JSON.stringify(data)}`);
+  return data;
+}
+
 async function writeJson(path, value) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+}
+
+async function writeJsonAtomic(path, value) {
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  await writeJson(temporary, value);
+  await rename(temporary, path);
+}
+
+async function withActivationLock(authorityRoot, operation) {
+  await mkdir(authorityRoot, { recursive: true, mode: 0o700 });
+  const lockPath = resolve(authorityRoot, ".activation.lock");
+  const deadline = Date.now() + 3000;
+  while (true) {
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST" || Date.now() >= deadline) {
+        throw new Error(`Unable to acquire protocol activation lock: ${error.message}`);
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
+}
+
+function manifestTarget(manifest) {
+  return {
+    version: manifest.version,
+    semver: manifest.semver,
+    bundle_revision: manifest.bundle_revision,
+    schema_digest: manifest.schema_digest,
+    bundle_digest: manifest.bundle_digest,
+    required_client_capabilities: manifest.required_client_capabilities || []
+  };
 }
 
 async function writeNamedFiles(dir, values, suffix) {
