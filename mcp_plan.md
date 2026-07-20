@@ -157,8 +157,11 @@ PR #51. Client PR #47 corrected `doctor` to verify the installed v0.5 Listener's
 Relay readiness instead of opening a competing legacy WebSocket. Zac and Vivi
 now run the merged Client at `e42a4dc`; both publish fresh v0.5/workspace-v2
 readiness and persisted the successful production root/follow-up E2E. Hermes is
-an independent deferred workstream and was not changed. The 24-hour production
-observation window is still in progress.
+an independent deferred workstream and was not changed. The production rollout
+is fully observed as of 2026-07-20: the final sample was taken 116216 seconds
+after the stable start, both baseline E2E Tasks remained completed at version 5,
+all 22 production Messages were delivered, the Relay had no due/unacked work or
+alerts, and Zac/Vivi readiness plus Zac's full `doctor` passed.
 Protocol v0.4 remains a completed historical baseline and its tools, docs,
 tests, and workspaces must not be overwritten.
 
@@ -267,9 +270,8 @@ Production rollout evidence:
   applicable to that runtime.
 - Both production Tasks completed at `task_version=5`; all four Messages are
   delivered and persisted in workspace v2.
-- The remaining release activity is the 24-hour observation record. Hermes and
-  dispatcher work remain separately deferred and do not change current v0.5
-  Task/Message truth.
+- The 24-hour observation gate is complete. Hermes and dispatcher work remain
+  separately deferred and do not change current v0.5 Task/Message truth.
 
 Project Hermes client workstream:
 
