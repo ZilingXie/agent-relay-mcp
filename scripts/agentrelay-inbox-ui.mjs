@@ -827,7 +827,7 @@ export function classifyIssueFilter(issue, filter, { localAgentId = process.env.
   if (filter === "all") return true;
   const status = issueWorkflowStatus(issue, { localAgentId });
   if (filter === "needs" || filter === "pending_human" || filter === "pending_tasks") return status === "pending";
-  if (filter === "pending_remote" || filter === "delivered") return status === "delivered";
+  if (filter === "pending_remote" || filter === "delivered" || filter === "replied") return status === "replied";
   if (filter === "failed") return status === "failed";
   if (filter === "completed" || filter === "complete") return status === "complete";
   return true;
@@ -843,8 +843,8 @@ export function issueWorkflowStatus(issue) {
     issue.contextSyncStatus === "context_sync_failed" ||
     issue.executorStatus === "failed"
   ) return "failed";
-  if (issue.messageDeliveryStatus === "delivered") return "delivered";
-  return "pending";
+  if (issue.needsHuman || issue.contextSyncStatus === "context_sync_pending") return "pending";
+  return "replied";
 }
 
 function emptySnapshot(generatedAt) {
@@ -3440,12 +3440,12 @@ function applyTheme(theme) {
 function renderMetrics() {
   if (!el.metrics || !snapshot) return;
   const pendingTasks = snapshot.issues.filter((issue) => classifyIssue(issue, "pending_tasks")).length;
-  const delivered = snapshot.issues.filter((issue) => classifyIssue(issue, "delivered")).length;
+  const replied = snapshot.issues.filter((issue) => classifyIssue(issue, "replied")).length;
   const complete = snapshot.issues.filter((issue) => classifyIssue(issue, "complete")).length;
   el.metrics.innerHTML = [
     metric("Total", snapshot.counts.total),
     metric("Pending Tasks", pendingTasks),
-    metric("Delivered", delivered),
+    metric("Replied", replied),
     metric("Complete", complete)
   ].join("");
 }
@@ -3503,9 +3503,9 @@ function issueFolders(issues) {
       issues: issues.filter((issue) => issueWorkflowStatus(issue) === "pending")
     },
     {
-      key: "delivered",
-      title: "Delivered",
-      issues: issues.filter((issue) => issueWorkflowStatus(issue) === "delivered")
+      key: "replied",
+      title: "Replied",
+      issues: issues.filter((issue) => issueWorkflowStatus(issue) === "replied")
     },
     {
       key: "failed",
@@ -3527,7 +3527,7 @@ function issueFolders(issues) {
   return [
     folders.find((folder) => folder.key === "complete"),
     folders.find((folder) => folder.key === "pending_tasks"),
-    folders.find((folder) => folder.key === "delivered"),
+    folders.find((folder) => folder.key === "replied"),
     folders.find((folder) => folder.key === "failed"),
     folders.find((folder) => folder.key === ARCHIVE_FOLDER_KEY)
   ].filter(Boolean);
@@ -3578,7 +3578,7 @@ function classifyIssue(issue, filter) {
   if (filter === "all") return true;
   const status = issueWorkflowStatus(issue);
   if (filter === "needs" || filter === "pending_human" || filter === "pending_tasks") return status === "pending";
-  if (filter === "pending_remote" || filter === "delivered") return status === "delivered";
+  if (filter === "pending_remote" || filter === "delivered" || filter === "replied") return status === "replied";
   if (filter === "failed") return status === "failed";
   if (filter === "completed" || filter === "complete") return status === "complete";
   return true;
