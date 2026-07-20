@@ -825,18 +825,25 @@ function countIssues(issues) {
 
 export function classifyIssueFilter(issue, filter, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
   if (filter === "all") return true;
-  if (filter === "needs") return issueWorkflowStatus(issue, { localAgentId }) === "need approval";
-  if (filter === "pending_human") return issueWorkflowStatus(issue, { localAgentId }) === "need approval";
-  if (filter === "completed") return issueWorkflowStatus(issue, { localAgentId }) === "complete";
-  if (filter === "complete") return issueWorkflowStatus(issue, { localAgentId }) === "complete";
-  if (filter === "pending_remote") return issueWorkflowStatus(issue, { localAgentId }) === "pending";
+  const status = issueWorkflowStatus(issue, { localAgentId });
+  if (filter === "needs" || filter === "pending_human" || filter === "pending_tasks") return status === "pending";
+  if (filter === "pending_remote" || filter === "delivered") return status === "delivered";
+  if (filter === "failed") return status === "failed";
+  if (filter === "completed" || filter === "complete") return status === "complete";
   return true;
 }
 
-export function issueWorkflowStatus(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
+export function issueWorkflowStatus(issue) {
   if (issue.localStatus === "archived") return "archived";
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "complete";
-  if (issue.needsHuman) return "need approval";
+  if (
+    issue.relayStatus === "failed" ||
+    issue.messageDeliveryStatus === "failed" ||
+    issue.localStatus === "create_failed" ||
+    issue.contextSyncStatus === "context_sync_failed" ||
+    issue.executorStatus === "failed"
+  ) return "failed";
+  if (issue.messageDeliveryStatus === "delivered") return "delivered";
   return "pending";
 }
 
@@ -2076,30 +2083,9 @@ const INDEX_HTML = String.raw`<!doctype html>
           <h1>AgentRelay</h1>
           <p id="freshness">Loading local inbox...</p>
         </div>
-        <div class="pane-actions">
-          <button id="new-task" class="icon-button icon-only" type="button" title="New task" aria-label="New task">+</button>
-          <button id="refresh" class="icon-button icon-only" type="button" title="Refresh now" aria-label="Refresh now">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 8.4"/><path d="M5.5 15a7 7 0 0 0 12.3 2.8L20 15.6"/></svg>
-          </button>
-        </div>
       </div>
       <div class="list-tools">
         <input id="search" type="search" placeholder="Search tasks or agents" autocomplete="off" />
-        <div class="state-filters">
-          <select id="task-state-filter" aria-label="Task state">
-            <option value="all">All task states</option>
-            <option value="open">Open</option>
-            <option value="completed">Completed</option>
-            <option value="expired">Expired</option>
-            <option value="failed">Failed</option>
-          </select>
-          <select id="delivery-state-filter" aria-label="Message delivery state">
-            <option value="all">All delivery states</option>
-            <option value="pending">Pending</option>
-            <option value="delivered">Delivered</option>
-            <option value="failed">Failed</option>
-          </select>
-        </div>
         <button id="show-completed" class="toggle-button" type="button" aria-pressed="false">Show Completed</button>
       </div>
       <div id="issues" class="issues"></div>
@@ -2275,12 +2261,6 @@ p {
   min-width: 0;
 }
 
-.icon-button {
-  border: 1px solid var(--line);
-  background: var(--surface-2);
-  color: var(--text);
-}
-
 .conversation-pane {
   display: flex;
   min-width: 0;
@@ -2322,12 +2302,6 @@ p {
   border-bottom: 1px solid var(--line);
 }
 
-.pane-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .pane-head h1 {
   font-size: 18px;
   line-height: 1.2;
@@ -2339,58 +2313,11 @@ p {
   font-size: 12px;
 }
 
-.icon-button {
-  min-height: 32px;
-  border-radius: 8px;
-  padding: 6px 10px;
-}
-
-.icon-only {
-  display: inline-grid;
-  place-items: center;
-  width: 32px;
-  padding: 0;
-  font-size: 20px;
-  line-height: 1;
-}
-
-.icon-only svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
 .list-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 12px 14px;
-}
-
-.list-tools > input {
-  grid-column: 1 / -1;
-}
-
-.state-filters {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-column: 1 / -1;
-  gap: 8px;
-}
-
-.state-filters select {
-  width: 100%;
-  min-width: 0;
-  min-height: 36px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 7px 28px 7px 9px;
-  background: var(--surface);
-  color: var(--text);
 }
 
 .list-tools input,
@@ -3333,6 +3260,7 @@ const FOLDER_COLLAPSE_KEY = "agentrelay-collapsed-folders";
 const FOLDER_COLLAPSE_MIGRATION_KEY = "agentrelay-collapsed-folders-migration";
 const ARCHIVE_FOLDER_KEY = "archive";
 const AGENTS_MD_PATH = __AGENTRELAY_AGENTS_MD_PATH__;
+__ISSUE_WORKFLOW_STATUS__
 const SIDEBAR_MIN_WIDTH = 280;
 const SIDEBAR_MAX_WIDTH = 720;
 let collapsedFolders = loadCollapsedFolders();
@@ -3349,12 +3277,8 @@ const el = {
   detailBody: document.querySelector("#detail-body"),
   dashboardDetail: document.querySelector("#dashboard-detail"),
   search: document.querySelector("#search"),
-  taskStateFilter: document.querySelector("#task-state-filter"),
-  deliveryStateFilter: document.querySelector("#delivery-state-filter"),
-  refresh: document.querySelector("#refresh"),
   showCompleted: document.querySelector("#show-completed"),
   themeToggle: document.querySelector("#theme-toggle"),
-  newTask: document.querySelector("#new-task"),
   draftForm: document.querySelector("#draft-form"),
   draftStatus: document.querySelector("#draft-status"),
   draftPreview: document.querySelector("#draft-preview"),
@@ -3366,9 +3290,6 @@ applyTheme(localStorage.getItem("agentrelay-theme") || "dark");
 initSidebarResize();
 
 if (el.search) el.search.addEventListener("input", renderList);
-if (el.taskStateFilter) el.taskStateFilter.addEventListener("change", renderList);
-if (el.deliveryStateFilter) el.deliveryStateFilter.addEventListener("change", renderList);
-if (el.refresh) el.refresh.addEventListener("click", () => refresh());
 if (el.showCompleted) {
   el.showCompleted.addEventListener("click", () => {
     showCompleted = !showCompleted;
@@ -3377,7 +3298,6 @@ if (el.showCompleted) {
     renderList();
   });
 }
-if (el.newTask) el.newTask.addEventListener("click", openNewTask);
 if (el.themeToggle) el.themeToggle.addEventListener("click", () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(next);
@@ -3519,13 +3439,13 @@ function applyTheme(theme) {
 
 function renderMetrics() {
   if (!el.metrics || !snapshot) return;
-  const pendingHuman = snapshot.issues.filter((issue) => classifyIssue(issue, "pending_human")).length;
-  const pendingRemote = snapshot.issues.filter((issue) => classifyIssue(issue, "pending_remote")).length;
+  const pendingTasks = snapshot.issues.filter((issue) => classifyIssue(issue, "pending_tasks")).length;
+  const delivered = snapshot.issues.filter((issue) => classifyIssue(issue, "delivered")).length;
   const complete = snapshot.issues.filter((issue) => classifyIssue(issue, "complete")).length;
   el.metrics.innerHTML = [
     metric("Total", snapshot.counts.total),
-    metric("Need approval", pendingHuman),
-    metric("Pending", pendingRemote),
+    metric("Pending Tasks", pendingTasks),
+    metric("Delivered", delivered),
     metric("Complete", complete)
   ].join("");
 }
@@ -3533,11 +3453,7 @@ function renderMetrics() {
 function renderList() {
   if (!snapshot || !el.issues) return;
   const query = el.search ? el.search.value.trim().toLowerCase() : "";
-  const taskState = el.taskStateFilter?.value || "all";
-  const deliveryState = el.deliveryStateFilter?.value || "all";
   const issues = snapshot.issues.filter((issue) => {
-    if (taskState !== "all" && issue.relayStatus !== taskState) return false;
-    if (deliveryState !== "all" && issue.messageDeliveryStatus !== deliveryState) return false;
     if (!query) return true;
     return [
       issue.taskId,
@@ -3551,7 +3467,7 @@ function renderList() {
       issue.processorSummary
     ].join(" ").toLowerCase().includes(query);
   });
-  const visibleIssues = issues.filter((issue) => showCompleted || issueStatus(issue) !== "complete");
+  const visibleIssues = issues.filter((issue) => showCompleted || issueWorkflowStatus(issue) !== "complete");
   const folders = issueFolders(issues).filter((folder) => showCompleted || folder.key !== "complete");
 
   if (el.visibleCount) el.visibleCount.textContent = visibleIssues.length + " shown";
@@ -3582,31 +3498,37 @@ function renderList() {
 function issueFolders(issues) {
   const folders = [
     {
-      key: "pending_human",
-      title: "Need approval",
-      issues: issues.filter((issue) => issueStatus(issue) === "need approval")
+      key: "pending_tasks",
+      title: "Pending Tasks",
+      issues: issues.filter((issue) => issueWorkflowStatus(issue) === "pending")
     },
     {
-      key: "pending_remote",
-      title: "Pending",
-      issues: issues.filter((issue) => issueStatus(issue) === "pending")
+      key: "delivered",
+      title: "Delivered",
+      issues: issues.filter((issue) => issueWorkflowStatus(issue) === "delivered")
+    },
+    {
+      key: "failed",
+      title: "Failed",
+      issues: issues.filter((issue) => issueWorkflowStatus(issue) === "failed")
     },
     {
       key: ARCHIVE_FOLDER_KEY,
       title: "Archive",
-      issues: issues.filter((issue) => issueStatus(issue) === "archived")
+      issues: issues.filter((issue) => issueWorkflowStatus(issue) === "archived")
     },
     {
       key: "complete",
       title: "Complete",
-      issues: issues.filter((issue) => issueStatus(issue) === "complete")
+      issues: issues.filter((issue) => issueWorkflowStatus(issue) === "complete")
     }
   ];
   if (!showCompleted) return folders;
   return [
     folders.find((folder) => folder.key === "complete"),
-    folders.find((folder) => folder.key === "pending_human"),
-    folders.find((folder) => folder.key === "pending_remote"),
+    folders.find((folder) => folder.key === "pending_tasks"),
+    folders.find((folder) => folder.key === "delivered"),
+    folders.find((folder) => folder.key === "failed"),
     folders.find((folder) => folder.key === ARCHIVE_FOLDER_KEY)
   ].filter(Boolean);
 }
@@ -3654,19 +3576,12 @@ function saveCollapsedFolders() {
 
 function classifyIssue(issue, filter) {
   if (filter === "all") return true;
-  if (filter === "needs") return issueStatus(issue) === "need approval";
-  if (filter === "pending_human") return issueStatus(issue) === "need approval";
-  if (filter === "completed") return issueStatus(issue) === "complete";
-  if (filter === "complete") return issueStatus(issue) === "complete";
-  if (filter === "pending_remote") return issueStatus(issue) === "pending";
+  const status = issueWorkflowStatus(issue);
+  if (filter === "needs" || filter === "pending_human" || filter === "pending_tasks") return status === "pending";
+  if (filter === "pending_remote" || filter === "delivered") return status === "delivered";
+  if (filter === "failed") return status === "failed";
+  if (filter === "completed" || filter === "complete") return status === "complete";
   return true;
-}
-
-function issueStatus(issue) {
-  if (issue.localStatus === "archived") return "archived";
-  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "complete";
-  if (issue.needsHuman) return "need approval";
-  return "pending";
 }
 
 async function selectIssue(taskId, { keepView = false } = {}) {
@@ -3897,12 +3812,12 @@ function renderPendingMarker(issue) {
 
 function pendingOwnerLabel(issue) {
   if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "Complete";
-  if (issue.pendingOnHumanId) return "Need approval";
-  if (issue.localStatus === "create_failed" || issue.relayStatus === "failed") return "Need approval";
+  if (issue.pendingOnHumanId) return "Pending Tasks";
+  if (issue.localStatus === "create_failed" || issue.relayStatus === "failed") return "Pending Tasks";
   if (issue.contextSyncStatus === "context_sync_pending") return "Syncing context";
   if (issue.contextSyncStatus === "context_sync_failed") return "Context sync failed";
   if (isWaitingForRemoteCompletionOwnerClient(issue)) return "Pending completion owner: " + issue.completionOwnerAgentId;
-  if (issue.requiresHumanConfirmation) return "Need approval";
+  if (issue.requiresHumanConfirmation) return "Pending Tasks";
   if (issue.pendingOnAgentId === "zac-agent") return "Pending zac-agent";
   if (issue.pendingOnAgentId) return "Pending " + issue.pendingOnAgentId;
   return "";
@@ -4180,7 +4095,7 @@ function renderDashboard() {
       field("Requester", issue.requesterAgentId || "none") +
       field("Target", issue.targetAgentId || "none") +
       field("Pending agent", issue.pendingOnAgentId || "none") +
-      field("Need approval", issue.pendingOnHumanId || "none") +
+      field("Pending Tasks", issue.pendingOnHumanId || "none") +
       field("Relay status", issue.relayStatus || "unknown") +
       field("Message delivery", issue.messageDeliveryStatus || "unknown") +
       field("Diagnosis", issue.diagnosis || "unknown") +
@@ -4213,7 +4128,7 @@ function issueListTags(issue) {
 }
 
 function statusChip(issue) {
-  const status = issueStatus(issue);
+  const status = issueWorkflowStatus(issue);
   return chip(status, status.replaceAll(" ", "-"));
 }
 
@@ -4266,7 +4181,9 @@ function escapeAttr(value) {
 `;
 
 function buildAppJs({ agentsMdPath }) {
-  return APP_JS.replace("__AGENTRELAY_AGENTS_MD_PATH__", JSON.stringify(agentsMdPath));
+  return APP_JS
+    .replace("__AGENTRELAY_AGENTS_MD_PATH__", JSON.stringify(agentsMdPath))
+    .replace("__ISSUE_WORKFLOW_STATUS__", () => issueWorkflowStatus.toString());
 }
 
 if (isMainModulePath(import.meta.url)) {

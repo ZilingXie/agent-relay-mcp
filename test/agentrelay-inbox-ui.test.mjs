@@ -207,7 +207,7 @@ test("loadInboxSnapshot marks processor confirmation tasks as needing Zac", asyn
   assert.equal(snapshot.issues.find((issue) => issue.taskId === "task_remote_revision").needsHuman, false);
 });
 
-test("loadInboxSnapshot keeps Need approval active when remote is pending but local agent needs Zac", async () => {
+test("loadInboxSnapshot keeps local attention active when remote is pending but Zac must act", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
   await writeIssues(stateRoot, {
@@ -246,7 +246,7 @@ test("loadInboxSnapshot keeps Need approval active when remote is pending but lo
 
   const issue = snapshot.issues[0];
   assert.equal(issue.needsHuman, true);
-  assert.equal(issueWorkflowStatus(issue, { localAgentId: "zac-agent" }), "need approval");
+  assert.equal(issueWorkflowStatus(issue), "pending");
   assert.equal(issue.fileAccessRequests[0].status, "pending");
 });
 
@@ -1116,53 +1116,35 @@ test("buildChatTimeline keeps Zac request before same-second local agent relay m
   assert.equal(timeline[1].text, "请修改 dashboard title，并回报验证结果。");
 });
 
-test("classifyIssueFilter supports chat task filters", () => {
-  assert.equal(issueWorkflowStatus({
-    taskId: "needs",
-    needsHuman: true,
-    relayStatus: "submitted",
-    localStatus: "received"
-  }), "need approval");
-  assert.equal(issueWorkflowStatus({
-    taskId: "remote",
-    pendingOnAgentId: "project-hermes",
-    relayStatus: "submitted",
-    localStatus: "received"
-  }, { localAgentId: "zac-agent" }), "pending");
-  assert.equal(issueWorkflowStatus({
-    taskId: "closed",
-    relayStatus: "completed",
-    localStatus: "closed"
-  }), "complete");
-  assert.equal(classifyIssueFilter({
-    taskId: "needs",
-    needsHuman: true,
-    relayStatus: "submitted",
-    localStatus: "received"
-  }, "pending_human"), true);
-  assert.equal(classifyIssueFilter({
-    taskId: "local",
-    pendingOnAgentId: "zac-agent",
-    relayStatus: "submitted",
-    localStatus: "received"
-  }, "pending_human", { localAgentId: "zac-agent" }), false);
-  assert.equal(classifyIssueFilter({
-    taskId: "remote",
-    pendingOnAgentId: "project-hermes",
-    relayStatus: "submitted",
-    localStatus: "received"
-  }, "pending_remote", { localAgentId: "zac-agent" }), true);
-  assert.equal(classifyIssueFilter({
-    taskId: "remote-local",
-    pendingOnAgentId: "zac-agent",
-    relayStatus: "submitted",
-    localStatus: "received"
-  }, "pending_remote", { localAgentId: "zac-agent" }), true);
-  assert.equal(classifyIssueFilter({
-    taskId: "closed",
-    relayStatus: "completed",
-    localStatus: "closed"
-  }, "complete"), true);
+test("issueWorkflowStatus assigns each task to one sidebar folder by precedence", () => {
+  const cases = [
+    [{ taskId: "archived", localStatus: "archived", relayStatus: "failed", executorStatus: "failed" }, "archived"],
+    [{ taskId: "complete", localStatus: "closed", messageDeliveryStatus: "failed" }, "complete"],
+    [{ taskId: "task-failed", relayStatus: "failed" }, "failed"],
+    [{ taskId: "delivery-failed", messageDeliveryStatus: "failed" }, "failed"],
+    [{ taskId: "create-failed", localStatus: "create_failed" }, "failed"],
+    [{ taskId: "sync-failed", contextSyncStatus: "context_sync_failed" }, "failed"],
+    [{ taskId: "executor-failed", executorStatus: "failed" }, "failed"],
+    [{ taskId: "delivered", messageDeliveryStatus: "delivered", needsHuman: true }, "delivered"],
+    [{ taskId: "pending", messageDeliveryStatus: "pending", needsHuman: true }, "pending"],
+    [{ taskId: "unknown" }, "pending"]
+  ];
+
+  for (const [issue, expected] of cases) {
+    assert.equal(issueWorkflowStatus(issue), expected, issue.taskId);
+  }
+  assert.deepEqual(
+    Object.fromEntries(["pending", "delivered", "failed", "archived", "complete"].map((status) => [
+      status,
+      cases.filter(([issue]) => issueWorkflowStatus(issue) === status).length
+    ])),
+    { pending: 2, delivered: 1, failed: 5, archived: 1, complete: 1 }
+  );
+  assert.equal(classifyIssueFilter(cases[8][0], "pending_tasks"), true);
+  assert.equal(classifyIssueFilter(cases[7][0], "delivered"), true);
+  assert.equal(classifyIssueFilter(cases[2][0], "failed"), true);
+  assert.equal(classifyIssueFilter(cases[0][0], "all"), true);
+  assert.equal(classifyIssueFilter(cases[1][0], "complete"), true);
 });
 
 test("inbox UI server disables local reply submission for personal-agent notifier mode", async () => {
@@ -1993,11 +1975,15 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     const htmlResponse = await fetch(`http://127.0.0.1:${port}/`);
     const html = await htmlResponse.text();
     assert.match(html, /AgentRelay Workbench/);
-    assert.match(html, /id="new-task"/);
-    assert.match(html, /id="refresh" class="icon-button icon-only"/);
-    assert.match(html, /aria-label="Refresh now"/);
-    assert.doesNotMatch(html, />Refresh<\/button>/);
+    assert.doesNotMatch(html, /id="new-task"/);
+    assert.doesNotMatch(html, /id="refresh"/);
+    assert.doesNotMatch(html, /aria-label="Refresh now"/);
+    assert.doesNotMatch(html, /id="task-state-filter"/);
+    assert.doesNotMatch(html, /id="delivery-state-filter"/);
+    assert.doesNotMatch(html, /class="state-filters"/);
+    assert.doesNotMatch(html, /class="pane-actions"/);
     assert.match(html, /class="theme-toggle"/);
+    assert.match(html, /id="search"/);
     assert.match(html, /id="show-completed"/);
     assert.match(html, /Show Completed/);
     assert.match(html, /class="list-tools"/);
@@ -2045,8 +2031,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /ArrowRight/);
     assert.match(js, /setInterval\(\(\) => refresh\(\{ passive: true \}\), 10000\)/);
     assert.match(js, /\/api\/task-requests/);
-    assert.match(js, /newTask/);
-    assert.match(js, /newTask\.addEventListener\("click", openNewTask\)/);
+    assert.doesNotMatch(js, /document\.querySelector\("#new-task"\)/);
+    assert.doesNotMatch(js, /newTask\.addEventListener\("click", openNewTask\)/);
+    assert.doesNotMatch(js, /taskStateFilter/);
+    assert.doesNotMatch(js, /deliveryStateFilter/);
     assert.match(js, /function openNewTask/);
     assert.match(js, /function resetNewTaskView/);
     assert.match(js, /latestDraft = null/);
@@ -2067,9 +2055,15 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /querySelectorAll\(['"]\.folder-toggle['"]\)/);
     assert.match(js, /folders\.find\(\(folder\) => folder\.key === "complete"\)/);
     assert.match(js, /folders\.find\(\(folder\) => folder\.key === ARCHIVE_FOLDER_KEY\)/);
-    assert.match(js, /Need approval/);
-    assert.match(js, /Pending/);
+    assert.doesNotMatch(js, /Need approval/);
+    assert.match(js, /Pending Tasks/);
+    assert.match(js, /Delivered/);
+    assert.match(js, /Failed/);
     assert.match(js, /Archive/);
+    assert.ok(js.indexOf('title: "Pending Tasks"') < js.indexOf('title: "Delivered"'));
+    assert.ok(js.indexOf('title: "Delivered"') < js.indexOf('title: "Failed"'));
+    assert.ok(js.indexOf('title: "Failed"') < js.indexOf('title: "Archive"'));
+    assert.match(js, /folders\.find\(\(folder\) => folder\.key === "complete"\)[\s\S]*folder\.key === "pending_tasks"[\s\S]*folder\.key === "delivered"[\s\S]*folder\.key === "failed"[\s\S]*folder\.key === ARCHIVE_FOLDER_KEY/);
     assert.doesNotMatch(js, /Pending human/);
     assert.doesNotMatch(js, /Pending remote/);
     assert.match(js, /speaker-zac/);
@@ -2079,10 +2073,12 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /title="Archive thread"/);
     assert.match(js, /let showCompleted = false/);
     assert.match(js, /showCompleted = !showCompleted/);
-    assert.match(js, /issueStatus\(issue\) === "complete"/);
-    assert.match(js, /issueStatus\(issue\) === "archived"/);
-    assert.match(js, /function issueStatus/);
+    assert.match(js, /issueWorkflowStatus\(issue\) !== "complete"/);
+    assert.match(js, /function issueWorkflowStatus/);
+    assert.doesNotMatch(js, /function issueStatus/);
     assert.match(js, /issue\.localStatus === "archived"/);
+    assert.match(js, /issue\.messageDeliveryStatus === "failed"/);
+    assert.match(js, /issue\.messageDeliveryStatus === "delivered"/);
     assert.doesNotMatch(js, /Delete this local thread/);
     assert.doesNotMatch(js, /window\.confirm/);
     assert.match(js, /pad\(date\.getMonth\(\) \+ 1\)/);
@@ -2131,7 +2127,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /distanceFromBottom <= 48/);
     assert.match(js, /Pending zac-agent/);
     assert.match(js, /Pending completion owner: /);
-    assert.match(js, /if \(issue\.requiresHumanConfirmation\) return "Need approval"/);
+    assert.match(js, /if \(issue\.requiresHumanConfirmation\) return "Pending Tasks"/);
     assert.match(js, /class="delivery-indicator failed"/);
     assert.match(js, /class="delivery-indicator delivered"/);
     assert.match(js, /class="message-error"/);
@@ -2163,11 +2159,14 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     const css = await cssResponse.text();
     assert.match(css, /\.app-shell/);
     assert.match(css, /--sidebar-width: 390px/);
+    assert.doesNotMatch(css, /\.pane-actions/);
+    assert.doesNotMatch(css, /\.state-filters/);
+    assert.doesNotMatch(css, /\.icon-button/);
     assert.match(css, /grid-template-columns: var\(--sidebar-width\) 6px minmax\(0, 1fr\)/);
     assert.match(css, /\.sidebar-resizer/);
     assert.match(css, /cursor: col-resize/);
     assert.match(css, /\.theme-toggle/);
-    assert.match(css, /\.icon-only svg/);
+    assert.doesNotMatch(css, /\.icon-only/);
     assert.match(css, /\.list-tools/);
     assert.match(css, /\.toggle-button/);
     assert.match(css, /\.issue-folder/);
