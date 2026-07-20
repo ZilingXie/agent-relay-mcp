@@ -112,7 +112,8 @@ npm run health:install
 
 The install is successful when the script creates an `agentrelay-healthcheck`
 task, receives the synthetic ACK, sees the task in `http://127.0.0.1:8787/`,
-and closes the health check task. This verifies MCP auth, AgentRelay HTTP,
+waits for the ACK Message delivery, and completes the health check Task with
+current v0.5 context. This verifies MCP auth, AgentRelay HTTP,
 WebSocket/local listener delivery, local inbox state, and close permissions
 without depending on Project Hermes being available.
 

@@ -32,7 +32,8 @@ test("install health check creates loopback task, waits for local inbox, and clo
     assert.match(result.ack, /ACK from agentrelay-healthcheck/);
     assert.equal(server.state.closed, true);
     assert.equal(server.state.createPayload.requester_agent_id, undefined);
-    assert.equal(server.state.closePayload.closed_by_agent_id, "zac-agent");
+    assert.equal(server.state.closePayload.actor_agent_id, "zac-agent");
+    assert.equal(server.state.closePayload.expected_task_version, 4);
     const workspace = await readTaskWorkspace({ stateRoot: root.stateRoot, taskId: result.taskId });
     assert.equal(workspace.task.status, "completed");
     assert.equal(workspace.sync.source, "install_health_close");
@@ -41,7 +42,7 @@ test("install health check creates loopback task, waits for local inbox, and clo
   }
 });
 
-test("install health check fails when ACK artifact is incomplete", async () => {
+test("install health check fails when ACK Message is incomplete", async () => {
   const root = await makeTempState();
   const server = await startFakeRelay({
     stateRoot: root.stateRoot,
@@ -88,7 +89,7 @@ test("install health check fails when local inbox does not record the task", asy
   }
 });
 
-test("install health check fails when close fails", async () => {
+test("install health check fails when completion fails", async () => {
   const root = await makeTempState();
   const server = await startFakeRelay({
     stateRoot: root.stateRoot,
@@ -151,19 +152,20 @@ function startFakeRelay({ stateRoot, ackText, writeInbox = true, closeStatus = 2
         const text = ackText({ taskId });
         const task = {
           task_id: taskId,
-          status: "delivery_pending",
+          status: "open",
           requester_agent_id: "zac-agent",
           target_agent_id: "agentrelay-healthcheck",
-          completion_owner_agent_id: "zac-agent",
-          pending_on_agent_id: "zac-agent",
-          artifacts: [{
-            artifact_id: "art_install_health_fake",
+          current_message_id: "msg_install_health_ack",
+          turn_sequence: 1,
+          task_version: 3
+        };
+        const messages = [{
+            message_id: "msg_install_health_ack",
             from_agent_id: "agentrelay-healthcheck",
             to_agent_id: "zac-agent",
-            kind: "install_health_ack",
+            delivery_status: "pending",
             parts: [{ kind: "text", text }]
-          }]
-        };
+          }];
         if (writeInbox) {
           await writeFile(join(stateRoot, "issues.json"), JSON.stringify({
             version: 1,
@@ -190,16 +192,46 @@ function startFakeRelay({ stateRoot, ackText, writeInbox = true, closeStatus = 2
             events: {}
           }, null, 2));
         }
-        return sendJson(response, { task, ack: { text } }, 201);
+        return sendJson(response, { task, messages }, 201);
       }
 
-      if (request.method === "POST" && url.pathname === "/agentrelay/api/tasks/task_install_health_fake/close") {
+      if (request.method === "GET" && url.pathname === "/agentrelay/api/tasks/task_install_health_fake") {
+        return sendJson(response, {
+          task: {
+            task_id: "task_install_health_fake",
+            status: "open",
+            requester_agent_id: "zac-agent",
+            target_agent_id: "agentrelay-healthcheck",
+            current_message_id: "msg_install_health_ack",
+            turn_sequence: 1,
+            task_version: 4
+          },
+          messages: [{
+            message_id: "msg_install_health_ack",
+            from_agent_id: "agentrelay-healthcheck",
+            to_agent_id: "zac-agent",
+            delivery_status: "delivered",
+            parts: [{ kind: "text", text: ackText({ taskId: "task_install_health_fake" }) }]
+          }]
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/agentrelay/api/tasks/task_install_health_fake/complete") {
         state.closePayload = payload;
         if (closeStatus !== 200) {
           return sendJson(response, { error: "close failed" }, closeStatus);
         }
         state.closed = true;
-        return sendJson(response, { task: { task_id: "task_install_health_fake", status: "completed" } });
+        return sendJson(response, {
+          task: { task_id: "task_install_health_fake", status: "completed" },
+          messages: [{
+            message_id: "msg_install_health_ack",
+            from_agent_id: "agentrelay-healthcheck",
+            to_agent_id: "zac-agent",
+            delivery_status: "delivered",
+            parts: [{ kind: "text", text: ackText({ taskId: "task_install_health_fake" }) }]
+          }]
+        });
       }
 
       return sendJson(response, { error: "not found" }, 404);

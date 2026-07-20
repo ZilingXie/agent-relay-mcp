@@ -85,7 +85,10 @@ http://127.0.0.1:8787/
 npm run health:install
 ```
 
-Installation is complete when `health:install` receives the synthetic `agentrelay-healthcheck` ACK, confirms the task appears in the local inbox state/UI, and closes the health check task.
+Installation is complete when `health:install` receives the synthetic
+`agentrelay-healthcheck` ACK Message, confirms the Task appears in the Local
+Inbox state/UI, waits for delivery ACK, and completes the Task with current
+v0.5 context.
 
 A real `project-hermes` task is optional E2E validation. If it fails after `health:install` passes, debug Hermes or its adapter rather than the MCP install.
 

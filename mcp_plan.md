@@ -890,9 +890,10 @@ Guardrail.
      replay, including actor, Message, turn, Task version, idempotency, payload
      shape, and text-size binding.
 4. Accepted trust model.
-   - Relay remains the trusted protocol publisher. TLS, path binding, digests,
-     and validity windows do not protect against total Relay-host compromise.
-     Independent bundle signing and KMS are deferred.
+   - Relay remains the trusted protocol publisher. Dynamic Agent-tool bundles
+     use Ed25519 signatures, but the public key is first learned through Relay
+     TLS; external KMS/key pinning remains deferred and total Relay-host plus
+     signing-key compromise is outside this boundary.
    - Local approval protects against remote content and normal MCP calls, not a
      malicious process with write access as the same OS user. Stronger isolation
      requires a separate OS identity or external approval service.
@@ -922,8 +923,9 @@ The detailed boundary is [`docs/guardrail.md`](docs/guardrail.md).
 
 ## Structured Message Subject And Dynamic Agent Tools
 
-Status: implemented on task branch; pending Server/Client PRs, staged rollout,
-installation upgrades, activation, and production verification.
+Status: Server PR `#67` and Client PR `#58` merged. Compatible revision `3` is
+deployed and Zac's local MCP is upgraded; signed revision `4` activation and
+final production E2E remain pending.
 
 - New Task and follow-up tools use structured `message.subject + message.parts`;
   reply exposes only Agent-supplied `taskId + parts`.
@@ -944,6 +946,9 @@ installation upgrades, activation, and production verification.
 - Full Client tests (214/214 plus MCP smoke), full Server tests, malicious-
   bundle tests, hot patch E2E, and create/delivery/reply/complete/follow-up E2E
   passed before PR creation.
+- Hosted install health uses the v0.5 synthetic ACK Message path, waits for the
+  normal Listener delivery ACK, refreshes current Task context, and completes
+  without calling a retired legacy endpoint.
 
 ## Immediate Next Steps
 
