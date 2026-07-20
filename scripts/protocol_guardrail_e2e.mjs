@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -17,6 +18,9 @@ if (!existsSync(join(serverRoot, "server", "app.py"))) {
 }
 
 const root = await mkdtemp(join(tmpdir(), "agentrelay-guardrail-e2e-"));
+const signingKeyPath = join(root, "protocol-signing-key.pem");
+const signingKey = generateKeyPairSync("ed25519").privateKey.export({ format: "pem", type: "pkcs8" });
+await writeFile(signingKeyPath, signingKey, { mode: 0o600 });
 const port = await availablePort();
 const relayRoot = `http://127.0.0.1:${port}/agentrelay`;
 const baseUrl = `${relayRoot}/api`;
@@ -34,6 +38,9 @@ const server = spawn("python3", ["-m", "server.app"], {
     AGENTRELAY_DB_PATH: join(root, "legacy.sqlite3"),
     AGENTRELAY_V05_DB_PATH: join(root, "v05.sqlite3"),
     AGENTRELAY_MUTATION_MODE: "v05",
+    AGENTRELAY_DYNAMIC_AGENT_TOOLS_ENABLED: "1",
+    AGENTRELAY_PROTOCOL_SIGNING_KEY_FILE: signingKeyPath,
+    AGENTRELAY_PROTOCOL_SIGNING_KEY_ID: "local-guardrail-e2e-key",
     AGENTRELAY_PUBLIC_BASE_URL: relayRoot,
     AGENTRELAY_PROTOCOL_AUTHORITY_ID: "local-guardrail-e2e",
     AGENTRELAY_TOKENS: "zac:zac-agent:zac-token"
@@ -54,8 +61,8 @@ try {
     log: null
   });
   assert.equal(first.status, "hot_patch_applied");
-  assert.equal(first.active.bundle_revision, 2);
-  assert.equal(first.active.adapter_contract_version, 1);
+  assert.equal(first.active.bundle_revision, 4);
+  assert.equal(first.active.adapter_contract_version, 2);
 
   const bundle = JSON.parse(await readFile(first.active.bundle_path, "utf8"));
   validateProtocolBundle(bundle, {
@@ -66,7 +73,7 @@ try {
   const reply = buildSemanticRequest({
     bundle,
     operation: "reply",
-    input: { taskId: "task-e2e", text: "guardrail-e2e" },
+    input: { taskId: "task-e2e", parts: [{ kind: "text", text: "guardrail-e2e" }] },
     identity: { agent_id: "zac-agent" },
     task: {
       task_id: "task-e2e",

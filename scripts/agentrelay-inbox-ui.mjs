@@ -1476,10 +1476,13 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
   const targetAgentId = draft.to;
   const protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || LEGACY_PROTOCOL_VERSION;
   const payload = protocolVersion === PROTOCOL_V05
-    ? buildCreatePayloadV05({
+      ? buildCreatePayloadV05({
         requesterAgentId,
         targetAgentId,
-        requestText: draft.requestText,
+        message: {
+          subject: draft.subject,
+          parts: [{ kind: "text", text: draft.requestText }]
+        },
         doneCriteria: draft.doneCriteria,
         maxTurns: draft.maxTurns,
         taskExpiresAt: draft.taskExpiresAt

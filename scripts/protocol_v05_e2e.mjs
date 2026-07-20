@@ -56,7 +56,11 @@ try {
     target_agent_id: "frank-agent",
     done_criteria: "pong accepted",
     max_turns: 2,
-    message: { parts: [{ kind: "text", text: "ping" }] }
+    message: {
+      subject: "Initial ping",
+      metadata: { category: "e2e", display: { priority: 2 } },
+      parts: [{ kind: "text", text: "ping" }]
+    }
   });
   let task = created.task;
   const taskId = task.task_id;
@@ -65,6 +69,8 @@ try {
   let detail = await request("frank-agent", "GET", `/tasks/${taskId}`);
   task = detail.task;
   assert.equal(detail.messages[0].delivery_status, "delivered");
+  assert.equal(detail.messages[0].subject, "Initial ping");
+  assert.deepEqual(detail.messages[0].metadata, { category: "e2e", display: { priority: 2 } });
 
   detail = await request("frank-agent", "POST", `/tasks/${taskId}/messages`, {
     actor_agent_id: "frank-agent",
@@ -78,6 +84,7 @@ try {
   detail = await request("zac-agent", "GET", `/tasks/${taskId}`);
   task = detail.task;
   assert.equal(detail.messages.at(-1).delivery_status, "delivered");
+  assert.equal(detail.messages.at(-1).metadata, null);
 
   const completed = await request("zac-agent", "POST", `/tasks/${taskId}/complete`, {
     actor_agent_id: "zac-agent",
@@ -92,9 +99,15 @@ try {
   const followup = await request("zac-agent", "POST", `/tasks/${taskId}/followups`, {
     idempotency_key: "client-e2e-followup",
     done_criteria: "second pong accepted",
-    message: { parts: [{ kind: "text", text: "ping again" }] }
+    message: {
+      subject: "Follow-up ping",
+      metadata: { category: "followup" },
+      parts: [{ kind: "text", text: "ping again" }]
+    }
   });
   assert.equal(followup.task.root_task_id, taskId);
+  assert.equal(followup.messages[0].subject, "Follow-up ping");
+  assert.deepEqual(followup.messages[0].metadata, { category: "followup" });
   const lineage = await request("zac-agent", "GET", `/tasks/${taskId}/lineage`);
   assert.deepEqual(new Set(lineage.tasks.map((item) => item.task_id)), new Set([taskId, followup.task.task_id]));
   console.log(JSON.stringify({ ok: true, taskId, followupTaskId: followup.task.task_id }));

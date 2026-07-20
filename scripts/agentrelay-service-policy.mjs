@@ -67,7 +67,7 @@ export function authorizeServiceAction({ policy, action, task, localAgentId, at 
   const rule = policy.rules.find((candidate) => candidate.operation === action.actionType);
   if (!rule) return rejection("SERVICE_POLICY_OPERATION_DENIED");
   if (action.actionType === "reply") {
-    const text = String(action.payload?.text || "");
+    const text = serviceReplyText(action.payload);
     if (!text || Buffer.byteLength(text, "utf8") > Number(rule.max_text_bytes || 20000)) {
       return rejection("SERVICE_POLICY_CONTENT_DENIED");
     }
@@ -91,6 +91,15 @@ export function authorizeServiceAction({ policy, action, task, localAgentId, at 
     status: "active"
   };
   return { ok: true, grant };
+}
+
+function serviceReplyText(payload) {
+  if (typeof payload?.text === "string") return payload.text;
+  if (!Array.isArray(payload?.parts) || payload.parts.length === 0) return "";
+  if (payload.parts.some((part) => (
+    !part || typeof part !== "object" || part.kind !== "text" || typeof part.text !== "string"
+  ))) return "";
+  return payload.parts.map((part) => part.text).join("\n");
 }
 
 export function validateLocalAuthorization({

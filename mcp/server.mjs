@@ -10,8 +10,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
 import { resyncLocalTask } from "../scripts/agentrelay-task-context-sync.mjs";
-import { prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
-import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
+import { hashStableJson, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
+import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
+import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, readCachedVerifiedProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
 import {
   buildSemanticRequest,
   PROTOCOL_RUNTIME_CAPABILITIES,
@@ -56,6 +57,71 @@ const servicePolicyPath = process.env.AGENTRELAY_SERVICE_POLICY_PATH
   : (agentId === "project-hermes" ? resolve(repoRoot, "policies/project-hermes.service-policy.json") : "");
 let protocolRuntimeStatus = { status: "checking", checked_at: new Date().toISOString() };
 let protocolStartupPromise = null;
+const agentToolRegistrations = new Map();
+let initialAgentToolMode = ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5" ? "unavailable" : "legacy";
+let initialAgentToolDefinitions = [];
+
+const messagePartsSchema = z.array(
+  z.record(z.string(), z.unknown()).refine((part) => Object.keys(part).length > 0, "Message parts cannot be empty")
+).min(1);
+const initialMessageSchema = z.object({
+  subject: z.string().min(1).max(120),
+  parts: messagePartsSchema
+}).strict();
+
+const LEGACY_AGENT_TOOL_CONFIGS = {
+  agentrelay_create_task: {
+    title: "Create AgentRelay task",
+    description: "Create a Task through the active protocol adapter; local identity is the requester for v0.5.",
+    inputSchema: {
+      requester_agent_id: z.string().min(1).optional().describe("Protocol v0.3 requester agent id"),
+      target_agent_id: z.string().min(1).optional().describe("Protocol v0.3 target agent id"),
+      from: z.string().min(1).optional().describe("Legacy requester agent id alias"),
+      to: z.string().min(1).optional().describe("Legacy target agent id alias"),
+      requestText: z.string().min(1).describe("Human-readable request to send"),
+      requesterThreadId: z.string().min(1).optional().describe("Legacy Codex App thread id for pre-v0.5 protocols"),
+      intent: z.string().optional().describe("Protocol v0.3 message intent, for example request_availability"),
+      taskType: z.string().optional().describe("Protocol v0.3 task_type, for example meeting.schedule"),
+      subject: z.string().optional(),
+      contextId: z.string().optional(),
+      doneCriteria: z.string().optional(),
+      completionOwnerAgentId: z.string().optional(),
+      pendingOnAgentId: z.string().optional(),
+      nextAction: z.string().optional(),
+      humanBoundaryReason: z.string().optional(),
+      ttl: z.number().int().positive().optional(),
+      maxTurns: z.number().int().positive().optional()
+    }
+  },
+  agentrelay_reply: {
+    title: "Reply to an AgentRelay task",
+    description: "Send reply text through the active verified protocol adapter using current local Task context.",
+    inputSchema: {
+      taskId: z.string().min(1),
+      text: z.string().min(1),
+      clientActionId: z.string().min(1),
+      confirmationRef: z.string().min(1).optional()
+    }
+  },
+  agentrelay_create_followup: {
+    title: "Create an AgentRelay follow-up",
+    description: "Create a follow-up under a terminal Task through the active verified protocol adapter.",
+    inputSchema: {
+      taskId: z.string().min(1),
+      requestText: z.string().min(1),
+      doneCriteria: z.string().min(1),
+      maxTurns: z.number().int().positive().optional(),
+      taskExpiresAt: z.number().int().positive().optional(),
+      clientActionId: z.string().min(1),
+      confirmationRef: z.string().min(1).optional()
+    }
+  }
+};
+
+if (ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5") {
+  protocolStartupPromise = refreshProtocolRuntime();
+  await protocolStartupPromise;
+}
 
 const server = new McpServer({
   name: "agent-relay-mcp",
@@ -66,7 +132,7 @@ registerTools(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-protocolStartupPromise = refreshProtocolRuntime();
+if (ACTIVE_PROTOCOL_VERSION !== "agent-collab-v0.5") protocolStartupPromise = refreshProtocolRuntime();
 
 function registerTools(mcpServer) {
   mcpServer.registerTool(
@@ -141,34 +207,11 @@ function registerTools(mcpServer) {
     async ({ agentId }) => jsonResult(await relayGet(`/agents/${encodeURIComponent(agentId)}/card`))
   );
 
-  mcpServer.registerTool(
+  registerStableAgentTool(mcpServer,
     "agentrelay_create_task",
-    {
-      title: "Create AgentRelay task",
-      description: "Create a Task through the active protocol adapter; local identity is the requester for v0.5.",
-      inputSchema: {
-        requester_agent_id: z.string().min(1).optional().describe("Protocol v0.3 requester agent id"),
-        target_agent_id: z.string().min(1).optional().describe("Protocol v0.3 target agent id"),
-        from: z.string().min(1).optional().describe("Legacy requester agent id alias"),
-        to: z.string().min(1).optional().describe("Legacy target agent id alias"),
-        requestText: z.string().min(1).describe("Human-readable request to send"),
-        requesterThreadId: z.string().min(1).optional().describe("Legacy Codex App thread id for pre-v0.5 protocols"),
-        intent: z.string().optional().describe("Protocol v0.3 message intent, for example request_availability"),
-        taskType: z.string().optional().describe("Protocol v0.3 task_type, for example meeting.schedule"),
-        subject: z.string().optional(),
-        contextId: z.string().optional(),
-        doneCriteria: z.string().optional(),
-        completionOwnerAgentId: z.string().optional(),
-        pendingOnAgentId: z.string().optional(),
-        nextAction: z.string().optional(),
-        humanBoundaryReason: z.string().optional(),
-        ttl: z.number().int().positive().optional(),
-        maxTurns: z.number().int().positive().optional()
-      }
-    },
     async (args) => {
       const requesterAgentId = args.requester_agent_id || args.from;
-      const targetAgentId = args.target_agent_id || args.to;
+      const targetAgentId = args.target_agent_id || args.to || args.targetAgentId;
       if (ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5") {
         assertDirectCreateAuthorized();
         const idempotencyKey = `mcp-v05-create-${randomUUID()}`;
@@ -177,8 +220,10 @@ function registerTools(mcpServer) {
           input: {
             targetAgentId,
             requestText: args.requestText,
+            message: args.message,
             doneCriteria: args.doneCriteria,
-            maxTurns: args.maxTurns
+            maxTurns: args.maxTurns,
+            taskExpiresAt: args.taskExpiresAt
           },
           idempotencyKey
         })));
@@ -234,7 +279,7 @@ function registerTools(mcpServer) {
       inputSchema: {
         requesterAgentId: z.string().min(1),
         targetAgentId: z.string().min(1),
-        requestText: z.string().min(1),
+        message: initialMessageSchema,
         doneCriteria: z.string().min(1),
         subject: z.string().optional(),
         maxTurns: z.number().int().positive().optional(),
@@ -257,7 +302,7 @@ function registerTools(mcpServer) {
       inputSchema: {
         taskId: z.string().min(1),
         actorAgentId: z.string().min(1),
-        text: z.string().min(1),
+        parts: messagePartsSchema,
         ...v04MutationContextSchema(),
         clientActionId: z.string().min(1),
         confirmationRef: z.string().min(1).optional()
@@ -476,7 +521,7 @@ function registerTools(mcpServer) {
       description: "Create a new Task under a terminal v0.5 root lineage.",
       inputSchema: {
         taskId: z.string().min(1),
-        requestText: z.string().min(1),
+        message: initialMessageSchema,
         doneCriteria: z.string().min(1),
         maxTurns: z.number().int().positive().optional(),
         taskExpiresAt: z.number().int().positive().optional(),
@@ -494,18 +539,8 @@ function registerTools(mcpServer) {
     }))
   );
 
-  mcpServer.registerTool(
+  registerStableAgentTool(mcpServer,
     "agentrelay_reply",
-    {
-      title: "Reply to an AgentRelay task",
-      description: "Send reply text through the active verified protocol adapter using current local Task context.",
-      inputSchema: {
-        taskId: z.string().min(1),
-        text: z.string().min(1),
-        clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1).optional()
-      }
-    },
     async (args) => jsonResult(await executeSemanticTaskAction({ args, operation: "reply" }))
   );
 
@@ -538,21 +573,8 @@ function registerTools(mcpServer) {
     async (args) => jsonResult(await executeSemanticTaskAction({ args, operation: "fail_task" }))
   );
 
-  mcpServer.registerTool(
+  registerStableAgentTool(mcpServer,
     "agentrelay_create_followup",
-    {
-      title: "Create an AgentRelay follow-up",
-      description: "Create a follow-up under a terminal Task through the active verified protocol adapter.",
-      inputSchema: {
-        taskId: z.string().min(1),
-        requestText: z.string().min(1),
-        doneCriteria: z.string().min(1),
-        maxTurns: z.number().int().positive().optional(),
-        taskExpiresAt: z.number().int().positive().optional(),
-        clientActionId: z.string().min(1),
-        confirmationRef: z.string().min(1).optional()
-      }
-    },
     async (args) => jsonResult(await executeSemanticTaskAction({
       args,
       operation: "create_followup",
@@ -1021,6 +1043,7 @@ async function executeSemanticTaskAction({ args, operation, resultTaskMode }) {
     args,
     actionType: operation,
     resultTaskMode,
+    resolvePreparedAction: true,
     validateCurrentTask: (task) => {
       currentTask = task;
       validateSemanticTransition(operation, task, agentId, args);
@@ -1034,8 +1057,11 @@ async function executeSemanticTaskAction({ args, operation, resultTaskMode }) {
   });
 }
 
-async function executeMcpTaskAction({ args, actionType, remotePayload, remotePayloadBuilder, remoteRequestBuilder, path, validateCurrentTask, resultTaskMode }) {
+async function executeMcpTaskAction({ args, actionType, remotePayload, remotePayloadBuilder, remoteRequestBuilder, path, validateCurrentTask, resultTaskMode, resolvePreparedAction = false }) {
   const preparedPayload = preparedActionPayload(args);
+  const resolvedArgs = resolvePreparedAction && !args.clientActionId
+    ? await resolvePreparedSemanticAction({ args, actionType, preparedPayload })
+    : args;
   const mutate = async (idempotencyKey) => {
     if (remoteRequestBuilder) {
       return executeSemanticRelayRequest(() => remoteRequestBuilder(idempotencyKey));
@@ -1047,14 +1073,14 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
         : compact({ ...remotePayload, idempotency_key: idempotencyKey })
     );
   };
-  if (args.clientActionId) {
+  if (resolvedArgs.clientActionId) {
     return executePreparedTaskAction({
       stateRoot,
-      taskId: args.taskId,
-      clientActionId: args.clientActionId,
+      taskId: resolvedArgs.taskId,
+      clientActionId: resolvedArgs.clientActionId,
       actionType,
       payload: preparedPayload,
-      confirmationRef: args.confirmationRef,
+      confirmationRef: resolvedArgs.confirmationRef,
       fetchTask: (taskId) => relayGet(`/tasks/${encodeURIComponent(taskId)}`),
       mutate,
       validateCurrentTask,
@@ -1068,7 +1094,7 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
     ok: false,
     status: "rejected",
     code: "LOCAL_AUTHORIZATION_REQUIRED",
-    taskId: String(args.taskId || ""),
+    taskId: String(resolvedArgs.taskId || ""),
     message: "Prepare the exact action and approve it through the trusted Local Inbox before submission."
   };
 }
@@ -1080,15 +1106,110 @@ async function refreshProtocolRuntime() {
       headers: relayHeaders(),
       log: null
     });
-    protocolRuntimeStatus = { ...result, checked_at: new Date().toISOString(), last_error: null };
+    if (result.status === "client_release_required") {
+      setAgentToolsUnavailable();
+      protocolRuntimeStatus = { ...result, agent_tools: { status: "unavailable", reason: result.status }, checked_at: new Date().toISOString(), last_error: null };
+      return protocolRuntimeStatus;
+    }
+    const agentTools = await applyAgentToolBundle(result.active);
+    protocolRuntimeStatus = { ...result, agent_tools: agentTools, checked_at: new Date().toISOString(), last_error: null };
   } catch (error) {
-    protocolRuntimeStatus = {
-      status: "protocol_check_failed",
-      checked_at: new Date().toISOString(),
-      last_error: String(error?.message || error)
-    };
+    const onlineError = String(error?.message || error);
+    try {
+      const cached = await readCachedVerifiedProtocol({ baseUrl });
+      if (!cached) throw new Error("no verified active or last-known-good bundle is available");
+      const agentTools = await applyAgentToolBundle(cached);
+      protocolRuntimeStatus = {
+        status: "offline_cached_bundle",
+        active: cached,
+        agent_tools: agentTools,
+        checked_at: new Date().toISOString(),
+        last_error: onlineError
+      };
+    } catch (cacheError) {
+      setAgentToolsUnavailable();
+      protocolRuntimeStatus = {
+        status: "protocol_check_failed",
+        agent_tools: { status: "unavailable", reason: "no_verified_bundle" },
+        checked_at: new Date().toISOString(),
+        last_error: `${onlineError}; cache fallback failed: ${String(cacheError?.message || cacheError)}`
+      };
+    }
   }
   return protocolRuntimeStatus;
+}
+
+async function applyAgentToolBundle(active) {
+  if (ACTIVE_PROTOCOL_VERSION !== "agent-collab-v0.5") {
+    return { status: "inactive", reason: "active_protocol_is_not_v05" };
+  }
+  if (!active?.cache_dir) return { status: "unchanged", reason: "no_active_bundle" };
+  const bundle = JSON.parse(await readFile(active.bundle_path || resolve(active.cache_dir, "bundle.json"), "utf8"));
+  validateProtocolBundle(bundle, { expectedTarget: active, authority: active.authority, baseUrl });
+  if (!bundle.agent_tools) {
+    initialAgentToolMode = "legacy";
+    initialAgentToolDefinitions = [];
+    for (const [name, config] of Object.entries(LEGACY_AGENT_TOOL_CONFIGS)) {
+      const registered = agentToolRegistrations.get(name);
+      registered?.update({
+        title: config.title,
+        description: config.description,
+        paramsSchema: config.inputSchema
+      });
+      registered?.enable();
+    }
+    return { status: "legacy", contract_version: bundle.adapters?.contract_version || null };
+  }
+  const definitions = compileAgentToolDefinitions(bundle);
+  initialAgentToolMode = "dynamic";
+  initialAgentToolDefinitions = definitions;
+  for (const definition of definitions) {
+    const registered = agentToolRegistrations.get(definition.name);
+    if (!registered) continue;
+    registered.update({
+      title: definition.title,
+      description: definition.description,
+      paramsSchema: definition.paramsSchema
+    });
+    registered.enable();
+  }
+  return {
+    status: "active",
+    contract_version: bundle.agent_tools.contract_version,
+    tools: definitions.map((item) => item.name)
+  };
+}
+
+function registerStableAgentTool(mcpServer, name, handler) {
+  const definition = initialAgentToolDefinitions.find((item) => item.name === name);
+  const config = definition
+    ? { title: definition.title, description: definition.description, inputSchema: definition.paramsSchema }
+    : LEGACY_AGENT_TOOL_CONFIGS[name];
+  const registered = mcpServer.registerTool(name, config, handler);
+  agentToolRegistrations.set(name, registered);
+  if (initialAgentToolMode === "unavailable") registered.disable();
+}
+
+function setAgentToolsUnavailable() {
+  initialAgentToolMode = "unavailable";
+  initialAgentToolDefinitions = [];
+  for (const registered of agentToolRegistrations.values()) registered.disable();
+}
+
+async function resolvePreparedSemanticAction({ args, actionType, preparedPayload }) {
+  const actions = await listLocalActions({ stateRoot, taskId: args.taskId }).catch(() => []);
+  const payloadHash = hashStableJson(preparedPayload);
+  const matches = actions.filter((action) => (
+    action.actionType === actionType
+      && action.payloadHash === payloadHash
+      && new Set(["awaiting_confirmation", "submission_unknown", "sent"]).has(action.status)
+  ));
+  if (matches.length !== 1) return args;
+  return {
+    ...args,
+    clientActionId: matches[0].clientActionId,
+    confirmationRef: matches[0].confirmationRef || undefined
+  };
 }
 
 async function executeSemanticRelayRequest(buildRequest) {

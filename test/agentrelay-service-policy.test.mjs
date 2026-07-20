@@ -12,7 +12,7 @@ const policy = JSON.parse(await readFile(new URL("../policies/project-hermes.ser
 
 test("Hermes service policy allows only current-owner reply and bounded failure", () => {
   assert.doesNotThrow(() => validateServicePolicy(policy));
-  const reply = action("reply", { text: "HERMES_ACK" });
+  const reply = action("reply", { parts: [{ kind: "text", text: "HERMES_ACK" }] });
   const allowed = authorizeServiceAction({
     policy, action: reply, task: currentTask(), localAgentId: "project-hermes",
     at: "2026-07-19T00:00:00.000Z"
@@ -89,6 +89,12 @@ test("Hermes service policy rejects closed, undelivered, oversized, and identity
     task: currentTask(),
     localAgentId: "zac-agent"
   }).code, "SERVICE_POLICY_AGENT_MISMATCH");
+  assert.equal(authorizeServiceAction({
+    policy,
+    action: action("reply", { parts: [{ kind: "tool", name: "shell" }] }),
+    task: currentTask(),
+    localAgentId: "project-hermes"
+  }).code, "SERVICE_POLICY_CONTENT_DENIED");
 });
 
 test("service policy grants are short-lived and bound to exact payload and Task context", () => {

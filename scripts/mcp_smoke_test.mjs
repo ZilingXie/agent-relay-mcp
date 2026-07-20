@@ -182,12 +182,13 @@ try {
 
   const guardedCreateSession = await startMcpClient(relayBaseUrl, localStateRoot, "agent-collab-v0.5", false);
   try {
+    await callJson("agentrelay_protocol_status", { refresh: true }, guardedCreateSession.client);
     const deniedCreate = await guardedCreateSession.client.callTool({
       name: "agentrelay_create_task",
       arguments: {
-        target_agent_id: "frank-agent",
-        requestText: "must require reviewed draft",
-        doneCriteria: "must not send"
+        targetAgentId: "frank-agent",
+        doneCriteria: "must not send",
+        message: { subject: "Guarded create", parts: [{ kind: "text", text: "must require reviewed draft" }] }
       }
     });
     assert(deniedCreate.isError === true, "direct v0.5 create should be disabled by default");
@@ -199,11 +200,22 @@ try {
 
   const v05Session = await startMcpClient(relayBaseUrl, localStateRoot, "agent-collab-v0.5");
   try {
+    const initialV05Tools = await v05Session.client.listTools();
+    const initialCreateTool = initialV05Tools.tools.find((tool) => tool.name === "agentrelay_create_task");
+    assert(initialCreateTool.inputSchema.required.includes("message"), "first v0.5 tools/list did not use the verified dynamic schema");
+    assert(!initialCreateTool.inputSchema.properties.requester_agent_id, "first v0.5 tools/list exposed legacy requester identity");
+    const runtimeStatus = await callJson("agentrelay_protocol_status", { refresh: true }, v05Session.client);
+    assert(runtimeStatus.agent_tools?.status === "active", "dynamic Agent tools were not activated");
+    const v05Tools = await v05Session.client.listTools();
+    const createTool = v05Tools.tools.find((tool) => tool.name === "agentrelay_create_task");
+    assert(createTool.inputSchema.required.includes("message"), "dynamic create schema did not require Message");
+    assert(createTool.inputSchema.properties.message.required.includes("subject"), "dynamic create schema did not require subject");
+    const replyTool = v05Tools.tools.find((tool) => tool.name === "agentrelay_reply");
+    assert(!replyTool.inputSchema.properties.subject, "dynamic reply schema exposed subject");
+    assert(!replyTool.inputSchema.properties.clientActionId, "dynamic reply schema exposed local action id");
     const v05Created = await callJson("agentrelay_create_task", {
-      requester_agent_id: "zac-agent",
-      target_agent_id: "frank-agent",
-      requesterThreadId: "ignored-by-v05",
-      requestText: "v0.5 request",
+      targetAgentId: "frank-agent",
+      message: { subject: "v0.5 request", parts: [{ kind: "text", text: "v0.5 request" }] },
       doneCriteria: "v0.5 response"
     }, v05Session.client);
     assert(v05Created.task.protocol_version === "agent-collab-v0.5", "generic create did not switch to v0.5");
@@ -212,16 +224,14 @@ try {
       taskId: "task_smoke_v05",
       actionType: "reply",
       clientActionId: "smoke_v05_reply",
-      payloadJson: JSON.stringify({ text: "v0.5 stable reply" })
+      payloadJson: JSON.stringify({ parts: [{ kind: "text", text: "v0.5 stable reply" }] })
     }, v05Session.client);
-    const replyApproval = await approveLocalAction({
+    await approveLocalAction({
       stateRoot: localStateRoot, taskId: "task_smoke_v05", clientActionId: "smoke_v05_reply"
     });
     const v05Reply = await callJson("agentrelay_reply", {
       taskId: "task_smoke_v05",
-      text: "v0.5 stable reply",
-      clientActionId: "smoke_v05_reply",
-      confirmationRef: replyApproval.confirmationRef
+      parts: [{ kind: "text", text: "v0.5 stable reply" }]
     }, v05Session.client);
     assert(v05Reply.status === "sent", "stable reply did not use the prepared action path");
     assert(v05Reply.relayResponse.task.task_version === 2, "stable reply did not advance task version");
@@ -259,6 +269,7 @@ async function startMcpClient(relayBaseUrl, stateRoot, protocolVersion = "", all
       AGENTRELAY_USERNAME: smokeAuth.username,
       AGENTRELAY_TOKEN: smokeAuth.token,
       AGENTRELAY_STATE_DIR: stateRoot,
+      AGENTRELAY_PROTOCOL_CACHE_DIR: join(stateRoot, "protocol-cache"),
       ...(protocolVersion ? { AGENTRELAY_PROTOCOL_VERSION: protocolVersion } : {})
     },
     stderr: "pipe"
@@ -334,6 +345,7 @@ function startFakeRelay() {
           assert(payload.requester_agent_id === "zac-agent", "v0.5 MCP create payload missing requester_agent_id");
           assert(payload.target_agent_id === "frank-agent", "v0.5 MCP create payload missing target_agent_id");
           assert(payload.done_criteria === "v0.5 response", "v0.5 MCP create payload missing done_criteria");
+          assert(payload.message?.subject === "v0.5 request", "v0.5 MCP create payload missing Message subject");
           assert(payload.message?.parts?.[0]?.text === "v0.5 request", "v0.5 MCP create payload missing Message text");
           assert(!payload.task_type && !payload.completion_owner_agent_id, "v0.5 MCP create leaked legacy fields");
           state.task = {

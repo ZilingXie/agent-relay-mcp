@@ -49,8 +49,30 @@ protocol version. For v0.5 the MCP derives identity, current Message, turn, Task
 version, and idempotency data locally, then applies the verified declarative
 adapter. Version-suffixed tools remain temporarily for compatibility.
 
+When Relay publishes the verified dynamic Agent-tool contract, the local MCP
+updates the fixed semantic tool Schemas and sends a tool-list-changed
+notification. For v0.5 the Agent-facing shapes are:
+
+- create: `targetAgentId + doneCriteria + message.subject + message.parts`, plus
+  currently declared optional `message.metadata` fields;
+- reply: `taskId + parts`;
+- follow-up: `taskId + doneCriteria + message.subject + message.parts`, plus
+  currently declared optional `message.metadata` fields.
+
+The first-Message subject is UI metadata, not Task state. Replies cannot carry
+subject. The MCP resolves the unique matching prepared local action for reply
+and follow-up, so `clientActionId` and confirmation data stay internal without
+bypassing Local Inbox approval or service-policy authorization.
+
+`message.metadata` is a bounded, non-authoritative first-Message container. The
+local runtime fixes its only destination, size/depth limits, safe JSON types,
+and reserved-key denylist. A verified signed bundle may add optional public
+fields inside it, but cannot use metadata to supply identity, approval,
+authorization, route, idempotency, or Task concurrency values. Reply does not
+expose metadata.
+
 The adapter is restricted data mapping, not remote code. It cannot register
-tools, execute scripts, read files, choose arbitrary endpoints, replace local
+arbitrary tools, execute scripts, read files, choose arbitrary endpoints, replace local
 identity, bypass confirmation, or control local side effects.
 
 All Task mutations except Local Inbox reviewed-draft create require a prepared

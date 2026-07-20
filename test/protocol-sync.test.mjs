@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
   inferProtocolOperation,
   maybeHandleProtocolNegotiation,
   negotiateCurrentProtocol,
+  readCachedVerifiedProtocol,
   resolveProtocolDir,
   syncCurrentProtocol,
   syncProtocolBundle,
@@ -115,6 +116,59 @@ test("concurrent protocol activation converges on one immutable bundle", async (
   const active = JSON.parse(await readFile(join(protocolAuthorityRoot(root, bundle.manifest.authority), "active.json"), "utf8"));
   assert.equal(active.bundle_digest, bundle.manifest.bundle_digest);
 });
+
+test("offline startup uses a verified active bundle then falls back to last-known-good", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-offline-"));
+  const first = protocolV2Bundle({ revision: 1 });
+  const second = protocolV2Bundle({ revision: 2 });
+  await syncProtocolBundle({
+    bundleUrl: first.manifest.urls.bundle,
+    baseUrl: "https://relay.example/agentrelay/api",
+    cacheRoot: root,
+    fetchImpl: fakeFetch({ [first.manifest.urls.bundle]: first }),
+    authority: first.manifest.authority,
+    expectedTarget: v2Target(first),
+    log: null
+  });
+  const active = await syncProtocolBundle({
+    bundleUrl: second.manifest.urls.bundle,
+    baseUrl: "https://relay.example/agentrelay/api",
+    cacheRoot: root,
+    fetchImpl: fakeFetch({ [second.manifest.urls.bundle]: second }),
+    authority: second.manifest.authority,
+    expectedTarget: v2Target(second),
+    log: null
+  });
+
+  const cachedActive = await readCachedVerifiedProtocol({
+    baseUrl: "https://relay.example/agentrelay/api",
+    cacheRoot: root
+  });
+  assert.equal(cachedActive.bundle_revision, 2);
+  assert.equal(cachedActive.cache_source, "active");
+
+  await writeFile(active.bundle_path, "{corrupt", "utf8");
+  const cachedFallback = await readCachedVerifiedProtocol({
+    baseUrl: "https://relay.example/agentrelay/api",
+    cacheRoot: root
+  });
+  assert.equal(cachedFallback.bundle_revision, 1);
+  assert.equal(cachedFallback.cache_source, "last_known_good");
+});
+
+function v2Target(bundle) {
+  return {
+    version: bundle.manifest.version,
+    bundle_revision: bundle.manifest.bundle_revision,
+    bundle_digest: bundle.manifest.bundle_digest,
+    schema_digest: bundle.manifest.schema_digest,
+    adapter_contract_version: bundle.manifest.adapter_contract_version,
+    published_at: bundle.manifest.published_at,
+    expires_at: bundle.manifest.expires_at,
+    required_client_capabilities: bundle.manifest.required_client_capabilities,
+    bundle_url: bundle.manifest.urls.bundle
+  };
+}
 
 test("protocol caches are isolated by Relay authority and origin", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-authorities-"));

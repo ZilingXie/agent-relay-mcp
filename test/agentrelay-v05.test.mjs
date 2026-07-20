@@ -30,7 +30,11 @@ function task() {
 
 test("v0.5 builders use one aggregate task version", () => {
   const context = { currentMessageId: "msg_1", turnSequence: 1, expectedTaskVersion: 2 };
-  assert.deepEqual(buildMessagePayloadV05({ ...context, actorAgentId: "frank-agent", text: "pong" }, "message-key"), {
+  assert.deepEqual(buildMessagePayloadV05({
+    ...context,
+    actorAgentId: "frank-agent",
+    parts: [{ kind: "text", text: "pong" }]
+  }, "message-key"), {
     actor_agent_id: "frank-agent",
     message_id: "msg_1",
     turn_sequence: 1,
@@ -47,15 +51,21 @@ test("v0.5 create is explicit and two-Agent only", () => {
   const payload = buildCreatePayloadV05({
     requesterAgentId: "zac-agent",
     targetAgentId: "frank-agent",
-    requestText: "ping",
+    message: { subject: "Ping", parts: [{ kind: "text", text: "ping" }] },
     doneCriteria: "pong",
     maxTurns: 4
   }, "create-key");
   assert.equal(payload.protocol_version, "agent-collab-v0.5");
   assert.equal(payload.max_turns, 4);
+  assert.equal(payload.message.subject, "Ping");
   assert.throws(() => buildCreatePayloadV05({
-    requesterAgentId: "zac-agent", targetAgentId: "zac-agent", requestText: "x", doneCriteria: "x"
+    requesterAgentId: "zac-agent", targetAgentId: "zac-agent",
+    message: { subject: "x", parts: [{ kind: "text", text: "x" }] }, doneCriteria: "x"
   }, "key"), /must differ/);
+  assert.throws(() => buildCreatePayloadV05({
+    requesterAgentId: "zac-agent", targetAgentId: "frank-agent",
+    message: { parts: [{ kind: "text", text: "x" }] }, doneCriteria: "x"
+  }, "key"), /message.subject/);
 });
 
 test("v0.5 Listener ACK binds Event, Message, turn, version, and epoch", () => {

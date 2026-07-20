@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,6 +129,60 @@ export async function negotiateCurrentProtocol({
     signal: AbortSignal.timeout(timeoutMs)
   });
   return { status: negotiation.action === "hot_rollback" ? "hot_rollback_applied" : "hot_patch_applied", negotiation, active: synced };
+}
+
+export async function readCachedVerifiedProtocol({
+  baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
+  cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
+  version = "agent-collab-v0.5"
+} = {}) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const authoritiesRoot = resolve(resolveHome(cacheRoot), "authorities");
+  const authorityDirs = await readdir(authoritiesRoot, { withFileTypes: true }).catch((error) => {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  });
+  const candidates = [];
+  for (const entry of authorityDirs) {
+    if (!entry.isDirectory()) continue;
+    const authorityDir = resolve(authoritiesRoot, entry.name);
+    for (const [source, fileName, priority] of [
+      ["active", "active.json", 2],
+      ["last_known_good", "last-known-good.json", 1]
+    ]) {
+      const pointer = await readJsonIfExists(resolve(authorityDir, fileName));
+      if (!pointer || pointer.version !== version || !pointer.authority) continue;
+      const expectedAuthorityDir = protocolAuthorityRoot(resolveHome(cacheRoot), pointer.authority);
+      if (expectedAuthorityDir !== authorityDir) continue;
+      const bundlePath = resolve(pointer.cache_dir || "", "bundle.json");
+      if (!isPathWithin(bundlePath, authorityDir)) continue;
+      try {
+        const bundle = JSON.parse(await readFile(bundlePath, "utf8"));
+        validateProtocolBundle(bundle, {
+          expectedTarget: pointer,
+          authority: pointer.authority,
+          baseUrl: normalizedBaseUrl
+        });
+        candidates.push({
+          ...pointer,
+          cache_dir: resolve(pointer.cache_dir),
+          bundle_path: bundlePath,
+          cache_source: source,
+          cache_priority: priority
+        });
+      } catch {
+        // A corrupt or expired candidate is ignored; another verified pointer may still be usable.
+      }
+    }
+  }
+  candidates.sort((left, right) => (
+    String(right.activated_at || "").localeCompare(String(left.activated_at || ""))
+      || right.cache_priority - left.cache_priority
+  ));
+  const selected = candidates[0];
+  if (!selected) return null;
+  const { cache_priority: _priority, ...result } = selected;
+  return result;
 }
 
 export async function syncProtocolBundle({
@@ -549,6 +603,20 @@ function envFlag(name) {
 
 function normalizeBaseUrl(value) {
   return String(value || "").replace(/\/+$/, "");
+}
+
+async function readJsonIfExists(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    return null;
+  }
+}
+
+function isPathWithin(candidate, parent) {
+  const relative = candidate.slice(parent.length);
+  return candidate.startsWith(`${parent}/`) && relative && !relative.includes("../");
 }
 
 function resolveHome(path) {
