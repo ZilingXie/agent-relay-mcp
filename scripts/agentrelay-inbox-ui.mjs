@@ -499,14 +499,15 @@ function normalizeIssue(issue, eventsById, { localAgentId = process.env.AGENTREL
   const eventIds = Array.from(new Set(issue.eventIds || []));
   const eventList = eventIds.map((eventId) => eventsById[eventId]).filter(Boolean);
   const latestEvent = chooseLatestEvent(issue, eventList);
+  const doneCriteria = issue.doneCriteria || latestTaskField(eventList, "done_criteria") || "";
   return {
     taskId: issue.taskId || "",
-    subject: issue.subject || "(untitled)",
+    subject: issue.subject || doneCriteriaTitle(doneCriteria) || "(untitled)",
     direction: issue.direction || "unknown",
     counterpartAgentId: issue.counterpartAgentId || "",
     requesterAgentId: issue.requesterAgentId || "",
     targetAgentId: issue.targetAgentId || "",
-    doneCriteria: issue.doneCriteria || latestTaskField(eventList, "done_criteria") || "",
+    doneCriteria,
     completionOwnerAgentId: issue.completionOwnerAgentId || "",
     pendingOnAgentId: issue.pendingOnAgentId || "",
     pendingOnHumanId: issue.pendingOnHumanId || null,
@@ -577,6 +578,11 @@ function normalizeIssue(issue, eventsById, { localAgentId = process.env.AGENTREL
     createdAt: issue.createdAt || "",
     updatedAt: issue.updatedAt || issue.createdAt || ""
   };
+}
+
+function doneCriteriaTitle(value, maxLength = 120) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
 async function enrichSnapshotVisibility(snapshot, relayClient) {

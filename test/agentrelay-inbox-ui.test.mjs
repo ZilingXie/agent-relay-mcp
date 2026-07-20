@@ -128,6 +128,36 @@ test("loadInboxSnapshot normalizes and sorts issues from issues.json", async () 
   assert.equal(snapshot.issues[1].latestEvent.ackStatus, "received");
 });
 
+test("loadInboxSnapshot uses done criteria as the title for historical issues without a subject", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
+  const stateRoot = join(root, "state");
+  const doneCriteria = "x".repeat(125);
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_historical: {
+        taskId: "task_historical",
+        subject: "",
+        doneCriteria,
+        updatedAt: "2026-07-02T08:00:00.000Z"
+      },
+      task_structured: {
+        taskId: "task_structured",
+        subject: "Structured subject",
+        doneCriteria: "Fallback must not replace this subject",
+        updatedAt: "2026-07-02T07:00:00.000Z"
+      }
+    },
+    events: {}
+  });
+
+  const snapshot = await loadInboxSnapshot({ stateRoot });
+
+  assert.equal(snapshot.issues[0].subject, `${"x".repeat(117)}...`);
+  assert.equal(snapshot.issues[0].doneCriteria, doneCriteria);
+  assert.equal(snapshot.issues[1].subject, "Structured subject");
+});
+
 test("loadInboxSnapshot marks processor confirmation tasks as needing Zac", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
