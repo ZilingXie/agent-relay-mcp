@@ -923,9 +923,10 @@ The detailed boundary is [`docs/guardrail.md`](docs/guardrail.md).
 
 ## Structured Message Subject And Dynamic Agent Tools
 
-Status: Server PR `#67` and Client PR `#58` merged. Compatible revision `3` is
-deployed and Zac's local MCP is upgraded; signed revision `4` activation and
-final production E2E remain pending.
+Status: Server PRs `#67` and `#68`, plus Client PRs `#58`, `#59`, and `#60`,
+are merged and deployed. Signed adapter contract v2/revision `4` is active in
+production; Zac and Hermes are upgraded, and the final production E2E and
+historical Inbox-title verification passed.
 
 - New Task and follow-up tools use structured `message.subject + message.parts`;
   reply exposes only Agent-supplied `taskId + parts`.
@@ -943,12 +944,24 @@ final production E2E remain pending.
   mandatory.
 - Inbox title priority is structured first-Message subject, legacy `Subject:`
   line for historical Tasks, then truncated done criteria.
-- Full Client tests (214/214 plus MCP smoke), full Server tests, malicious-
+- Full Client tests (215/215 plus MCP smoke), full Server tests, malicious-
   bundle tests, hot patch E2E, and create/delivery/reply/complete/follow-up E2E
   passed before PR creation.
 - Hosted install health uses the v0.5 synthetic ACK Message path, waits for the
   normal Listener delivery ACK, refreshes current Task context, and completes
   without calling a retired legacy endpoint.
+- Production revision `4` verifies an Ed25519 signature with key id
+  `relay-protocol-2026-07` before dynamic Schema compilation and activates
+  `dynamic_agent_tool_schema_v1`. Zac's first `tools/list` exposed only the
+  expected create, reply, and follow-up public fields.
+- Production Task `task_3269832c30fa47e0995971810591ff94` proved structured
+  create, `taskId + parts` reply, and completion; child Task
+  `task_8475354da1904e77a48e3ff68320e707` proved follow-up with a fresh subject
+  and done criteria. Hermes responses carried no subject.
+- Install loopback Task `task_1a58a8be16b246a8bec55afd54e899ea`
+  completed. PR `#60` upgraded the read-time fallback so historical Task
+  `task_180e5deb8e6e431186586c6d57957b22` now uses done criteria as its UI title
+  without mutating persisted history.
 
 ## Immediate Next Steps
 
