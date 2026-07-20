@@ -1,22 +1,56 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 
-export const PROTOCOL_RUNTIME_VERSION = "0.3.0";
+export const PROTOCOL_RUNTIME_VERSION = "0.4.0";
 export const PROTOCOL_RUNTIME_CAPABILITIES = [
   "dynamic_protocol_bundle_v0.1",
   "semantic_protocol_adapter_v2",
-  "local_authorization_v1"
+  "local_authorization_v1",
+  "dynamic_agent_tool_schema_v1"
 ];
 export const SUPPORTED_PROTOCOL_VERSIONS = ["agent-collab-v0.5"];
 export const ADAPTER_ENGINE = "semantic_protocol_adapter_v2";
-export const ADAPTER_CONTRACT_VERSION = 1;
+export const ADAPTER_CONTRACT_VERSION = 2;
+export const SUPPORTED_ADAPTER_CONTRACT_VERSIONS = [1, 2];
 
 const MAX_BUNDLE_BYTES = 2 * 1024 * 1024;
 const MAX_POINTER_DEPTH = 16;
 const MAX_POINTER_LENGTH = 512;
+const MAX_MESSAGE_METADATA_BYTES = 4096;
+const MAX_MESSAGE_METADATA_DEPTH = 3;
+const MAX_MESSAGE_METADATA_PROPERTIES = 16;
+const MAX_MESSAGE_METADATA_ARRAY_ITEMS = 16;
+const MAX_MESSAGE_METADATA_STRING_LENGTH = 1024;
 const DANGEROUS_PROPERTY_NAMES = new Set(["__proto__", "prototype", "constructor"]);
+const MESSAGE_METADATA_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
+const MESSAGE_METADATA_RESERVED_KEYS = new Set([
+  "actoragentid",
+  "actorid",
+  "requesteragentid",
+  "requesterid",
+  "targetagentid",
+  "targetid",
+  "agentid",
+  "authorization",
+  "auth",
+  "approval",
+  "confirmationref",
+  "clientactionid",
+  "idempotencykey",
+  "messageid",
+  "turnsequence",
+  "expectedtaskversion",
+  "operation",
+  "method",
+  "path",
+  "route",
+  "token",
+  "credential",
+  "credentials",
+  "headers"
+]);
 const PROTECTED_SLOTS = new Set([
   "actor_agent_id",
   "requester_agent_id",
@@ -29,7 +63,7 @@ const PROTECTED_SLOTS = new Set([
   "failure_reason"
 ]);
 
-const OPERATION_CONTRACTS = {
+const LEGACY_OPERATION_CONTRACTS = {
   create_task: operationContract("POST", "/tasks", "task-create-v05.schema.json", {
     protocol_version: fixedValue("agent-collab-v0.5"),
     idempotency_key: trustedSource("runtime.idempotency_key"),
@@ -76,8 +110,70 @@ const OPERATION_CONTRACTS = {
   })
 };
 
+const OPERATION_CONTRACTS = {
+  create_task: operationContract("POST", "/tasks", "task-create-v05.schema.json", {
+    protocol_version: fixedValue("agent-collab-v0.5"),
+    idempotency_key: trustedSource("runtime.idempotency_key"),
+    requester_agent_id: trustedSource("identity.agent_id"),
+    target_agent_id: trustedSource("input.targetAgentId"),
+    done_criteria: trustedSource("input.doneCriteria"),
+    max_turns: trustedSource("input.maxTurns", true),
+    task_expires_at: trustedSource("input.taskExpiresAt", true),
+    message_subject: trustedSource("input.message.subject"),
+    message_parts: trustedSource("input.message.parts"),
+    message_metadata: trustedSource("input.message.metadata", true)
+  }),
+  reply: operationContract("POST", "/tasks/{task_id}/messages", "task-message-v05.schema.json", {
+    actor_agent_id: trustedSource("identity.agent_id"),
+    message_id: trustedSource("task.current_message_id"),
+    turn_sequence: trustedSource("task.turn_sequence"),
+    expected_task_version: trustedSource("task.task_version"),
+    idempotency_key: trustedSource("runtime.idempotency_key"),
+    message_parts: trustedSource("input.parts")
+  }),
+  complete_task: LEGACY_OPERATION_CONTRACTS.complete_task,
+  fail_task: LEGACY_OPERATION_CONTRACTS.fail_task,
+  create_followup: operationContract("POST", "/tasks/{task_id}/followups", "task-followup-v05.schema.json", {
+    idempotency_key: trustedSource("runtime.idempotency_key"),
+    done_criteria: trustedSource("input.doneCriteria"),
+    max_turns: trustedSource("input.maxTurns", true),
+    task_expires_at: trustedSource("input.taskExpiresAt", true),
+    message_subject: trustedSource("input.message.subject"),
+    message_parts: trustedSource("input.message.parts"),
+    message_metadata: trustedSource("input.message.metadata", true)
+  })
+};
+
+const AGENT_TOOL_OPERATIONS = {
+  agentrelay_create_task: "create_task",
+  agentrelay_reply: "reply",
+  agentrelay_create_followup: "create_followup"
+};
+
+const AGENT_TOOL_ROOT_FIELDS = {
+  create_task: new Set(["targetAgentId", "doneCriteria", "message", "maxTurns", "taskExpiresAt"]),
+  reply: new Set(["taskId", "parts"]),
+  create_followup: new Set(["taskId", "doneCriteria", "message", "maxTurns", "taskExpiresAt"])
+};
+
 export function canonicalDigest(value) {
   return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+}
+
+export function protocolSignaturePayload(manifest) {
+  return {
+    protocol: manifest.protocol,
+    version: manifest.version,
+    semver: manifest.semver,
+    bundle_revision: manifest.bundle_revision,
+    schema_digest: manifest.schema_digest,
+    bundle_digest: manifest.bundle_digest,
+    adapter_contract_version: manifest.adapter_contract_version,
+    authority: manifest.authority,
+    published_at: manifest.published_at,
+    expires_at: manifest.expires_at,
+    required_client_capabilities: manifest.required_client_capabilities
+  };
 }
 
 export function authorityCacheKey(authority) {
@@ -129,7 +225,7 @@ export function validateNegotiationResponse(value, { baseUrl } = {}) {
   if (baseUrl) assertUrlWithinBase(target.bundle_url, baseUrl, "negotiated bundle URL");
   assertUrlWithinBase(target.bundle_url, authority.origin, "protocol authority");
   if ((target.required_client_capabilities || []).includes(ADAPTER_ENGINE)
-    && target.adapter_contract_version !== ADAPTER_CONTRACT_VERSION) {
+    && !SUPPORTED_ADAPTER_CONTRACT_VERSIONS.includes(target.adapter_contract_version)) {
     throw new Error(`Unsupported adapter contract version: ${target.adapter_contract_version}`);
   }
   if ((target.required_client_capabilities || []).includes(ADAPTER_ENGINE)) {
@@ -178,13 +274,19 @@ export function validateProtocolBundle(bundle, { expectedTarget, authority, base
     throw new Error("Protocol bundle authority does not match negotiation authority");
   }
   if (baseUrl) assertAuthorityMatchesBase(manifestAuthority.origin, baseUrl);
+  if (bundle.agent_tools !== undefined) verifyProtocolManifestSignature(manifest);
   if (requiresAdapter || bundle.adapters) {
-    if (manifest.adapter_contract_version !== ADAPTER_CONTRACT_VERSION
+    if (!SUPPORTED_ADAPTER_CONTRACT_VERSIONS.includes(manifest.adapter_contract_version)
       || (expectedTarget?.adapter_contract_version !== undefined
-        && expectedTarget.adapter_contract_version !== ADAPTER_CONTRACT_VERSION)) {
+        && expectedTarget.adapter_contract_version !== manifest.adapter_contract_version)) {
       throw new Error(`Unsupported adapter contract version: ${manifest.adapter_contract_version}`);
     }
     validateAdapterDefinition(bundle.adapters);
+    if (manifest.adapter_contract_version === ADAPTER_CONTRACT_VERSION) {
+      validateAgentToolDefinition(bundle.agent_tools);
+    } else if (bundle.agent_tools !== undefined) {
+      throw new Error("Legacy adapter bundles cannot publish dynamic Agent tools");
+    }
   }
   createBundleValidator(bundle);
   return {
@@ -199,11 +301,33 @@ export function validateProtocolBundle(bundle, { expectedTarget, authority, base
   };
 }
 
+export function verifyProtocolManifestSignature(manifest) {
+  const signature = manifest?.signature;
+  if (!signature || typeof signature !== "object" || Array.isArray(signature)) {
+    throw new Error("Dynamic Agent tool bundle requires a signed manifest");
+  }
+  assertAllowedKeys(signature, ["algorithm", "key_id", "public_key_spki", "value"], "protocol signature");
+  if (signature.algorithm !== "Ed25519") throw new Error(`Unsupported protocol signature algorithm: ${signature.algorithm}`);
+  requiredString(signature.key_id, "manifest.signature.key_id");
+  const publicKeyBytes = strictBase64(signature.public_key_spki, "manifest.signature.public_key_spki");
+  const signatureBytes = strictBase64(signature.value, "manifest.signature.value");
+  let publicKey;
+  try {
+    publicKey = createPublicKey({ key: publicKeyBytes, format: "der", type: "spki" });
+  } catch {
+    throw new Error("Protocol signature public key is invalid");
+  }
+  if (publicKey.asymmetricKeyType !== "ed25519") throw new Error("Protocol signature public key must be Ed25519");
+  const payload = Buffer.from(canonicalJson(protocolSignaturePayload(manifest)), "utf8");
+  if (!verify(null, payload, publicKey, signatureBytes)) throw new Error("Protocol manifest signature verification failed");
+  return signature;
+}
+
 export function validateAdapterDefinition(adapters) {
   if (!adapters || adapters.engine !== ADAPTER_ENGINE) {
     throw new Error(`Protocol bundle requires the ${ADAPTER_ENGINE} engine`);
   }
-  if (adapters.contract_version !== ADAPTER_CONTRACT_VERSION) {
+  if (!SUPPORTED_ADAPTER_CONTRACT_VERSIONS.includes(adapters.contract_version)) {
     throw new Error(`Unsupported adapter contract version: ${adapters.contract_version}`);
   }
   assertAllowedKeys(adapters, ["engine", "contract_version", "allowed_binding_sources", "protected_slots", "operations"], "protocol adapter");
@@ -219,13 +343,14 @@ export function validateAdapterDefinition(adapters) {
   if (!operations || typeof operations !== "object" || Array.isArray(operations)) {
     throw new Error("Protocol adapters.operations must be an object");
   }
-  const expectedOperations = Object.keys(OPERATION_CONTRACTS);
+  const contracts = operationContractsFor(adapters.contract_version);
+  const expectedOperations = Object.keys(contracts);
   if (Object.keys(operations).length !== expectedOperations.length
     || expectedOperations.some((operation) => !Object.hasOwn(operations, operation))) {
     throw new Error("Protocol adapter operations do not match the compiled operation contract");
   }
   for (const [operation, definition] of Object.entries(operations)) {
-    const contract = OPERATION_CONTRACTS[operation];
+    const contract = contracts[operation];
     if (!contract) throw new Error(`Protocol adapter operation is not allowed: ${operation}`);
     assertAllowedKeys(definition, ["method", "path", "request_schema", "bindings"], `protocol operation ${operation}`);
     if (definition.method !== contract.method || definition.path !== contract.path) {
@@ -242,11 +367,39 @@ export function validateAdapterDefinition(adapters) {
   return adapters;
 }
 
+export function validateAgentToolDefinition(agentTools) {
+  if (!agentTools || typeof agentTools !== "object" || Array.isArray(agentTools)) {
+    throw new Error("Protocol bundle agent_tools must be an object");
+  }
+  assertAllowedKeys(agentTools, ["contract_version", "tools"], "agent_tools");
+  if (agentTools.contract_version !== 1) throw new Error(`Unsupported Agent tool contract: ${agentTools.contract_version}`);
+  const tools = agentTools.tools;
+  if (!tools || typeof tools !== "object" || Array.isArray(tools)) throw new Error("agent_tools.tools must be an object");
+  const expectedNames = Object.keys(AGENT_TOOL_OPERATIONS);
+  if (Object.keys(tools).length !== expectedNames.length || expectedNames.some((name) => !Object.hasOwn(tools, name))) {
+    throw new Error("Dynamic Agent tools do not match the compiled tool allowlist");
+  }
+  for (const [name, definition] of Object.entries(tools)) {
+    assertAllowedKeys(definition, ["operation", "title", "description", "input_schema"], `Agent tool ${name}`);
+    const operation = AGENT_TOOL_OPERATIONS[name];
+    if (definition.operation !== operation) throw new Error(`Agent tool operation is not allowed: ${name}`);
+    requiredString(definition.title, `${name}.title`);
+    requiredString(definition.description, `${name}.description`);
+    validateAgentInputSchema(definition.input_schema, operation);
+  }
+  return agentTools;
+}
+
+export function agentToolDefinitions(bundle) {
+  const agentTools = validateAgentToolDefinition(bundle?.agent_tools);
+  return Object.entries(agentTools.tools).map(([name, definition]) => ({ name, ...definition }));
+}
+
 export function buildSemanticRequest({ bundle, operation, input = {}, identity = {}, task = {}, runtime = {} }) {
   validateAdapterDefinition(bundle?.adapters);
   const definition = bundle.adapters.operations[operation];
   if (!definition) throw new Error(`Protocol bundle does not define operation ${operation}`);
-  validateSemanticInput(operation, input, identity, task, runtime);
+  validateSemanticInput(operation, input, identity, task, runtime, bundle.adapters.contract_version);
   const sources = { input, identity, task: normalizeTask(task), runtime };
   const payload = Object.create(null);
   for (const binding of definition.bindings) {
@@ -475,6 +628,16 @@ function requiredString(value, field) {
   return value.trim();
 }
 
+function strictBase64(value, field) {
+  const encoded = requiredString(value, field);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded) || encoded.length % 4 !== 0) {
+    throw new Error(`${field} must be canonical base64`);
+  }
+  const decoded = Buffer.from(encoded, "base64");
+  if (decoded.toString("base64") !== encoded) throw new Error(`${field} must be canonical base64`);
+  return decoded;
+}
+
 function requiresAdapterContract(expectedTarget, manifest) {
   return (expectedTarget?.required_client_capabilities || manifest.required_client_capabilities || [])
     .includes(ADAPTER_ENGINE);
@@ -518,15 +681,19 @@ function fixedValue(value, optional = false) {
   return { value, optional };
 }
 
-function validateSemanticInput(operation, input, identity, task, runtime) {
+function validateSemanticInput(operation, input, identity, task, runtime, contractVersion) {
   requiredString(identity?.agent_id, "identity.agent_id");
   requiredString(runtime?.idempotency_key, "runtime.idempotency_key");
   if (operation === "create_task" || operation === "create_followup") {
-    requiredString(input.requestText, "input.requestText");
     requiredString(input.doneCriteria, "input.doneCriteria");
+    if (contractVersion === 1) requiredString(input.requestText, "input.requestText");
+    else validateStructuredMessage(input.message, "input.message");
   }
   if (operation === "create_task") requiredString(input.targetAgentId, "input.targetAgentId");
-  if (operation === "reply") requiredString(input.text, "input.text");
+  if (operation === "reply") {
+    if (contractVersion === 1) requiredString(input.text, "input.text");
+    else validateParts(input.parts, "input.parts");
+  }
   if (operation === "fail_task" && !new Set(["agent_reported_failure", "max_turns_exhausted"]).has(input.reason)) {
     throw new Error(`Unsupported local failure reason: ${input.reason}`);
   }
@@ -536,5 +703,189 @@ function validateSemanticInput(operation, input, identity, task, runtime) {
     requiredString(normalized.current_message_id, "task.current_message_id");
     if (!Number.isInteger(normalized.turn_sequence) || normalized.turn_sequence < 1) throw new Error("Invalid task.turn_sequence");
     if (!Number.isInteger(normalized.task_version) || normalized.task_version < 1) throw new Error("Invalid task.task_version");
+  }
+}
+
+function operationContractsFor(contractVersion) {
+  return contractVersion === 1 ? LEGACY_OPERATION_CONTRACTS : OPERATION_CONTRACTS;
+}
+
+function validateStructuredMessage(message, field) {
+  if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error(`Missing ${field}`);
+  requiredString(message.subject, `${field}.subject`);
+  validateParts(message.parts, `${field}.parts`);
+  if (message.metadata !== undefined) validateMessageMetadata(message.metadata, `${field}.metadata`);
+}
+
+function validateParts(parts, field) {
+  if (!Array.isArray(parts) || parts.length === 0 || parts.some((part) => !part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).length === 0)) {
+    throw new Error(`${field} must be a non-empty array of non-empty objects`);
+  }
+}
+
+function validateAgentInputSchema(schema, operation) {
+  if (!schema || schema.type !== "object" || schema.additionalProperties !== false || !schema.properties) {
+    throw new Error(`Agent tool ${operation} input_schema must be a closed object`);
+  }
+  assertAllowedKeys(schema, ["type", "additionalProperties", "required", "properties"], `${operation} input schema`);
+  const allowed = AGENT_TOOL_ROOT_FIELDS[operation];
+  const fields = Object.keys(schema.properties);
+  if (fields.some((field) => !allowed.has(field))) throw new Error(`Agent tool ${operation} exposes an untrusted field`);
+  const required = new Set(schema.required || []);
+  const expectedRequired = operation === "reply"
+    ? new Set(["taskId", "parts"])
+    : new Set(operation === "create_task" ? ["targetAgentId", "doneCriteria", "message"] : ["taskId", "doneCriteria", "message"]);
+  if (required.size !== expectedRequired.size || [...expectedRequired].some((field) => !required.has(field))) {
+    throw new Error(`Agent tool ${operation} required fields do not match the compiled contract`);
+  }
+  if (operation !== "reply") {
+    const message = schema.properties.message;
+    const messageFields = Object.keys(message?.properties || {});
+    const messageRequired = new Set(message?.required || []);
+    if (message?.type !== "object" || message.additionalProperties !== false
+      || messageFields.some((field) => !new Set(["subject", "parts", "metadata"]).has(field))
+      || !messageFields.includes("subject") || !messageFields.includes("parts")
+      || messageRequired.size !== 2 || !messageRequired.has("subject") || !messageRequired.has("parts")) {
+      throw new Error(`Agent tool ${operation} Message fields do not match the compiled contract`);
+    }
+    if (messageFields.includes("metadata")) validateMetadataInputSchema(message.properties.metadata, `${operation}.message.metadata`, 0);
+  }
+  for (const [field, value] of Object.entries(schema.properties)) validatePublicSchemaNode(value, `${operation}.${field}`, 0);
+}
+
+function validateMessageMetadata(value, field) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} must be an object`);
+  if (Buffer.byteLength(canonicalJson(value), "utf8") > MAX_MESSAGE_METADATA_BYTES) {
+    throw new Error(`${field} exceeds ${MAX_MESSAGE_METADATA_BYTES} bytes`);
+  }
+  validateMessageMetadataValue(value, field, 0);
+}
+
+function validateMessageMetadataValue(value, field, depth) {
+  if (depth > MAX_MESSAGE_METADATA_DEPTH) throw new Error(`${field} exceeds maximum depth`);
+  if (Array.isArray(value)) {
+    if (value.length > MAX_MESSAGE_METADATA_ARRAY_ITEMS) throw new Error(`${field} contains too many array items`);
+    value.forEach((item, index) => validateMessageMetadataValue(item, `${field}[${index}]`, depth + 1));
+    return;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length > MAX_MESSAGE_METADATA_PROPERTIES) throw new Error(`${field} contains too many properties`);
+    for (const [key, child] of entries) {
+      assertSafeMetadataKey(key, `${field}.${key}`);
+      validateMessageMetadataValue(child, `${field}.${key}`, depth + 1);
+    }
+    return;
+  }
+  if (typeof value === "string" && value.length > MAX_MESSAGE_METADATA_STRING_LENGTH) {
+    throw new Error(`${field} exceeds maximum string length`);
+  }
+  if (value === null || typeof value === "string" || typeof value === "boolean"
+    || (typeof value === "number" && Number.isFinite(value))) return;
+  throw new Error(`${field} must contain finite JSON values`);
+}
+
+function validateMetadataInputSchema(schema, field, depth) {
+  if (depth > MAX_MESSAGE_METADATA_DEPTH) throw new Error(`Agent tool metadata schema exceeds maximum depth at ${field}`);
+  if (!schema || schema.type !== "object" || schema.additionalProperties !== false || !schema.properties) {
+    throw new Error(`Agent tool metadata schema must be a closed object at ${field}`);
+  }
+  const entries = Object.entries(schema.properties);
+  if (entries.length > MAX_MESSAGE_METADATA_PROPERTIES) throw new Error(`Agent tool metadata schema has too many properties at ${field}`);
+  for (const [key, child] of entries) {
+    assertSafeMetadataKey(key, `${field}.${key}`);
+    validateMetadataSchemaNode(child, `${field}.${key}`, depth + 1);
+  }
+}
+
+function validateMetadataSchemaNode(schema, field, depth) {
+  validatePublicSchemaNode(schema, field, depth);
+  if (schema.type === "string" && schema.maxLength !== undefined
+    && schema.maxLength > MAX_MESSAGE_METADATA_STRING_LENGTH) {
+    throw new Error(`Agent tool metadata string is too long at ${field}`);
+  }
+  if (schema.type === "array" && schema.maxItems !== undefined
+    && schema.maxItems > MAX_MESSAGE_METADATA_ARRAY_ITEMS) {
+    throw new Error(`Agent tool metadata array is too large at ${field}`);
+  }
+  if (schema.type === "array") validateMetadataSchemaNode(schema.items, `${field}[]`, depth + 1);
+  if (schema.type === "object" && schema.minProperties === undefined) {
+    validateMetadataInputSchema(schema, field, depth);
+  }
+}
+
+function assertSafeMetadataKey(key, field) {
+  const normalized = key.replace(/[_.-]/gu, "").toLowerCase();
+  if (!MESSAGE_METADATA_KEY.test(key) || MESSAGE_METADATA_RESERVED_KEYS.has(normalized)) {
+    throw new Error(`Agent tool metadata key is not allowed: ${field}`);
+  }
+}
+
+function validatePublicSchemaNode(schema, field, depth) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema) || depth > 4) throw new Error(`Invalid Agent tool schema at ${field}`);
+  const allowedKeys = ["type", "description", "enum", "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems", "minProperties", "additionalProperties", "required", "properties", "items"];
+  assertAllowedKeys(schema, allowedKeys, `Agent tool schema ${field}`);
+  if (schema.enum !== undefined) validatePublicEnum(schema, field);
+  if (schema.type === "string") {
+    if (schema.minLength !== undefined && (!Number.isInteger(schema.minLength) || schema.minLength < 0)) throw new Error(`Invalid minLength at ${field}`);
+    if (schema.maxLength !== undefined && (!Number.isInteger(schema.maxLength) || schema.maxLength < 1 || schema.maxLength > 4096)) throw new Error(`Invalid maxLength at ${field}`);
+    return;
+  }
+  if (schema.type === "integer") {
+    if (schema.minimum !== undefined && (!Number.isInteger(schema.minimum) || schema.minimum < 0)) throw new Error(`Invalid minimum at ${field}`);
+    return;
+  }
+  if (schema.type === "number") {
+    if (schema.minimum !== undefined && (typeof schema.minimum !== "number" || !Number.isFinite(schema.minimum))) throw new Error(`Invalid minimum at ${field}`);
+    if (schema.maximum !== undefined && (typeof schema.maximum !== "number" || !Number.isFinite(schema.maximum))) throw new Error(`Invalid maximum at ${field}`);
+    return;
+  }
+  if (schema.type === "boolean" || schema.type === "null") return;
+  if (schema.type === "array") {
+    if (!Number.isInteger(schema.minItems) || schema.minItems < 1 || !schema.items) throw new Error(`Invalid array schema at ${field}`);
+    validatePublicSchemaNode(schema.items, `${field}[]`, depth + 1);
+    return;
+  }
+  if (schema.type === "object") {
+    if (schema.minProperties !== undefined) {
+      if (!Number.isInteger(schema.minProperties) || schema.minProperties < 1) throw new Error(`Invalid minProperties at ${field}`);
+      return;
+    }
+    if (schema.additionalProperties !== false || !schema.properties) throw new Error(`Agent object schema must be closed at ${field}`);
+    const required = new Set(schema.required || []);
+    for (const item of required) if (!Object.hasOwn(schema.properties, item)) throw new Error(`Unknown required field at ${field}.${item}`);
+    for (const [name, value] of Object.entries(schema.properties)) validatePublicSchemaNode(value, `${field}.${name}`, depth + 1);
+    return;
+  }
+  throw new Error(`Unsupported Agent tool schema type at ${field}`);
+}
+
+function validatePublicEnum(schema, field) {
+  if (!Array.isArray(schema.enum) || schema.enum.length < 1 || schema.enum.length > 32) {
+    throw new Error(`Invalid enum at ${field}`);
+  }
+  const unique = new Set(schema.enum.map((item) => canonicalJson(item)));
+  if (unique.size !== schema.enum.length) throw new Error(`Duplicate enum value at ${field}`);
+  for (const item of schema.enum) {
+    const valid = schema.type === "string" ? typeof item === "string"
+      : schema.type === "integer" ? Number.isInteger(item)
+        : schema.type === "number" ? typeof item === "number" && Number.isFinite(item)
+          : schema.type === "boolean" ? typeof item === "boolean"
+            : schema.type === "null" ? item === null
+              : false;
+    if (!valid) throw new Error(`Enum value does not match type at ${field}`);
+    if (typeof item === "string" && item.length > 1024) throw new Error(`Enum string is too long at ${field}`);
+    if (typeof item === "string" && schema.minLength !== undefined && item.length < schema.minLength) {
+      throw new Error(`Enum string is shorter than minLength at ${field}`);
+    }
+    if (typeof item === "string" && schema.maxLength !== undefined && item.length > schema.maxLength) {
+      throw new Error(`Enum string is longer than maxLength at ${field}`);
+    }
+    if (typeof item === "number" && schema.minimum !== undefined && item < schema.minimum) {
+      throw new Error(`Enum number is below minimum at ${field}`);
+    }
+    if (typeof item === "number" && schema.maximum !== undefined && item > schema.maximum) {
+      throw new Error(`Enum number is above maximum at ${field}`);
+    }
   }
 }

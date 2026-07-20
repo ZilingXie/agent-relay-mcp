@@ -30,7 +30,7 @@ export function buildCreatePayloadV05(args, idempotencyKey) {
     done_criteria: requiredValue(args.doneCriteria, "doneCriteria"),
     max_turns: optionalPositiveInt(args.maxTurns, "maxTurns"),
     task_expires_at: optionalPositiveInt(args.taskExpiresAt, "taskExpiresAt"),
-    message: { parts: [{ kind: "text", text: requiredString(args.requestText, "requestText") }] }
+    message: requiredInitialMessage(args.message, "message")
   });
 }
 
@@ -39,7 +39,7 @@ export function buildMessagePayloadV05(args, idempotencyKey) {
     actor_agent_id: requiredString(args.actorAgentId, "actorAgentId"),
     ...mutationArgsContext(args),
     idempotency_key: requiredString(idempotencyKey, "idempotencyKey"),
-    parts: [{ kind: "text", text: requiredString(args.text, "text") }]
+    parts: requiredParts(args.parts, "parts")
   };
 }
 
@@ -69,7 +69,7 @@ export function buildFollowupPayloadV05(args, idempotencyKey) {
     done_criteria: requiredValue(args.doneCriteria, "doneCriteria"),
     max_turns: optionalPositiveInt(args.maxTurns, "maxTurns"),
     task_expires_at: optionalPositiveInt(args.taskExpiresAt, "taskExpiresAt"),
-    message: { parts: [{ kind: "text", text: requiredString(args.requestText, "requestText") }] }
+    message: requiredInitialMessage(args.message, "message")
   });
 }
 
@@ -177,6 +177,21 @@ function requiredString(value, field) {
 function requiredValue(value, field) {
   if ((typeof value === "string" && value.trim()) || (value && typeof value === "object" && !Array.isArray(value))) return value;
   throw new Error(`${field} is required`);
+}
+
+function requiredInitialMessage(value, field) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is required`);
+  const subject = requiredString(value.subject, `${field}.subject`);
+  if (subject.length > 120) throw new Error(`${field}.subject must be at most 120 characters`);
+  return { subject, parts: requiredParts(value.parts, `${field}.parts`) };
+}
+
+function requiredParts(value, field) {
+  if (!Array.isArray(value) || value.length === 0
+    || value.some((part) => !part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).length === 0)) {
+    throw new Error(`${field} must be a non-empty array of non-empty objects`);
+  }
+  return value;
 }
 
 function requiredPositiveInt(value, field) {

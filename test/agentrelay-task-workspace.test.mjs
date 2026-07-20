@@ -115,6 +115,36 @@ test("v0.5 workspace projection follows the current to_agent_id and clears termi
   assert.equal(completedResult.contextEnvelope.pendingOnAgentId, "");
 });
 
+test("v0.5 workspace title prefers Message subject, then legacy Subject line, then done criteria", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-v05-subject-"));
+  const stateRoot = join(root, "state");
+  const structured = v05Task("task_v05_structured", {
+    fromAgentId: "project-hermes",
+    toAgentId: "zac-agent"
+  });
+  structured.messages[0].subject = "Structured title";
+  let result = await persistTaskWorkspace({ stateRoot, task: structured, localAgentId: "zac-agent" });
+  assert.equal(result.issue.subject, "Structured title");
+
+  const legacy = v05Task("task_v05_legacy", {
+    fromAgentId: "project-hermes",
+    toAgentId: "zac-agent"
+  });
+  legacy.messages[0].parts = [{
+    kind: "text",
+    text: "Project Hermes dispatch.\nSubject：Legacy title from body\nPriority: high"
+  }];
+  result = await persistTaskWorkspace({ stateRoot, task: legacy, localAgentId: "zac-agent" });
+  assert.equal(result.issue.subject, "Legacy title from body");
+
+  const fallback = v05Task("task_v05_fallback", {
+    fromAgentId: "project-hermes",
+    toAgentId: "zac-agent"
+  });
+  result = await persistTaskWorkspace({ stateRoot, task: fallback, localAgentId: "zac-agent" });
+  assert.equal(result.issue.subject, "Hermes returns an ACK.");
+});
+
 test("resyncLocalTask retries exactly once then writes an investigation handoff", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
   const stateRoot = join(root, "state");

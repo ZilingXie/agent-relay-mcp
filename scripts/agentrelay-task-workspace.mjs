@@ -763,7 +763,7 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
   return {
     ...existingIssue,
     taskId,
-    subject: String(task?.subject || existingIssue.subject || ""),
+    subject: String(task?.subject || firstMessageSubject(task) || existingIssue.subject || doneCriteriaTitle(task?.done_criteria) || ""),
     requesterAgentId,
     targetAgentId,
     protocolVersion: String(task?.protocol_version || task?.protocolVersion || existingIssue.protocolVersion || ""),
@@ -809,6 +809,33 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
     createdAt: existingIssue.createdAt || updatedAt,
     updatedAt: updatedAt || existingIssue.updatedAt || ""
   };
+}
+
+function firstMessageSubject(task) {
+  const messages = Array.isArray(task?.messages) ? task.messages : [];
+  const first = [...messages].sort((left, right) => {
+    const turnDelta = Number(left?.turn_sequence || 0) - Number(right?.turn_sequence || 0);
+    if (turnDelta !== 0) return turnDelta;
+    return String(left?.created_at || "").localeCompare(String(right?.created_at || ""));
+  })[0];
+  const structured = typeof first?.subject === "string" ? first.subject.trim() : "";
+  return structured || legacySubjectFromParts(first?.parts);
+}
+
+function legacySubjectFromParts(parts) {
+  for (const part of Array.isArray(parts) ? parts : []) {
+    if (typeof part?.text !== "string") continue;
+    const match = part.text.match(/^Subject\s*[:：]\s*(.+?)\s*$/imu);
+    if (match?.[1]) return doneCriteriaTitle(match[1]);
+  }
+  return "";
+}
+
+function doneCriteriaTitle(value, maxLength = 120) {
+  const text = typeof value === "string"
+    ? value.trim()
+    : (value && typeof value === "object" ? stableJson(value) : "");
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
 async function updateTaskIndex(paths, issue) {

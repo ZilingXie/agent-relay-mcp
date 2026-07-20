@@ -920,6 +920,31 @@ Guardrail.
 
 The detailed boundary is [`docs/guardrail.md`](docs/guardrail.md).
 
+## Structured Message Subject And Dynamic Agent Tools
+
+Status: implemented on task branch; pending Server/Client PRs, staged rollout,
+installation upgrades, activation, and production verification.
+
+- New Task and follow-up tools use structured `message.subject + message.parts`;
+  reply exposes only Agent-supplied `taskId + parts`.
+- Create/follow-up pre-register a bounded `/message/metadata` slot. Signed
+  bundles may hot-add optional public fields inside it; the local core fixes its
+  destination, limits, reserved keys, and non-authoritative semantics.
+- The local MCP supports adapter contracts v1 and v2. A verified v2 bundle may
+  hot-update the fixed semantic tool Schemas through SDK tool-list change
+  notifications.
+- Agent tool definitions are constrained by a compiled tool/operation/field
+  allowlist. Identity, approval, routes, handlers, protected slots, LKG, and
+  rollback remain non-hot-updatable MCP Core behavior.
+- Reply/follow-up resolve a unique prepared action by Task, action type, and
+  payload hash; human approval and Hermes service-policy validation remain
+  mandatory.
+- Inbox title priority is structured first-Message subject, legacy `Subject:`
+  line for historical Tasks, then truncated done criteria.
+- Full Client tests (214/214 plus MCP smoke), full Server tests, malicious-
+  bundle tests, hot patch E2E, and create/delivery/reply/complete/follow-up E2E
+  passed before PR creation.
+
 ## Immediate Next Steps
 
 1. Coordinate Relay `409 Conflict` enforcement without moving protocol authority

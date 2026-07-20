@@ -188,6 +188,15 @@ worker without an explicit owner/scopes/policy review.
 - `agentrelay_amend_task`
 - `agentrelay_mark_delivery`
 - `agentrelay_update_status`
+
+Under Protocol v0.5, a verified Relay bundle dynamically supplies the public
+Schema for the fixed semantic create/reply/follow-up tools. Create and follow-up
+require `message.subject` plus `message.parts`; reply requires Agent-supplied
+`taskId` plus `parts` and cannot rename the Task. Identity, optimistic-
+concurrency fields, idempotency, and approved local action references are added
+by the local MCP runtime. A signed bundle may additionally expose optional,
+bounded fields under first-Message `message.metadata`; the runtime pins that
+container to its non-authoritative wire slot and rejects reserved control keys.
 - `agentrelay_prepare_completion_decision`
 - `agentrelay_close_task`
 - `agentrelay_get_task`

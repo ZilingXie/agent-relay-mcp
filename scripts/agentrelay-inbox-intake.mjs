@@ -286,7 +286,7 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
   inbox.issues[taskId] = {
     ...previousIssue,
     taskId,
-    subject: task.subject || previousIssue.subject || "",
+    subject: task.subject || initialMessageSubject(payload) || previousIssue.subject || doneCriteriaTitle(task.done_criteria),
     requesterAgentId: task.requester_agent_id || previousIssue.requesterAgentId || "",
     targetAgentId: task.target_agent_id || previousIssue.targetAgentId || "",
     doneCriteria: task.done_criteria || previousIssue.doneCriteria || "",
@@ -331,6 +331,31 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
   };
   await writeJsonAtomic(inboxPath, inbox);
   return inbox;
+}
+
+function initialMessageSubject(payload) {
+  const messages = Array.isArray(payload?.messages)
+    ? payload.messages
+    : (Array.isArray(payload?.task?.messages) ? payload.task.messages : []);
+  const first = [...messages].sort((left, right) => Number(left?.turn_sequence || 0) - Number(right?.turn_sequence || 0))[0];
+  const structured = typeof first?.subject === "string" ? first.subject.trim() : "";
+  return structured || legacySubjectFromParts(first?.parts);
+}
+
+function legacySubjectFromParts(parts) {
+  for (const part of Array.isArray(parts) ? parts : []) {
+    if (typeof part?.text !== "string") continue;
+    const match = part.text.match(/^Subject\s*[:：]\s*(.+?)\s*$/imu);
+    if (match?.[1]) return doneCriteriaTitle(match[1]);
+  }
+  return "";
+}
+
+function doneCriteriaTitle(value, maxLength = 120) {
+  const text = typeof value === "string"
+    ? value.trim()
+    : (value && typeof value === "object" ? stableJson(value) : "");
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
 async function recordDuplicateSnapshotEvent({ stateDir, payload, eventPath, taskId, eventId, now }) {
