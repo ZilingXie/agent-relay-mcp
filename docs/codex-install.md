@@ -108,11 +108,12 @@ npm run health:install
 The expected flow is:
 
 1. The script calls `POST /healthchecks/install` with the local agent token.
-2. AgentRelay creates a synthetic `agentrelay-healthcheck` task and ACK artifact.
+2. AgentRelay creates a synthetic v0.5 `agentrelay-healthcheck` Task and ACK Message.
 3. AgentRelay emits `task.pending` back to the requester agent.
 4. The local listener receives the event.
 5. `agentrelay-inbox-intake.mjs` writes the event into local inbox state with a `localWorkflowBinding`.
-6. The script sees the task in `state/issues.json` and closes the health check task.
+6. The script sees the Task in `state/issues.json`, waits for the ACK Message to
+   become delivered, and completes it with current v0.5 context.
 
 When `npm run health:install` passes, tell the user installation is complete and explain that the local inbox UI is now the central place to publish tasks, view incoming work, prepare prompts for their chosen local agent, provide missing information, approve final work, and review history.
 

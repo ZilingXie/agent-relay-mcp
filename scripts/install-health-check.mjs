@@ -10,7 +10,6 @@ import { persistTaskWorkspace } from "./agentrelay-task-workspace.mjs";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const DEFAULT_INBOX_UI_URL = "http://127.0.0.1:8787/";
-const PROTOCOL_VERSION = "agent-collab-v0.3";
 const HEALTHCHECK_AGENT_ID = "agentrelay-healthcheck";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -33,8 +32,7 @@ export async function runInstallHealthCheck({
   log(`AgentRelay install loopback health check started for ${config.agentId}.`);
 
   const createResponse = await relayRequest(fetchImpl, config, "POST", "/healthchecks/install", {
-    idempotency_key: `install-health-${config.agentId}-${randomUUID()}`,
-    requesterThreadId: `agentrelay-install-health-${Date.now()}`
+    idempotency_key: `install-health-${config.agentId}-${randomUUID()}`
   });
   const createData = unwrapData(createResponse);
   const task = createData.task;
@@ -42,7 +40,7 @@ export async function runInstallHealthCheck({
     throw new Error(`Install health check response is missing task.task_id: ${JSON.stringify(createResponse)}`);
   }
   const taskId = task.task_id;
-  const ackText = assertInstallAck({ task, agentId: config.agentId, taskId });
+  const ackText = assertInstallAck({ messages: createData.messages, agentId: config.agentId, taskId });
   log(`Synthetic ACK received from ${HEALTHCHECK_AGENT_ID}: ${taskId}.`);
 
   const issue = await waitForInboxIssue({
@@ -54,27 +52,34 @@ export async function runInstallHealthCheck({
   });
   log(`Local inbox recorded health check task ${taskId}.`);
 
-  const closeResponse = await relayRequest(fetchImpl, config, "POST", `/tasks/${encodeURIComponent(taskId)}/close`, {
-    protocol_version: PROTOCOL_VERSION,
-    idempotency_key: `install-health-close-${taskId}`,
-    closed_by_agent_id: config.agentId,
-    completion_authority: {
-      type: "agent",
-      agent_id: config.agentId,
-      summary: "Local installer verified the AgentRelay install loopback ACK reached the local inbox."
-    },
-    terminal_reason: "AgentRelay install loopback health check passed."
+  const delivered = await waitForDeliveredTask({
+    fetchImpl,
+    config,
+    taskId,
+    timeoutMs,
+    pollMs,
+    sleepImpl
   });
-  const closedTask = unwrapData(closeResponse).task;
+  const currentTask = delivered.task;
+  const closeResponse = await relayRequest(fetchImpl, config, "POST", `/tasks/${encodeURIComponent(taskId)}/complete`, {
+    actor_agent_id: config.agentId,
+    message_id: currentTask.current_message_id,
+    turn_sequence: currentTask.turn_sequence,
+    expected_task_version: currentTask.task_version,
+    idempotency_key: `install-health-close-${taskId}`,
+    completed_against_message_id: currentTask.current_message_id
+  });
+  const closedData = unwrapData(closeResponse);
+  const closedTask = closedData.task;
   if (closedTask?.status !== "completed") {
-    throw new Error(`Install health check close did not complete task ${taskId}: ${JSON.stringify(closeResponse)}`);
+    throw new Error(`Install health check completion did not complete task ${taskId}: ${JSON.stringify(closeResponse)}`);
   }
   await persistTaskWorkspace({
     stateRoot: config.stateDir,
     task: {
       ...task,
       ...closedTask,
-      messages: Array.isArray(closedTask.messages) ? closedTask.messages : (Array.isArray(task.messages) ? task.messages : []),
+      messages: Array.isArray(closedData.messages) ? closedData.messages : delivered.messages,
       artifacts: Array.isArray(closedTask.artifacts) ? closedTask.artifacts : (Array.isArray(task.artifacts) ? task.artifacts : [])
     },
     localAgentId: config.agentId,
@@ -136,16 +141,15 @@ async function relayRequest(fetchImpl, config, method, path, payload) {
   return data;
 }
 
-function assertInstallAck({ task, agentId, taskId }) {
-  const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
-  const ackArtifact = artifacts.find((artifact) => {
-    const from = artifact.from_agent_id || artifact.actor_agent_id;
-    return from === HEALTHCHECK_AGENT_ID && (artifact.kind === "install_health_ack" || partsText(artifact.parts).includes(`ACK from ${HEALTHCHECK_AGENT_ID}`));
+function assertInstallAck({ messages, agentId, taskId }) {
+  const ackMessage = (Array.isArray(messages) ? messages : []).find((message) => {
+    return message.from_agent_id === HEALTHCHECK_AGENT_ID
+      && partsText(message.parts).includes(`ACK from ${HEALTHCHECK_AGENT_ID}`);
   });
-  if (!ackArtifact) {
-    throw new Error(`Install health check task ${taskId} is missing an ACK artifact from ${HEALTHCHECK_AGENT_ID}.`);
+  if (!ackMessage) {
+    throw new Error(`Install health check task ${taskId} is missing an ACK Message from ${HEALTHCHECK_AGENT_ID}.`);
   }
-  const text = partsText(ackArtifact.parts);
+  const text = partsText(ackMessage.parts);
   const required = [`ACK from ${HEALTHCHECK_AGENT_ID}`, `requester=${agentId}`, `task=${taskId}`];
   for (const value of required) {
     if (!text.includes(value)) {
@@ -153,6 +157,23 @@ function assertInstallAck({ task, agentId, taskId }) {
     }
   }
   return text;
+}
+
+async function waitForDeliveredTask({ fetchImpl, config, taskId, timeoutMs, pollMs, sleepImpl }) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const detail = unwrapData(await relayRequest(
+      fetchImpl,
+      config,
+      "GET",
+      `/tasks/${encodeURIComponent(taskId)}`
+    ));
+    const current = (Array.isArray(detail.messages) ? detail.messages : [])
+      .find((message) => message.message_id === detail.task?.current_message_id);
+    if (current?.delivery_status === "delivered") return detail;
+    await sleepImpl(pollMs);
+  }
+  throw new Error(`Timed out waiting for delivered synthetic ACK Message on ${taskId}.`);
 }
 
 function partsText(parts) {
