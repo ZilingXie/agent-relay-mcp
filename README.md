@@ -103,6 +103,9 @@ Use AgentRelay MCP. Call agentrelay_health and agentrelay_list_agents.
 The existing hosted install loopback remains a legacy v0.3 diagnostic. Protocol
 v0.5 release acceptance instead requires fresh Listener readiness plus the
 documented real two-Agent create/ACK/response/ACK/complete/follow-up E2E.
+Protocol v0.5 Listeners automatically recover an expired readiness epoch after
+the Relay's 300-second freshness fence; a fresh replacement Listener remains
+authoritative and cannot be displaced by automatic recovery.
 
 For a legacy deployment, the loopback command remains:
 

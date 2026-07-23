@@ -9,7 +9,18 @@ import { homedir } from "node:os";
 import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
-import { buildPendingEventPayload, probeV05DeliveryEndpoints, readJsonFrame, reconcileAgentEvents, reconcileAgentEventsV05, reconcilePendingTasks } from "./agentrelay-listener-core.mjs";
+import {
+  buildPendingEventPayload,
+  isStaleReadinessEpochError,
+  parseHttpResponseHead,
+  parseJsonResponseBody,
+  probeV05DeliveryEndpoints,
+  readJsonFrame,
+  reconcileAgentEvents,
+  reconcileAgentEventsV05,
+  reconcilePendingTasks,
+  relayResponseError
+} from "./agentrelay-listener-core.mjs";
 import { recoverPendingTaskSyncs } from "./agentrelay-task-context-sync.mjs";
 import { verifyWorkspaceV2Ready } from "./agentrelay-task-workspace.mjs";
 import { PROTOCOL_V05 } from "./agentrelay-v05.mjs";
@@ -35,9 +46,12 @@ const reconcileIntervalMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_RECO
 const statusPath = resolveHome(process.env.AGENTRELAY_LISTENER_STATUS_PATH || resolve(inboxDir, "..", "listener-status.json"));
 const once = process.argv.includes("--once");
 const readinessPublishMs = Number.parseInt(process.env.AGENTRELAY_READINESS_PUBLISH_MS || "60000", 10);
+const listenerInstanceId = isV05 ? `listener-${agentId}-${crypto.randomUUID()}` : "";
+const clientVersion = "0.5.1";
 let lastReconciledAt = 0;
 let lastReadinessPublishedAt = 0;
 let listenerIdentity = null;
+let listenerRecoveryRequired = false;
 const listenerStatus = {
   version: 1,
   agentId,
@@ -57,18 +71,40 @@ console.error(`[agentrelay-listener] inbox: ${inboxDir}`);
 console.error(`[agentrelay-listener] connecting as ${agentId} to ${wsBaseUrl}`);
 
 while (true) {
+  if (isV05 && listenerRecoveryRequired) {
+    try {
+      await recoverV05Listener();
+    } catch (error) {
+      const superseded = error.code === "listener_recovery_not_allowed";
+      console.error(`[agentrelay-listener] recovery ${superseded ? "blocked" : "failed"}: ${error.message}`);
+      await updateListenerStatus({
+        state: superseded ? "superseded" : "disconnected",
+        lastError: error.message,
+        lastRecoveryError: error.message
+      });
+      if (once) break;
+      await delay(reconnectMs);
+      continue;
+    }
+  }
   try {
     await listenOnce();
   } catch (error) {
     console.error(`[agentrelay-listener] disconnected: ${error.message}`);
     await updateListenerStatus({ state: "disconnected", disconnectedAt: new Date().toISOString(), lastError: error.message });
-    if (isV05 && listenerIdentity) await publishV05Readiness(false).catch(() => {});
+    if (isV05 && isStaleReadinessEpochError(error)) {
+      listenerRecoveryRequired = true;
+      await updateListenerStatus({ recoveryRequired: true });
+    } else if (isV05 && listenerIdentity) {
+      await publishV05Readiness(false).catch(() => {});
+    }
   }
   if (once) break;
   await delay(reconnectMs);
 }
 
 async function listenOnce() {
+  if (isV05 && listenerIdentity?.qualified !== true) await qualifyV05Listener();
   await updateListenerStatus({ state: "connecting", connectionStartedAt: new Date().toISOString() });
   const wsQuery = isV05
     ? `?${new URLSearchParams({ listener_instance_id: listenerIdentity.instanceId, readiness_epoch: String(listenerIdentity.epoch) })}`
@@ -230,19 +266,44 @@ async function initializeV05Listener() {
   if (!hookCommand || process.env.AGENTRELAY_ACK_ON_INBOX_RECEIVED !== "1") {
     throw new Error("Protocol v0.5 readiness requires the durable inbox hook and AGENTRELAY_ACK_ON_INBOX_RECEIVED=1");
   }
+  await verifyV05Runtime();
+  await registerV05Listener();
+  await qualifyV05Listener();
+}
+
+async function recoverV05Listener() {
+  await updateListenerStatus({ state: "recovering", recoveryRequired: true, lastRecoveryError: null });
+  await verifyV05Runtime();
+  await registerV05Listener({ recoverIfStale: true });
+  listenerRecoveryRequired = false;
+  try {
+    await qualifyV05Listener();
+  } catch (error) {
+    if (isStaleReadinessEpochError(error)) listenerRecoveryRequired = true;
+    throw error;
+  }
+}
+
+async function verifyV05Runtime() {
   const manifest = await relayRequest("GET", "/protocols/agent-collab/v0.5/manifest");
   if (manifest.version !== PROTOCOL_V05) throw new Error("Relay did not return the Protocol v0.5 manifest");
   await verifyWorkspaceV2Ready({ stateRoot });
-  const instanceId = `listener-${agentId}-${crypto.randomUUID()}`;
+}
+
+async function registerV05Listener({ recoverIfStale = false } = {}) {
   const registered = await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness/register`, {
-    listener_instance_id: instanceId,
-    client_version: "0.5.0",
+    listener_instance_id: listenerInstanceId,
+    client_version: clientVersion,
     workspace_version: "2",
-    transport: "websocket"
+    transport: "websocket",
+    ...(recoverIfStale ? { recover_if_stale: true } : {})
   });
   const readiness = registered.readiness || registered.data?.readiness;
   if (!readiness?.readiness_epoch) throw new Error("Relay readiness registration is missing readiness_epoch");
-  listenerIdentity = { instanceId, epoch: Number(readiness.readiness_epoch) };
+  listenerIdentity = { instanceId: listenerInstanceId, epoch: Number(readiness.readiness_epoch), qualified: false };
+}
+
+async function qualifyV05Listener() {
   await probeV05DeliveryEndpoints({
     agentId,
     listenerInstanceId: listenerIdentity.instanceId,
@@ -250,12 +311,15 @@ async function initializeV05Listener() {
     relayPost: relayProbe
   });
   await publishV05Readiness(false);
+  listenerIdentity.qualified = true;
   await updateListenerStatus({
     protocolVersion,
     listenerInstanceId: listenerIdentity.instanceId,
     readinessEpoch: listenerIdentity.epoch,
     workspaceVersion: 2,
-    ready: false
+    ready: false,
+    recoveryRequired: false,
+    lastRecoveryError: null
   });
 }
 
@@ -276,8 +340,8 @@ async function relayRequest(method, path, payload) {
     body: payload === undefined ? undefined : JSON.stringify(payload)
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
-  if (!response.ok) throw new Error(`${method} ${path} failed (${response.status}): ${JSON.stringify(data)}`);
+  const data = parseJsonResponseBody(text);
+  if (!response.ok) throw relayResponseError(`${method} ${path}`, response.status, data);
   return data;
 }
 
@@ -322,12 +386,26 @@ function connectWebSocket(url, headers) {
       response = Buffer.concat([response, chunk]);
       const headerEnd = response.indexOf("\r\n\r\n");
       if (headerEnd === -1) return;
+      const header = response.subarray(0, headerEnd).toString("utf8");
+      let parsedHead;
+      try {
+        parsedHead = parseHttpResponseHead(header);
+      } catch (error) {
+        socket.off("data", onData);
+        socket.off("error", rejectConnect);
+        rejectConnect(error);
+        socket.destroy();
+        return;
+      }
+      const responseEnd = headerEnd + 4 + (parsedHead.status === 101 ? 0 : parsedHead.contentLength);
+      if (response.length < responseEnd) return;
       socket.off("data", onData);
       socket.off("error", rejectConnect);
       socket.setTimeout(0);
-      const header = response.subarray(0, headerEnd).toString("utf8");
-      if (!header.startsWith("HTTP/1.1 101") && !header.startsWith("HTTP/1.0 101")) {
-        rejectConnect(new Error(`WebSocket upgrade failed: ${header.split("\r\n")[0]}`));
+      if (parsedHead.status !== 101) {
+        const bodyText = response.subarray(headerEnd + 4, responseEnd).toString("utf8");
+        const body = parseJsonResponseBody(bodyText);
+        rejectConnect(relayResponseError("WebSocket upgrade", parsedHead.status, body));
         socket.destroy();
         return;
       }
