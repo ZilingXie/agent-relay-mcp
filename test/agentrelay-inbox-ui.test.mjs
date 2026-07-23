@@ -628,6 +628,15 @@ test("Local Inbox is the trusted issuer for one-time action approvals", async ()
     assert.equal(response.status, 200);
     const approval = await response.json();
     assert.match(approval.confirmationRef, /^local-approval:approval_/);
+    const repeatedResponse = await fetch(path, {
+      method: "POST",
+      headers: { "X-AgentRelay-Local-Approval": "1" }
+    });
+    assert.equal(repeatedResponse.status, 200);
+    const repeatedApproval = await repeatedResponse.json();
+    assert.equal(repeatedApproval.alreadyApproved, true);
+    assert.equal(repeatedApproval.approvalId, approval.approvalId);
+    assert.equal(repeatedApproval.confirmationRef, approval.confirmationRef);
     const { action } = await readLocalAction({ stateRoot, taskId: task.task_id, clientActionId: "approve_complete" });
     assert.equal(action.authorization.type, "human_approval");
     assert.equal(action.authorization.status, "active");

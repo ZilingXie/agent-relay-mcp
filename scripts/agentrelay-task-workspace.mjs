@@ -517,10 +517,18 @@ export async function approveLocalAction({
   return withTaskWorkspaceLock({ stateRoot, taskId }, async () => {
     const workspace = await readTaskWorkspace({ stateRoot, taskId });
     const { action, path } = await readLocalAction({ stateRoot, taskId, clientActionId });
+    if (action.authorization?.status === "active") {
+      return {
+        approvalId: action.authorization.approvalId,
+        confirmationRef: action.confirmationRef,
+        expiresAt: action.authorization.expiresAt,
+        action,
+        alreadyApproved: true
+      };
+    }
     if (action.status !== "awaiting_confirmation") {
       throw new Error(`Local action cannot be approved from status: ${action.status}`);
     }
-    if (action.authorization?.status === "active") throw new Error("Local action is already approved");
     const issuedAt = new Date(at);
     if (Number.isNaN(issuedAt.getTime())) throw new Error("Approval timestamp is invalid");
     const approvalId = `approval_${randomUUID()}`;

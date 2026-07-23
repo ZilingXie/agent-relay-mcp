@@ -3695,7 +3695,9 @@ function renderChat({ issue, timeline, actions = [] }) {
 }
 
 function renderLocalApprovals(actions) {
-  const pending = (actions || []).filter((action) => action.status === "awaiting_confirmation");
+  const pending = (actions || []).filter(
+    (action) => action.status === "awaiting_confirmation" && action.authorization?.status !== "active"
+  );
   if (!pending.length) return "";
   return '<div class="local-approval-list">' + pending.map((action) =>
     '<div class="local-approval-item">' +

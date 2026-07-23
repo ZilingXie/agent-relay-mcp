@@ -39,7 +39,10 @@ export function buildMessagePayloadV05(args, idempotencyKey) {
     actor_agent_id: requiredString(args.actorAgentId, "actorAgentId"),
     ...mutationArgsContext(args),
     idempotency_key: requiredString(idempotencyKey, "idempotencyKey"),
-    parts: requiredParts(args.parts, "parts")
+    parts: requiredParts(
+      args.parts ?? [{ kind: "text", text: requiredString(args.text, "text") }],
+      "parts"
+    )
   };
 }
 

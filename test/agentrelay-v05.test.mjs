@@ -47,6 +47,16 @@ test("v0.5 builders use one aggregate task version", () => {
   }, "complete-key"), "expected_status_version"), false);
 });
 
+test("v0.5 message builder preserves the explicit tool text contract", () => {
+  assert.deepEqual(buildMessagePayloadV05({
+    actorAgentId: "frank-agent",
+    currentMessageId: "msg_1",
+    turnSequence: 1,
+    expectedTaskVersion: 2,
+    text: "pong"
+  }, "message-text-key").parts, [{ kind: "text", text: "pong" }]);
+});
+
 test("v0.5 create is explicit and two-Agent only", () => {
   const payload = buildCreatePayloadV05({
     requesterAgentId: "zac-agent",
