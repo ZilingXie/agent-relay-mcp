@@ -1,5 +1,55 @@
 import crypto from "node:crypto";
 
+export class RelayResponseError extends Error {
+  constructor(message, { status, body = {} } = {}) {
+    super(message);
+    this.name = "RelayResponseError";
+    this.status = status;
+    this.body = body;
+    this.code = body?.code || body?.error || "";
+  }
+}
+
+export function relayResponseError(operation, status, body = {}) {
+  return new RelayResponseError(
+    `${operation} failed (${status}): ${JSON.stringify(body)}`,
+    { status, body }
+  );
+}
+
+export function isStaleReadinessEpochError(error) {
+  return error instanceof RelayResponseError
+    && error.status === 409
+    && error.code === "stale_readiness_epoch";
+}
+
+export function parseHttpResponseHead(header) {
+  const lines = String(header).split("\r\n");
+  const match = lines[0]?.match(/^HTTP\/1\.[01]\s+(\d{3})(?:\s|$)/);
+  if (!match) throw new Error("Invalid HTTP response status line");
+  let contentLength = 0;
+  for (const line of lines.slice(1)) {
+    const separator = line.indexOf(":");
+    if (separator === -1) continue;
+    if (line.slice(0, separator).trim().toLowerCase() === "content-length") {
+      contentLength = Number.parseInt(line.slice(separator + 1).trim(), 10);
+      if (!Number.isSafeInteger(contentLength) || contentLength < 0) {
+        throw new Error("Invalid HTTP Content-Length");
+      }
+    }
+  }
+  return { status: Number(match[1]), contentLength };
+}
+
+export function parseJsonResponseBody(text) {
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text };
+  }
+}
+
 export function unwrapTask(response) {
   return response?.data?.task || response?.task || null;
 }

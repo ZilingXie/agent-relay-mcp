@@ -6,6 +6,9 @@ import {
   buildPendingEventPayload,
   buildRecoveryEvent,
   listenerStatusHealth,
+  isStaleReadinessEpochError,
+  parseHttpResponseHead,
+  parseJsonResponseBody,
   probeV05DeliveryEndpoints,
   readJsonFrame,
   reconcileAgentEvents,
@@ -13,8 +16,39 @@ import {
   reconcilePendingTasks,
   unwrapPendingTasks,
   unwrapTask,
-  v05ReadinessHealth
+  v05ReadinessHealth,
+  relayResponseError
 } from "../scripts/agentrelay-listener-core.mjs";
+
+test("Listener transport errors preserve structured HTTP and WebSocket conflicts", () => {
+  assert.deepEqual(
+    parseHttpResponseHead("HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: 78"),
+    { status: 409, contentLength: 78 }
+  );
+  assert.deepEqual(parseJsonResponseBody('{"error":"stale_readiness_epoch","code":"stale_readiness_epoch"}'), {
+    error: "stale_readiness_epoch",
+    code: "stale_readiness_epoch"
+  });
+  assert.deepEqual(parseJsonResponseBody("proxy failure"), { error: "proxy failure" });
+
+  const stale = relayResponseError("WebSocket upgrade", 409, {
+    error: "stale_readiness_epoch",
+    code: "stale_readiness_epoch"
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.code, "stale_readiness_epoch");
+  assert.deepEqual(stale.body, {
+    error: "stale_readiness_epoch",
+    code: "stale_readiness_epoch"
+  });
+  assert.equal(isStaleReadinessEpochError(stale), true);
+  assert.equal(isStaleReadinessEpochError(relayResponseError("POST readiness", 409, {
+    code: "stale_readiness_epoch"
+  })), true);
+  assert.equal(isStaleReadinessEpochError(relayResponseError("HTTP", 409, { code: "conflict" })), false);
+  assert.equal(isStaleReadinessEpochError(relayResponseError("HTTP", 403, { code: "stale_readiness_epoch" })), false);
+  assert.throws(() => parseHttpResponseHead("not HTTP"), /Invalid HTTP response status line/);
+});
 
 test("v0.5 readiness probes ACK and NACK endpoints without a business Task", async () => {
   const calls = [];

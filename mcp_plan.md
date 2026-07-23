@@ -260,6 +260,10 @@ Implemented core evidence:
 - Listener readiness now requires a real workspace v2 write/read probe,
   ACK/NACK endpoint compatibility probes, and successful authenticated Event
   recovery before publishing `ready=true`.
+- A v0.5 Listener that receives `stale_readiness_epoch` from readiness publish
+  or WebSocket upgrade conditionally re-registers the same process instance and
+  repeats its readiness checks. Relay fencing prevents it from displacing a
+  fresh replacement Listener.
 
 Production rollout evidence:
 
