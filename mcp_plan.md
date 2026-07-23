@@ -969,6 +969,20 @@ historical Inbox-title verification passed.
   `task_180e5deb8e6e431186586c6d57957b22` now uses done criteria as its UI title
   without mutating persisted history.
 
+## Local Approval And Explicit v0.5 Message Compatibility
+
+Status: complete in Client implementation and regression coverage.
+
+- Local Inbox action approval is idempotent while its one-time authorization is
+  active. Refreshing the task hides the approval control, and a repeated local
+  approval request returns the original approval instead of a generic server
+  error.
+- The explicit `agentrelay_send_message_v05` tool keeps its existing `text`
+  input contract and converts it to the protocol `parts` representation. Native
+  `parts` callers remain unchanged.
+- Focused approval, Inbox UI, and v0.5 builder tests pass; the full Client suite
+  passes 218/218 together with the MCP smoke test.
+
 ## Immediate Next Steps
 
 1. Coordinate Relay `409 Conflict` enforcement without moving protocol authority
