@@ -2,7 +2,18 @@
 
 Installable MCP client and local inbox/notifier for AgentRelay.
 
-Protocol v0.5 is the maintenance-window target:
+Protocol v0.5 remains the production default. Protocol v0.6 offline-delivery
+support is implemented on the release branch and depends on Server PR #74:
+
+- Listener offline/readiness stale no longer prevents Task creation on a v0.6 Relay.
+- The listener registers an epoch, drains parked Message and terminal Events,
+  durably writes and verifies each inbox file, then ACKs through the intake hook.
+- `listener-status.json` and the local UI expose connection, heartbeat, Relay
+  readiness, remote backlog knowledge, and new/expired/failed recovery counts.
+- `doctor` validates the installed v0.6 Listener identity instead of opening a
+  competing WebSocket.
+
+Protocol v0.5 behavior remains:
 
 - Task lifecycle is `open/completed/expired/failed`.
 - Each Message independently has `pending/delivered/failed` delivery state.
@@ -106,6 +117,11 @@ documented real two-Agent create/ACK/response/ACK/complete/follow-up E2E.
 Protocol v0.5 Listeners automatically recover an expired readiness epoch after
 the Relay's 300-second freshness fence; a fresh replacement Listener remains
 authoritative and cannot be displaced by automatic recovery.
+
+After Server PR #74 is available, a staged v0.6 client may set
+`AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.6`. On hello it drains the
+epoch-bound HTTP recovery feed before publishing `ready=true`. Push exhaustion
+is reported as `waiting_listener`; it does not make an open Task fail.
 
 For a legacy deployment, the loopback command remains:
 

@@ -57,7 +57,9 @@ export function validateServicePolicy(policy) {
 export function authorizeServiceAction({ policy, action, task, localAgentId, at = new Date().toISOString() }) {
   validateServicePolicy(policy);
   if (policy.agent_id !== localAgentId) return rejection("SERVICE_POLICY_AGENT_MISMATCH");
-  if (!task || task.protocol_version !== "agent-collab-v0.5") return rejection("SERVICE_POLICY_PROTOCOL_MISMATCH");
+  if (!task || !["agent-collab-v0.5", "agent-collab-v0.6"].includes(task.protocol_version)) {
+    return rejection("SERVICE_POLICY_PROTOCOL_MISMATCH");
+  }
   if (task.status !== "open") return rejection("SERVICE_POLICY_TASK_NOT_OPEN");
   if (task.target_agent_id !== localAgentId || task.to_agent_id !== localAgentId) {
     return rejection("SERVICE_POLICY_NOT_CURRENT_OWNER");

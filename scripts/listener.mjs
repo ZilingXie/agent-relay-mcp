@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,12 +18,14 @@ import {
   readJsonFrame,
   reconcileAgentEvents,
   reconcileAgentEventsV05,
+  reconcileAgentEventsV06,
   reconcilePendingTasks,
   relayResponseError
 } from "./agentrelay-listener-core.mjs";
 import { recoverPendingTaskSyncs } from "./agentrelay-task-context-sync.mjs";
 import { verifyWorkspaceV2Ready } from "./agentrelay-task-workspace.mjs";
 import { PROTOCOL_V05 } from "./agentrelay-v05.mjs";
+import { PROTOCOL_V06 } from "./agentrelay-v06.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -37,6 +39,8 @@ const username = process.env.AGENTRELAY_USERNAME || "";
 const token = process.env.AGENTRELAY_TOKEN || "";
 const protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.3";
 const isV05 = protocolVersion === PROTOCOL_V05;
+const isV06 = protocolVersion === PROTOCOL_V06;
+const isDurableProtocol = isV05 || isV06;
 const inboxDir = resolveHome(process.env.AGENTRELAY_INBOX_DIR || resolve(repoRoot, ".agentrelay", "inbox"));
 const stateRoot = resolveHome(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));
 const hookCommand = process.env.AGENTRELAY_LISTENER_HOOK || "";
@@ -46,8 +50,8 @@ const reconcileIntervalMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_RECO
 const statusPath = resolveHome(process.env.AGENTRELAY_LISTENER_STATUS_PATH || resolve(inboxDir, "..", "listener-status.json"));
 const once = process.argv.includes("--once");
 const readinessPublishMs = Number.parseInt(process.env.AGENTRELAY_READINESS_PUBLISH_MS || "60000", 10);
-const listenerInstanceId = isV05 ? `listener-${agentId}-${crypto.randomUUID()}` : "";
-const clientVersion = "0.5.1";
+const listenerInstanceId = isDurableProtocol ? `listener-${agentId}-${crypto.randomUUID()}` : "";
+const clientVersion = isV06 ? "0.6.0" : "0.5.1";
 let lastReconciledAt = 0;
 let lastReadinessPublishedAt = 0;
 let listenerIdentity = null;
@@ -56,6 +60,8 @@ const listenerStatus = {
   version: 1,
   agentId,
   state: "starting",
+  relayReadiness: "unknown",
+  pendingRemoteMessages: null,
   startedAt: new Date().toISOString()
 };
 
@@ -65,13 +71,13 @@ if (!agentId || !username || !token) {
 
 await mkdir(inboxDir, { recursive: true });
 await mkdir(dirname(statusPath), { recursive: true });
-if (isV05) await initializeV05Listener();
+if (isDurableProtocol) await initializeDurableListener();
 await updateListenerStatus({ state: "connecting" });
 console.error(`[agentrelay-listener] inbox: ${inboxDir}`);
 console.error(`[agentrelay-listener] connecting as ${agentId} to ${wsBaseUrl}`);
 
 while (true) {
-  if (isV05 && listenerRecoveryRequired) {
+  if (isDurableProtocol && listenerRecoveryRequired) {
     try {
       await recoverV05Listener();
     } catch (error) {
@@ -80,7 +86,9 @@ while (true) {
       await updateListenerStatus({
         state: superseded ? "superseded" : "disconnected",
         lastError: error.message,
-        lastRecoveryError: error.message
+        lastRecoveryError: error.message,
+        relayReadiness: "stale",
+        pendingRemoteMessages: null
       });
       if (once) break;
       await delay(reconnectMs);
@@ -91,12 +99,18 @@ while (true) {
     await listenOnce();
   } catch (error) {
     console.error(`[agentrelay-listener] disconnected: ${error.message}`);
-    await updateListenerStatus({ state: "disconnected", disconnectedAt: new Date().toISOString(), lastError: error.message });
-    if (isV05 && isStaleReadinessEpochError(error)) {
+    await updateListenerStatus({
+      state: "disconnected",
+      disconnectedAt: new Date().toISOString(),
+      lastError: error.message,
+      relayReadiness: "stale",
+      pendingRemoteMessages: null
+    });
+    if (isDurableProtocol && isStaleReadinessEpochError(error)) {
       listenerRecoveryRequired = true;
       await updateListenerStatus({ recoveryRequired: true });
-    } else if (isV05 && listenerIdentity) {
-      await publishV05Readiness(false).catch(() => {});
+    } else if (isDurableProtocol && listenerIdentity) {
+      await publishDurableReadiness(false).catch(() => {});
     }
   }
   if (once) break;
@@ -104,9 +118,9 @@ while (true) {
 }
 
 async function listenOnce() {
-  if (isV05 && listenerIdentity?.qualified !== true) await qualifyV05Listener();
+  if (isDurableProtocol && listenerIdentity?.qualified !== true) await qualifyDurableListener();
   await updateListenerStatus({ state: "connecting", connectionStartedAt: new Date().toISOString() });
-  const wsQuery = isV05
+  const wsQuery = isDurableProtocol
     ? `?${new URLSearchParams({ listener_instance_id: listenerIdentity.instanceId, readiness_epoch: String(listenerIdentity.epoch) })}`
     : "";
   const socket = await connectWebSocket(`${wsBaseUrl}/workers/${encodeURIComponent(agentId)}/events/ws${wsQuery}`, relayHeaders());
@@ -114,20 +128,22 @@ async function listenOnce() {
     while (true) {
       const frame = await readJsonFrame(socket, { inactivityMs });
       if (frame.type === "hello") {
-        if (isV05 && (frame.listenerInstanceId !== listenerIdentity.instanceId || Number(frame.readinessEpoch) !== listenerIdentity.epoch)) {
-          throw new Error("v0.5 hello does not match the registered Listener epoch");
+        if (isDurableProtocol && (frame.protocolVersion !== protocolVersion
+          || frame.listenerInstanceId !== listenerIdentity.instanceId
+          || Number(frame.readinessEpoch) !== listenerIdentity.epoch)) {
+          throw new Error(`${protocolVersion} hello does not match the registered Listener epoch`);
         }
         console.error(`[agentrelay-listener] hello ${frame.agentId}`);
-        await tryReconcilePending({ required: isV05 });
-        if (isV05) await publishV05Readiness(true);
-        await updateListenerStatus({ state: "connected", connectedAt: new Date().toISOString(), lastError: null, ready: isV05 ? true : undefined });
+        await tryReconcilePending({ required: isDurableProtocol });
+        if (isDurableProtocol) await publishDurableReadiness(true);
+        await updateListenerStatus({ state: "connected", connectedAt: new Date().toISOString(), lastError: null, ready: isDurableProtocol ? true : undefined });
         continue;
       }
       if (frame.type === "heartbeat") {
         console.error(`[agentrelay-listener] heartbeat ${frame.serverTime}`);
         await updateListenerStatus({ state: "connected", lastHeartbeatAt: new Date().toISOString(), serverTime: frame.serverTime });
         if (Date.now() - lastReconciledAt >= reconcileIntervalMs) await tryReconcilePending();
-        if (isV05 && Date.now() - lastReadinessPublishedAt >= readinessPublishMs) await publishV05Readiness(true);
+        if (isDurableProtocol && Date.now() - lastReadinessPublishedAt >= readinessPublishMs) await publishDurableReadiness(true);
         continue;
       }
       if (frame.type === "task.pending") {
@@ -149,7 +165,7 @@ async function listenOnce() {
 
 async function tryReconcilePending({ required = false } = {}) {
   try {
-    const result = isV05 ? { discovered: 0, persisted: 0, failures: [] } : await reconcilePendingTasks({
+    const result = isDurableProtocol ? { discovered: 0, persisted: 0, failures: [] } : await reconcilePendingTasks({
       agentId,
       relayGet: (path) => relayRequest("GET", path),
       persist: async (payload) => {
@@ -169,8 +185,16 @@ async function tryReconcilePending({ required = false } = {}) {
       const eventPath = await writeInboxEvent(payload, { stableName: true });
       if (hookCommand) await runHook(eventPath);
     };
-    const eventRecovery = isV05
-      ? await reconcileAgentEventsV05({
+    const eventRecovery = isV06
+      ? await reconcileAgentEventsV06({
+          agentId,
+          listenerInstanceId: listenerIdentity.instanceId,
+          readinessEpoch: listenerIdentity.epoch,
+          relayGet: (path) => relayRequest("GET", path),
+          persist: persistRecoveredEvent
+        })
+      : isV05
+        ? await reconcileAgentEventsV05({
           agentId,
           listenerInstanceId: listenerIdentity.instanceId,
           readinessEpoch: listenerIdentity.epoch,
@@ -190,7 +214,7 @@ async function tryReconcilePending({ required = false } = {}) {
       retryDelayMs: Number(process.env.AGENTRELAY_CONTEXT_SYNC_RETRY_MS || 250)
     });
     if (required && eventRecovery.failures.length > 0) {
-      throw new Error(`Protocol v0.5 Event recovery failed for ${eventRecovery.failures.length} Event(s)`);
+      throw new Error(`${protocolVersion} Event recovery failed for ${eventRecovery.failures.length} Event(s)`);
     }
     lastReconciledAt = Date.now();
     await updateListenerStatus({
@@ -201,6 +225,10 @@ async function tryReconcilePending({ required = false } = {}) {
       eventRecoveryDiscovered: eventRecovery.discovered,
       eventRecoveryPersisted: eventRecovery.persisted,
       eventRecoveryFailed: eventRecovery.failures.length,
+      ...(isV06 ? {
+        pendingRemoteMessages: eventRecovery.failures.length === 0 && eventRecovery.discovered < 500 ? 0 : null,
+        lastRecovery: { at: new Date().toISOString(), ...eventRecovery.recovered }
+      } : {}),
       localSyncRecoveryDiscovered: localRecovery.discovered,
       localSyncRecoveryReady: localRecovery.ready,
       localSyncRecoveryFailed: localRecovery.failed,
@@ -212,7 +240,7 @@ async function tryReconcilePending({ required = false } = {}) {
     }
   } catch (error) {
     console.error(`[agentrelay-listener] reconciliation failed: ${error.message}`);
-    await updateListenerStatus({ lastReconciliationError: error.message });
+    await updateListenerStatus({ lastReconciliationError: error.message, pendingRemoteMessages: null });
     if (required) throw error;
   }
 }
@@ -234,12 +262,15 @@ async function writeInboxEvent(payload, { stableName = false } = {}) {
     ? `${safeEventId}.json`
     : `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeEventId}.json`;
   const eventPath = resolve(inboxDir, fileName);
-  await writeFile(eventPath, `${JSON.stringify({ receivedAt: new Date().toISOString(), ...payload }, null, 2)}\n`, { mode: 0o600 });
+  const temporaryPath = `${eventPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  await writeFile(temporaryPath, `${JSON.stringify({ receivedAt: new Date().toISOString(), ...payload }, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporaryPath, eventPath);
+  JSON.parse(await readFile(eventPath, "utf8"));
   return eventPath;
 }
 
 async function runHook(eventPath) {
-  await new Promise((resolveHook) => {
+  await new Promise((resolveHook, rejectHook) => {
     const child = spawn(hookCommand, [eventPath], {
       shell: true,
       stdio: "inherit",
@@ -252,45 +283,45 @@ async function runHook(eventPath) {
       }
     });
     child.on("close", (code) => {
-      if (code !== 0) console.error(`[agentrelay-listener] hook exited with ${code}`);
-      resolveHook();
+      if (code === 0) resolveHook();
+      else rejectHook(new Error(`Listener hook exited with ${code}`));
     });
     child.on("error", (error) => {
-      console.error(`[agentrelay-listener] hook failed: ${error.message}`);
-      resolveHook();
+      rejectHook(new Error(`Listener hook failed: ${error.message}`));
     });
   });
 }
 
-async function initializeV05Listener() {
+async function initializeDurableListener() {
   if (!hookCommand || process.env.AGENTRELAY_ACK_ON_INBOX_RECEIVED !== "1") {
-    throw new Error("Protocol v0.5 readiness requires the durable inbox hook and AGENTRELAY_ACK_ON_INBOX_RECEIVED=1");
+    throw new Error(`${protocolVersion} readiness requires the durable inbox hook and AGENTRELAY_ACK_ON_INBOX_RECEIVED=1`);
   }
-  await verifyV05Runtime();
-  await registerV05Listener();
-  await qualifyV05Listener();
+  await verifyDurableRuntime();
+  await registerDurableListener();
+  await qualifyDurableListener();
 }
 
 async function recoverV05Listener() {
   await updateListenerStatus({ state: "recovering", recoveryRequired: true, lastRecoveryError: null });
-  await verifyV05Runtime();
-  await registerV05Listener({ recoverIfStale: true });
+  await verifyDurableRuntime();
+  await registerDurableListener({ recoverIfStale: true });
   listenerRecoveryRequired = false;
   try {
-    await qualifyV05Listener();
+    await qualifyDurableListener();
   } catch (error) {
     if (isStaleReadinessEpochError(error)) listenerRecoveryRequired = true;
     throw error;
   }
 }
 
-async function verifyV05Runtime() {
-  const manifest = await relayRequest("GET", "/protocols/agent-collab/v0.5/manifest");
-  if (manifest.version !== PROTOCOL_V05) throw new Error("Relay did not return the Protocol v0.5 manifest");
+async function verifyDurableRuntime() {
+  const versionPath = protocolVersion.slice("agent-collab-".length);
+  const manifest = await relayRequest("GET", `/protocols/agent-collab/${versionPath}/manifest`);
+  if (manifest.version !== protocolVersion) throw new Error(`Relay did not return the ${protocolVersion} manifest`);
   await verifyWorkspaceV2Ready({ stateRoot });
 }
 
-async function registerV05Listener({ recoverIfStale = false } = {}) {
+async function registerDurableListener({ recoverIfStale = false } = {}) {
   const registered = await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness/register`, {
     listener_instance_id: listenerInstanceId,
     client_version: clientVersion,
@@ -303,14 +334,14 @@ async function registerV05Listener({ recoverIfStale = false } = {}) {
   listenerIdentity = { instanceId: listenerInstanceId, epoch: Number(readiness.readiness_epoch), qualified: false };
 }
 
-async function qualifyV05Listener() {
+async function qualifyDurableListener() {
   await probeV05DeliveryEndpoints({
     agentId,
     listenerInstanceId: listenerIdentity.instanceId,
     readinessEpoch: listenerIdentity.epoch,
     relayPost: relayProbe
   });
-  await publishV05Readiness(false);
+  await publishDurableReadiness(false);
   listenerIdentity.qualified = true;
   await updateListenerStatus({
     protocolVersion,
@@ -318,19 +349,24 @@ async function qualifyV05Listener() {
     readinessEpoch: listenerIdentity.epoch,
     workspaceVersion: 2,
     ready: false,
+    relayReadiness: "stale",
     recoveryRequired: false,
     lastRecoveryError: null
   });
 }
 
-async function publishV05Readiness(ready) {
+async function publishDurableReadiness(ready) {
   await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness`, {
     listener_instance_id: listenerIdentity.instanceId,
     readiness_epoch: listenerIdentity.epoch,
     ready
   });
   lastReadinessPublishedAt = Date.now();
-  await updateListenerStatus({ ready, readinessPublishedAt: new Date().toISOString() });
+  await updateListenerStatus({
+    ready,
+    relayReadiness: ready ? "fresh" : "stale",
+    readinessPublishedAt: new Date().toISOString()
+  });
 }
 
 async function relayRequest(method, path, payload) {

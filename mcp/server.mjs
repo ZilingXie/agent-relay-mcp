@@ -45,6 +45,8 @@ loadDotEnv(process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const PROTOCOL_VERSION = "agent-collab-v0.3";
 const ACTIVE_PROTOCOL_VERSION = process.env.AGENTRELAY_PROTOCOL_VERSION || PROTOCOL_VERSION;
+const isNativeLifecycleProtocol = ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5"
+  || ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.6";
 const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL);
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
@@ -58,7 +60,7 @@ const servicePolicyPath = process.env.AGENTRELAY_SERVICE_POLICY_PATH
 let protocolRuntimeStatus = { status: "checking", checked_at: new Date().toISOString() };
 let protocolStartupPromise = null;
 const agentToolRegistrations = new Map();
-let initialAgentToolMode = ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5" ? "unavailable" : "legacy";
+let initialAgentToolMode = isNativeLifecycleProtocol ? "unavailable" : "legacy";
 let initialAgentToolDefinitions = [];
 
 const messagePartsSchema = z.array(
@@ -118,7 +120,7 @@ const LEGACY_AGENT_TOOL_CONFIGS = {
   }
 };
 
-if (ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5") {
+if (isNativeLifecycleProtocol) {
   protocolStartupPromise = refreshProtocolRuntime();
   await protocolStartupPromise;
 }
@@ -132,7 +134,7 @@ registerTools(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-if (ACTIVE_PROTOCOL_VERSION !== "agent-collab-v0.5") protocolStartupPromise = refreshProtocolRuntime();
+if (!isNativeLifecycleProtocol) protocolStartupPromise = refreshProtocolRuntime();
 
 function registerTools(mcpServer) {
   mcpServer.registerTool(
@@ -212,7 +214,7 @@ function registerTools(mcpServer) {
     async (args) => {
       const requesterAgentId = args.requester_agent_id || args.from;
       const targetAgentId = args.target_agent_id || args.to || args.targetAgentId;
-      if (ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5") {
+      if (isNativeLifecycleProtocol) {
         assertDirectCreateAuthorized();
         const idempotencyKey = `mcp-v05-create-${randomUUID()}`;
         return jsonResult(await executeSemanticRelayRequest(() => buildActiveSemanticRequest({
@@ -1116,7 +1118,7 @@ async function refreshProtocolRuntime() {
   } catch (error) {
     const onlineError = String(error?.message || error);
     try {
-      const cached = await readCachedVerifiedProtocol({ baseUrl });
+      const cached = await readCachedVerifiedProtocol({ baseUrl, version: ACTIVE_PROTOCOL_VERSION });
       if (!cached) throw new Error("no verified active or last-known-good bundle is available");
       const agentTools = await applyAgentToolBundle(cached);
       protocolRuntimeStatus = {
@@ -1140,10 +1142,13 @@ async function refreshProtocolRuntime() {
 }
 
 async function applyAgentToolBundle(active) {
-  if (ACTIVE_PROTOCOL_VERSION !== "agent-collab-v0.5") {
-    return { status: "inactive", reason: "active_protocol_is_not_v05" };
+  if (!isNativeLifecycleProtocol) {
+    return { status: "inactive", reason: "active_protocol_is_not_native_lifecycle" };
   }
   if (!active?.cache_dir) return { status: "unchanged", reason: "no_active_bundle" };
+  if (active.version !== ACTIVE_PROTOCOL_VERSION) {
+    throw new Error(`Active protocol ${active.version || "unknown"} does not match configured ${ACTIVE_PROTOCOL_VERSION}`);
+  }
   const bundle = JSON.parse(await readFile(active.bundle_path || resolve(active.cache_dir, "bundle.json"), "utf8"));
   validateProtocolBundle(bundle, { expectedTarget: active, authority: active.authority, baseUrl });
   if (!bundle.agent_tools) {
@@ -1217,7 +1222,7 @@ async function executeSemanticRelayRequest(buildRequest) {
   try {
     return await relayRequest(request.method, request.path, request.payload, { skipProtocolRepair: true });
   } catch (error) {
-    if (!new Set(["protocol_patch_required", "protocol_v05_required"]).has(error?.code)) throw error;
+    if (!new Set(["protocol_patch_required", "protocol_v05_required", "protocol_v06_required"]).has(error?.code)) throw error;
     const refreshed = await refreshProtocolRuntime();
     if (!new Set(["hot_patch_applied", "hot_rollback_applied", "up_to_date"]).has(refreshed.status)) {
       throw new Error(`Protocol mutation cannot retry: ${refreshed.status}`);
@@ -1238,7 +1243,7 @@ async function activeProtocolBundle() {
       throw new Error("Protocol hot update is disabled and no verified active bundle is available");
     }
     const synced = await syncProtocolVersion({
-      version: "agent-collab-v0.5",
+      version: ACTIVE_PROTOCOL_VERSION,
       baseUrl,
       headers: relayHeaders(),
       log: null
@@ -1722,6 +1727,6 @@ function compact(value) {
 }
 
 function assertLegacyMutationAvailable(toolName) {
-  if (ACTIVE_PROTOCOL_VERSION !== "agent-collab-v0.5") return;
-  throw new Error(`protocol_retired: ${toolName} uses the retired v0.3/v0.4 mutation contract; use the Protocol v0.5 tools`);
+  if (!isNativeLifecycleProtocol) return;
+  throw new Error(`protocol_retired: ${toolName} uses the retired v0.3/v0.4 mutation contract; use the active protocol tools`);
 }
