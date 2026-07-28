@@ -170,7 +170,6 @@ test("v0.6 Listener drains Message and expired Events before publishing ready", 
     {
       event_id: "evt_v06_message",
       event_type: "message.pending",
-      protocol_version: "agent-collab-v0.6",
       task_id: "task_v06_message",
       message_id: "msg_v06",
       can_transition_message: true,
@@ -179,7 +178,6 @@ test("v0.6 Listener drains Message and expired Events before publishing ready", 
     {
       event_id: "evt_v06_expired",
       event_type: "task.status_changed",
-      protocol_version: "agent-collab-v0.6",
       task_id: "task_v06_expired",
       can_transition_message: false,
       payload: { status: "expired" }

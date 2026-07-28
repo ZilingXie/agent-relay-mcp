@@ -182,7 +182,10 @@ async function tryReconcilePending({ required = false } = {}) {
       }
     });
     const persistRecoveredEvent = async (payload) => {
-      const eventPath = await writeInboxEvent(payload, { stableName: true });
+      const eventPath = await writeInboxEvent({
+        ...payload,
+        event: { ...payload.event, protocolVersion }
+      }, { stableName: true });
       if (hookCommand) await runHook(eventPath);
     };
     const eventRecovery = isV06
