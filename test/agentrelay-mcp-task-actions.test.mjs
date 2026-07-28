@@ -171,7 +171,7 @@ test("prepared action rejects an embedded approval without its Local Inbox recor
   assert.equal(mutated, false);
 });
 
-test("Hermes service policy remains a maximum permission even with human approval", async () => {
+test("Hermes service policy rejects target-side completion even with human approval", async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-hermes-policy-ceiling-"));
   const current = {
     task_id: "task_hermes",
@@ -205,8 +205,57 @@ test("Hermes service policy remains a maximum permission even with human approva
     localAgentId: "project-hermes",
     servicePolicyPath: fileURLToPath(new URL("../policies/project-hermes.service-policy.json", import.meta.url))
   });
-  assert.equal(result.code, "SERVICE_POLICY_OPERATION_DENIED");
+  assert.equal(result.code, "SERVICE_POLICY_NOT_COMPLETION_OWNER");
   assert.equal(mutated, false);
+});
+
+test("Hermes service policy authorizes completion of its delivered target response", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-hermes-owner-complete-"));
+  const current = {
+    task_id: "task_hermes_owner",
+    protocol_version: "agent-collab-v0.6",
+    status: "open",
+    requester_agent_id: "project-hermes",
+    target_agent_id: "zac-agent",
+    completion_owner_agent_id: "project-hermes",
+    from_agent_id: "zac-agent",
+    to_agent_id: "project-hermes",
+    current_message_id: "msg_target_result",
+    turn_sequence: 2,
+    task_version: 4,
+    max_turns: 4,
+    messages: [{
+      message_id: "msg_target_result",
+      delivery_status: "delivered",
+      parts: [{ kind: "text", text: "done" }]
+    }],
+    artifacts: []
+  };
+  await persistTaskWorkspace({ stateRoot, task: current, localAgentId: "project-hermes" });
+  await prepareLocalAction({
+    stateRoot,
+    taskId: current.task_id,
+    actionType: "complete_task",
+    payload: {},
+    clientActionId: "owner_complete"
+  });
+  let mutated = false;
+  const result = await executePreparedTaskAction({
+    stateRoot,
+    taskId: current.task_id,
+    clientActionId: "owner_complete",
+    actionType: "complete_task",
+    payload: {},
+    fetchTask: async () => current,
+    mutate: async () => {
+      mutated = true;
+      return { task: { ...current, status: "completed" } };
+    },
+    localAgentId: "project-hermes",
+    servicePolicyPath: fileURLToPath(new URL("../policies/project-hermes.service-policy.json", import.meta.url))
+  });
+  assert.equal(result.relayResponse.task.status, "completed");
+  assert.equal(mutated, true);
 });
 
 test("ambiguous submission remains retryable with one stable idempotency key", async () => {

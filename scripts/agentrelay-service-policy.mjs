@@ -22,7 +22,7 @@ export function validateServicePolicy(policy) {
     const id = requiredString(rule?.id, "service policy rule id");
     if (ids.has(id)) throw new Error(`Duplicate service policy rule: ${id}`);
     ids.add(id);
-    if (!new Set(["reply", "fail_task"]).has(rule.operation)) {
+    if (!new Set(["reply", "fail_task", "complete_task"]).has(rule.operation)) {
       throw new Error(`Service policy operation is not allowed: ${rule.operation}`);
     }
     if (operations.has(rule.operation)) throw new Error(`Duplicate service policy operation: ${rule.operation}`);
@@ -31,7 +31,9 @@ export function validateServicePolicy(policy) {
       rule,
       rule.operation === "reply"
         ? ["id", "operation", "max_text_bytes", "side_effects"]
-        : ["id", "operation", "allowed_reasons", "side_effects"],
+        : (rule.operation === "fail_task"
+            ? ["id", "operation", "allowed_reasons", "side_effects"]
+            : ["id", "operation", "side_effects"]),
       `service policy rule ${id}`
     );
     if (rule.side_effects !== "none") throw new Error(`Service policy rule ${id} must forbid local side effects`);
@@ -46,7 +48,7 @@ export function validateServicePolicy(policy) {
     }
   }
   const denied = policy.denied_operations;
-  const requiredDenied = ["amend_task", "change_participants", "complete_task", "create_followup", "create_task"];
+  const requiredDenied = ["amend_task", "change_participants", "create_followup", "create_task"];
   if (!Array.isArray(denied)
     || JSON.stringify([...denied].sort()) !== JSON.stringify(requiredDenied)) {
     throw new Error("Service policy denied_operations must explicitly cover requester-owned mutations");
@@ -61,11 +63,19 @@ export function authorizeServiceAction({ policy, action, task, localAgentId, at 
     return rejection("SERVICE_POLICY_PROTOCOL_MISMATCH");
   }
   if (task.status !== "open") return rejection("SERVICE_POLICY_TASK_NOT_OPEN");
-  if (task.target_agent_id !== localAgentId || task.to_agent_id !== localAgentId) {
-    return rejection("SERVICE_POLICY_NOT_CURRENT_OWNER");
-  }
   const current = (task.messages || []).find((message) => message.message_id === task.current_message_id);
   if (!current || current.delivery_status !== "delivered") return rejection("SERVICE_POLICY_MESSAGE_NOT_DELIVERED");
+  if (action.actionType === "complete_task") {
+    const completionOwner = task.completion_owner_agent_id || task.requester_agent_id;
+    if (completionOwner !== localAgentId
+      || task.requester_agent_id !== localAgentId
+      || task.to_agent_id !== localAgentId
+      || task.from_agent_id !== task.target_agent_id) {
+      return rejection("SERVICE_POLICY_NOT_COMPLETION_OWNER");
+    }
+  } else if (task.target_agent_id !== localAgentId || task.to_agent_id !== localAgentId) {
+    return rejection("SERVICE_POLICY_NOT_CURRENT_OWNER");
+  }
   const rule = policy.rules.find((candidate) => candidate.operation === action.actionType);
   if (!rule) return rejection("SERVICE_POLICY_OPERATION_DENIED");
   if (action.actionType === "reply") {

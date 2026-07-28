@@ -10,7 +10,7 @@ import {
 
 const policy = JSON.parse(await readFile(new URL("../policies/project-hermes.service-policy.json", import.meta.url), "utf8"));
 
-test("Hermes service policy allows only current-owner reply and bounded failure", () => {
+test("Hermes service policy allows current-target reply and bounded failure", () => {
   assert.doesNotThrow(() => validateServicePolicy(policy));
   const reply = action("reply", { parts: [{ kind: "text", text: "HERMES_ACK" }] });
   const allowed = authorizeServiceAction({
@@ -34,10 +34,26 @@ test("Hermes service policy allows only current-owner reply and bounded failure"
   assert.equal(failed.ok, true);
 });
 
-test("Hermes service policy rejects requester authority, wrong ownership, and unknown reasons", () => {
+test("Hermes service policy allows only requester-owned completion of a target response", () => {
+  const task = requesterTask();
+  const completed = authorizeServiceAction({
+    policy, action: action("complete_task", {}), task, localAgentId: "project-hermes"
+  });
+  assert.equal(completed.ok, true);
+  assert.equal(completed.grant.ruleId, "complete-requester-owned-task");
+
   assert.equal(authorizeServiceAction({
     policy, action: action("complete_task", {}), task: currentTask(), localAgentId: "project-hermes"
-  }).code, "SERVICE_POLICY_OPERATION_DENIED");
+  }).code, "SERVICE_POLICY_NOT_COMPLETION_OWNER");
+  assert.equal(authorizeServiceAction({
+    policy,
+    action: action("complete_task", {}),
+    task: { ...task, from_agent_id: "project-hermes" },
+    localAgentId: "project-hermes"
+  }).code, "SERVICE_POLICY_NOT_COMPLETION_OWNER");
+});
+
+test("Hermes service policy rejects wrong ownership and unknown reasons", () => {
   assert.equal(authorizeServiceAction({
     policy,
     action: action("reply", { text: "wrong owner" }),
@@ -153,5 +169,16 @@ function currentTask() {
     current_message_id: "msg-1",
     task_version: 2,
     messages: [{ message_id: "msg-1", delivery_status: "delivered" }]
+  };
+}
+
+function requesterTask() {
+  return {
+    ...currentTask(),
+    requester_agent_id: "project-hermes",
+    target_agent_id: "zac-agent",
+    completion_owner_agent_id: "project-hermes",
+    from_agent_id: "zac-agent",
+    to_agent_id: "project-hermes"
   };
 }
