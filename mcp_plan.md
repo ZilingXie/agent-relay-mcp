@@ -1,6 +1,6 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-07-19
+Last updated: 2026-07-28
 
 ## Audience And Sources
 
@@ -985,9 +985,10 @@ Status: complete in Client implementation and regression coverage.
 
 ## Protocol v0.6 Offline Delivery Client
 
-Status: implemented and locally verified on `feat/v06-offline-delivery`; not
-merged or deployed. This Client change depends on Server PR #74 and must merge
-after it.
+Status: merged in Client PR #67 as `f4cff07` and compatibility-deployed to
+Zac's production Listener and Local Inbox UI. Zac remains on Protocol v0.5 and
+passes `doctor`; v0.6 activation is pending the Server data-continuity gate and
+v0.6 support from every production target Listener, including Hermes and Vivi.
 
 - The protocol runtime advertises v0.6 before v0.5 and strictly validates each
   signed bundle against its matching protocol constant and v06/v05 schemas.
@@ -1007,9 +1008,10 @@ after it.
   listener recovery through the real intake hook, Message-before-ACK, expired
   notice ACK, UI create/visibility, and health-state guidance.
 
-Merge order: Server PR #74, this Client PR, then the separate Hermes change.
-Do not enable v0.6 in installed services until both Server and Client changes
-are merged and the cross-repository E2E passes.
+Merge and compatibility deployment completed in order: Server PR #74, Client
+PR #67, then Hermes PR #7. Do not enable v0.6 in installed services until the
+Server data-continuity plan and all target Listener upgrades are complete; the
+live offline-create/recovery E2E remains the activation gate.
 
 ## Immediate Next Steps
 
