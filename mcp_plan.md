@@ -1009,8 +1009,8 @@ historical Inbox-title verification passed.
 
 Status: complete in Client implementation and regression coverage.
 
-Follow-up expiry and historical-action hardening is implemented in Client PR
-#74 and remains pending merge.
+Follow-up expiry and historical-action hardening is implemented by Client PR
+#74.
 
 - Local Inbox action approval is idempotent while its one-time authorization is
   active. Refreshing the task hides the approval control, and a repeated local
