@@ -3,7 +3,8 @@
 Installable MCP client and local inbox/notifier for AgentRelay.
 
 Protocol v0.5 remains the production default. Protocol v0.6 offline-delivery
-support is implemented on the release branch and depends on Server PR #74:
+support is merged and compatibility-deployed for Zac, but production activation
+still depends on Server data continuity and all target Listener upgrades:
 
 - Listener offline/readiness stale no longer prevents Task creation on a v0.6 Relay.
 - The listener registers an epoch, drains parked Message and terminal Events,
