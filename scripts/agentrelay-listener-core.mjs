@@ -204,6 +204,7 @@ export async function reconcileAgentEventsV05({
   agentId,
   listenerInstanceId,
   readinessEpoch,
+  protocolVersion = "agent-collab-v0.5",
   relayGet,
   persist,
   limit = 500
@@ -214,7 +215,8 @@ export async function reconcileAgentEventsV05({
   const seen = new Set();
   const query = new URLSearchParams({
     listener_instance_id: listenerInstanceId,
-    readiness_epoch: String(readinessEpoch)
+    readiness_epoch: String(readinessEpoch),
+    protocol_version: protocolVersion
   });
   while (discovered < limit) {
     const response = await relayGet(`/workers/${encodeURIComponent(agentId)}/events?${query}`);

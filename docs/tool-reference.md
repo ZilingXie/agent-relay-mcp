@@ -18,6 +18,10 @@ Reports the MCP runtime version and capabilities, current negotiation action,
 active verified bundle, and whether a new MCP code release is required. Set
 `refresh=true` to negotiate again.
 
+The response also includes the process-loaded and currently installed runtime
+generations. When they differ, `restart_required` is true and every mutation
+returns `MCP_RESTART_REQUIRED`; restart Codex before retrying.
+
 ### `agentrelay_protocol_sync_v04`
 
 Fetches the accepted non-default Protocol v0.4 bundle without changing the
@@ -45,9 +49,21 @@ Input:
 
 `agentrelay_create_task`, `agentrelay_reply`, `agentrelay_complete_task`,
 `agentrelay_fail_task`, and `agentrelay_create_followup` are independent of wire
-protocol version. For v0.5 the MCP derives identity, current Message, turn, Task
-version, and idempotency data locally, then applies the verified declarative
-adapter. Version-suffixed tools remain temporarily for compatibility.
+protocol version. MCP fetches the Task and selects its immutable
+`protocol_version`, even when the globally configured protocol is newer. It
+derives identity, current Message, turn, Task version, and idempotency data
+locally, then applies that protocol's verified declarative adapter.
+
+Version-suffixed mutation tools are hidden by default so Agents cannot select a
+wire version directly. Operators may temporarily expose them with
+`AGENTRELAY_EXPOSE_LEGACY_PROTOCOL_TOOLS=1` for diagnosis. They reject a Task of
+another protocol locally and point to the stable replacement tool. Read-only
+versioned inspection and explicit bundle-sync tools remain available.
+
+On a protocol-patch response, stable mutations refresh the matching Task bundle,
+re-fetch the Task, verify that its guarded context is unchanged, and retry once
+with the original idempotency key. A changed Task returns
+`CONTEXT_CHANGED_DURING_PROTOCOL_UPDATE` without a second mutation.
 
 When Relay publishes the verified dynamic Agent-tool contract, the local MCP
 updates the fixed semantic tool Schemas and sends a tool-list-changed

@@ -10,6 +10,7 @@ import {
   inferProtocolOperation,
   maybeHandleProtocolNegotiation,
   negotiateCurrentProtocol,
+  negotiateProtocolVersion,
   readCachedVerifiedProtocol,
   resolveProtocolDir,
   syncCurrentProtocol,
@@ -53,6 +54,46 @@ test("syncProtocolVersion fetches the v0.5 maintenance bundle explicitly", async
   });
   assert.equal(result.version, "agent-collab-v0.5");
   assert.equal(result.schema_digest, canonicalDigest(bundle.schemas));
+});
+
+test("Task protocol negotiation caches v0.5 without replacing the global v0.6 pointer", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-protocol-cache-"));
+  const baseUrl = "https://relay.example/agentrelay/api";
+  const bundle = protocolV2Bundle();
+  let negotiationRequest;
+  const fetchImpl = async (url, options = {}) => {
+    const path = String(url);
+    if (path.endsWith("/protocols/agent-collab/v0.5/manifest")) return jsonResponse(bundle.manifest);
+    if (path.endsWith("/protocols/negotiate")) {
+      negotiationRequest = JSON.parse(options.body);
+      return jsonResponse({
+        action: "hot_patch",
+        reason: "Task protocol bundle required",
+        runtime_version: negotiationRequest.runtime_version,
+        requested_task_protocol_version: negotiationRequest.task_protocol_version,
+        missing_capabilities: [],
+        authority: bundle.manifest.authority,
+        target: v2Target(bundle),
+        retry_policy: { max_automatic_retries: 1, preserve_idempotency_key: true }
+      });
+    }
+    if (path === bundle.manifest.urls.bundle) return jsonResponse(bundle);
+    return { ok: false, status: 404, text: async () => "{}" };
+  };
+  const result = await negotiateProtocolVersion({
+    version: "agent-collab-v0.5",
+    baseUrl,
+    cacheRoot: root,
+    fetchImpl,
+    log: null
+  });
+  assert.equal(result.status, "hot_patch_applied");
+  assert.equal(negotiationRequest.task_protocol_version, "agent-collab-v0.5");
+  assert.deepEqual(negotiationRequest.supported_protocol_versions, ["agent-collab-v0.6", "agent-collab-v0.5"]);
+  assert.equal(existsSync(join(protocolAuthorityRoot(root, bundle.manifest.authority), "active.json")), false);
+  const cached = await readCachedVerifiedProtocol({ baseUrl, cacheRoot: root, version: "agent-collab-v0.5" });
+  assert.equal(cached.cache_source, "version");
+  assert.equal(cached.bundle_digest, bundle.manifest.bundle_digest);
 });
 
 test("syncProtocolBundle writes manifest, bundle, schemas, examples, and docs", async () => {
@@ -439,5 +480,13 @@ function fakeFetch(responses) {
       status: 200,
       text: async () => JSON.stringify(data)
     };
+  };
+}
+
+function jsonResponse(data, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => JSON.stringify(data)
   };
 }

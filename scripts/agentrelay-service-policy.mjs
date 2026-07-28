@@ -98,6 +98,11 @@ export function authorizeServiceAction({ policy, action, task, localAgentId, at 
     actionType: action.actionType,
     payloadHash: action.payloadHash,
     contextHash: hashStableJson(action.baseContextEnvelope),
+    semanticActionHash: action.semanticActionHash || hashStableJson({
+      actionType: action.actionType,
+      payloadHash: action.payloadHash,
+      baseContextEnvelope: action.baseContextEnvelope
+    }),
     issuedAt: issuedAt.toISOString(),
     expiresAt: new Date(issuedAt.getTime() + 60_000).toISOString(),
     status: "active"
@@ -127,9 +132,15 @@ export function validateLocalAuthorization({
     return rejection("LOCAL_AUTHORIZATION_TYPE_INVALID");
   }
   if (!new Set(["active", "submitting"]).has(authorization.status)) return rejection("LOCAL_AUTHORIZATION_CONSUMED");
+  const semanticActionHash = action.semanticActionHash || hashStableJson({
+    actionType: action.actionType,
+    payloadHash: action.payloadHash,
+    baseContextEnvelope: action.baseContextEnvelope
+  });
   if (authorization.actionType !== action.actionType
     || authorization.payloadHash !== action.payloadHash
-    || authorization.contextHash !== hashStableJson(action.baseContextEnvelope)) {
+    || authorization.contextHash !== hashStableJson(action.baseContextEnvelope)
+    || (authorization.semanticActionHash && authorization.semanticActionHash !== semanticActionHash)) {
     return rejection("LOCAL_AUTHORIZATION_SCOPE_MISMATCH");
   }
   const issuedAt = new Date(authorization.issuedAt).getTime();
@@ -183,7 +194,7 @@ function assertAllowedKeys(value, allowed, label) {
 function authorizationFieldsMatch(authorization, record) {
   return [
     "version", "type", "approvalId", "approvedBy", "actionType", "payloadHash",
-    "contextHash", "issuedAt", "expiresAt"
+    "contextHash", "semanticActionHash", "issuedAt", "expiresAt"
   ].every((field) => authorization[field] === record[field]);
 }
 

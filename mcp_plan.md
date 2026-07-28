@@ -1048,7 +1048,7 @@ Base implementation merged in order as Server PR #74, Client PR #67, then
 Hermes PR #7. The production activation used Server PR #76 and Hermes PR #8,
 followed by Server PRs #77/#78 and Client PR #69 for issues found at the live
 cutover boundary. Client PR #69 passed the two focused recovery tests, the full
-228/228 suite, and MCP smoke.
+232/232 suite, and MCP smoke.
 
 Production Task `task_cb366d360b2d4174a6cddc21de31a0c3` proved the complete
 offline path: Zac created while Vivi was unavailable; the Server retained an
@@ -1057,6 +1057,26 @@ upgraded Listener recovered, persisted, and ACKed it; Vivi replied; Zac's
 Listener ACKed the reply; and Zac completed the Task at version 5. The first
 probe expired normally under its TTL during cutover debugging and was never
 misclassified as failed.
+
+## Protocol Upgrade Safety
+
+Status: implementation-under-review on `feat/protocol-upgrade-safety`.
+
+- Stable semantic mutations route by the fetched Task's immutable protocol and
+  cache v0.5/v0.6 bundles independently without replacing the global pointer.
+- Protocol-patch retry re-fetches Task context and preserves one idempotency key;
+  context drift aborts before a second mutation.
+- Version-suffixed mutation tools are hidden unless explicitly exposed, and
+  mismatches direct callers to the stable replacement.
+- Prepared action v2 binds action type, payload, and base context in one semantic
+  hash used by human approval and service-policy authorization.
+- Runtime generation fencing blocks mutation from an MCP process whose installed
+  code changed after startup.
+- Listener compatibility lanes carry explicit protocol selection for readiness,
+  recovery, and WebSocket delivery while a Server protocol drain remains open.
+- Focused coverage includes v0.6-configured MCP mutation of a v0.5 Task, global
+  pointer isolation, legacy-tool opt-in/mismatch, generation change, hot-patch
+  Task re-fetch, and dual-protocol Server delivery.
 
 ## Immediate Next Steps
 
