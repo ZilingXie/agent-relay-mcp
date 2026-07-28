@@ -4,12 +4,13 @@ import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const repoRoot = resolve(import.meta.dirname, "..");
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("v0.5 Listener recovers a stale WebSocket epoch without changing process identity", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-listener-recovery-"));
