@@ -2,6 +2,15 @@
 
 Last updated: 2026-07-28
 
+Latest update: Client PR
+[#71](https://github.com/ZilingXie/agent-relay-mcp/pull/71) adds a bounded
+`complete_task` service-policy operation for Project Hermes only when Hermes is
+the requester/completion owner and the current delivered Message is a target
+response. Server PR [#80](https://github.com/ZilingXie/agentRelay/pull/80)
+publishes the matching Agent Card authority, and Hermes PR
+[#9](https://github.com/ZilingXie/heremes-deploy/pull/9) implements the worker
+completion path.
+
 ## Audience And Sources
 
 This file is the agent-facing implementation plan for
@@ -885,16 +894,41 @@ Guardrail.
    - Keep direct v0.5 create disabled by default; reviewed-draft Send is the
      normal create authority.
 3. Hermes service policy.
-   - Allow only a bounded reply or `agent_reported_failure` for an open v0.5
-     Task whose current delivered Message is owned by `project-hermes`.
-   - Deny create, complete, follow-up, goal or participant changes, requester
-     authority, non-delivered Messages, changed context, oversized replies,
+   - On the target side, allow only a bounded reply or
+     `agent_reported_failure` for an open Task whose current delivered Message
+     is owned by `project-hermes`.
+   - On the requester side, allow `complete_task` only when Project Hermes is
+     both requester and completion owner and the current delivered Message is
+     the target's response. The operation is bound to the exact Task, Message,
+     turn, version, actor, and idempotency context.
+   - Deny create, follow-up, goal or participant changes, target-side
+     completion, non-delivered Messages, changed context, oversized replies,
      unknown reasons, and local side effects.
    - MCP service-policy grants are bound for 60 seconds to
      policy/rule/agent/action/payload/context. The standalone Hermes worker
      enforces the same maximum permission directly before first send and outbox
      replay, including actor, Message, turn, Task version, idempotency, payload
      shape, and text-size binding.
+
+Requester-completion implementation and release record:
+
+- Client PR [#71](https://github.com/ZilingXie/agent-relay-mcp/pull/71)
+  updates the canonical policy JSON, validator, guardrail documentation, and
+  action tests. Target-side attempts to complete remain denied.
+- Hermes PR [#9](https://github.com/ZilingXie/heremes-deploy/pull/9) calls
+  `/tasks/:id/complete` after the worker determines the done criteria are met,
+  then returns without sending another reply. It accepts the canonical intents
+  `close_task` and `complete_task`, normalizes the observed nested completion
+  output, rejects unstructured stdout and the `messaging` toolset, and replays
+  completion outbox entries idempotently.
+- Release order is Server PR #80, Client PR #71, then Hermes PR #9. The
+  production Agent Card must advertise the authority before the canonical
+  client policy and worker are deployed.
+- The repaired production smoke Task
+  `task_02c418549b5745c4a9fe686c04f470a9` is `completed`, with Project Hermes
+  recorded as terminal actor and the target response recorded as the completion
+  anchor. The original Task `task_acfe7e6efa6742069cc4e6f4f7addbd2`
+  remains the final no-extra-reply acceptance case after canonical deployment.
 4. Accepted trust model.
    - Relay remains the trusted protocol publisher. Dynamic Agent-tool bundles
      use Ed25519 signatures, but the public key is first learned through Relay
