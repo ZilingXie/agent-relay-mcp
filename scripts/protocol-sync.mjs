@@ -60,7 +60,8 @@ export async function syncProtocolVersion({
   cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
   fetchImpl = fetch,
   log = console.error,
-  headers = {}
+  headers = {},
+  activate = false
 } = {}) {
   const match = /^agent-collab-(v\d+\.\d+)$/.exec(String(version || ""));
   if (!match) throw new Error("version must look like agent-collab-v0.4");
@@ -76,8 +77,72 @@ export async function syncProtocolVersion({
     baseUrl: normalizedBaseUrl,
     authority: manifest.authority,
     expectedTarget: manifestTarget(manifest),
-    headers
+    headers,
+    activateGlobal: activate
   });
+}
+
+export async function negotiateProtocolVersion({
+  version,
+  baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
+  cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
+  fetchImpl = fetch,
+  headers = {},
+  log = console.error,
+  timeoutMs = 5000
+} = {}) {
+  const match = /^agent-collab-(v\d+\.\d+)$/.exec(String(version || ""));
+  if (!match) throw new Error("version must look like agent-collab-v0.5");
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const manifest = await fetchJson(
+    fetchImpl,
+    `${normalizedBaseUrl}/protocols/agent-collab/${match[1]}/manifest`,
+    headers,
+    AbortSignal.timeout(timeoutMs)
+  );
+  if (!manifest.authority) throw new Error("Protocol manifest did not include authority");
+  const active = await readVersionProtocol({
+    cacheRoot: resolveHome(cacheRoot),
+    authority: manifest.authority,
+    version
+  });
+  if (envFlag("AGENTRELAY_DISABLE_HOT_UPDATE")) {
+    return { status: "hot_update_disabled", active, manifest };
+  }
+  const negotiation = validateNegotiationResponse(
+    await postJson(
+      fetchImpl,
+      `${normalizedBaseUrl}/protocols/negotiate`,
+      buildNegotiationRequest({ active, taskProtocolVersion: version }),
+      headers,
+      AbortSignal.timeout(timeoutMs)
+    ),
+    { baseUrl: normalizedBaseUrl }
+  );
+  if (negotiation.action === "client_release_required" || negotiation.action === "task_protocol_retired") {
+    return { status: negotiation.action, negotiation, active };
+  }
+  if (negotiation.action === "up_to_date") {
+    return { status: "up_to_date", negotiation, active };
+  }
+  const synced = await syncProtocolBundle({
+    bundleUrl: negotiation.target.bundle_url,
+    cacheRoot,
+    fetchImpl,
+    log,
+    baseUrl: normalizedBaseUrl,
+    authority: negotiation.authority,
+    expectedTarget: negotiation.target,
+    activationAction: negotiation.action,
+    activateGlobal: false,
+    headers,
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  return {
+    status: negotiation.action === "hot_rollback" ? "hot_rollback_applied" : "hot_patch_applied",
+    negotiation,
+    active: synced
+  };
 }
 
 export async function negotiateCurrentProtocol({
@@ -147,7 +212,8 @@ export async function readCachedVerifiedProtocol({
     if (!entry.isDirectory()) continue;
     const authorityDir = resolve(authoritiesRoot, entry.name);
     for (const [source, fileName, priority] of [
-      ["active", "active.json", 2],
+      ["active", "active.json", 3],
+      ["version", versionPointerPath(version), 2],
       ["last_known_good", "last-known-good.json", 1]
     ]) {
       const pointer = await readJsonIfExists(resolve(authorityDir, fileName));
@@ -194,6 +260,7 @@ export async function syncProtocolBundle({
   authority,
   expectedTarget,
   activationAction = "sync",
+  activateGlobal = true,
   headers = {},
   signal
 }) {
@@ -210,7 +277,10 @@ export async function syncProtocolBundle({
   );
   await withActivationLock(authorityRoot, async () => {
     const previous = await readActiveProtocol({ cacheRoot: resolveHome(cacheRoot), authority: verified.authority });
-    validateRevisionTransition(previous, verified, activationAction);
+    const versionPointer = resolve(authorityRoot, versionPointerPath(verified.version));
+    const previousVersion = await readJsonIfExists(versionPointer);
+    validateRevisionTransition(previousVersion, verified, activationAction);
+    if (activateGlobal) validateRevisionTransition(previous, verified, activationAction);
     if (!existsSync(dir)) {
       const staging = resolve(authorityRoot, `.staging-${randomUUID()}`);
       try {
@@ -240,12 +310,15 @@ export async function syncProtocolBundle({
       cache_dir: dir,
       activated_at: new Date().toISOString()
     };
-    if (previous && previous.bundle_digest !== pointer.bundle_digest) {
-      await writeJsonAtomic(resolve(authorityRoot, "last-known-good.json"), previous);
+    await writeJsonAtomic(versionPointer, pointer);
+    if (activateGlobal) {
+      if (previous && previous.bundle_digest !== pointer.bundle_digest) {
+        await writeJsonAtomic(resolve(authorityRoot, "last-known-good.json"), previous);
+      }
+      await writeJsonAtomic(resolve(authorityRoot, "active.json"), pointer);
     }
-    await writeJsonAtomic(resolve(authorityRoot, "active.json"), pointer);
   });
-  log?.(`AgentRelay protocol bundle activated: ${verified.protocol} ${verified.version} ${verified.bundle_digest} -> ${dir}`);
+  log?.(`AgentRelay protocol bundle ${activateGlobal ? "activated" : "cached"}: ${verified.protocol} ${verified.version} ${verified.bundle_digest} -> ${dir}`);
   return {
     protocol: verified.protocol,
     version: verified.version,
@@ -261,6 +334,10 @@ export async function syncProtocolBundle({
     manifest_path: resolve(dir, "manifest.json"),
     bundle_path: resolve(dir, "bundle.json"),
   };
+}
+
+export async function readVersionProtocol({ cacheRoot, authority, version }) {
+  return readJsonIfExists(resolve(protocolAuthorityRoot(cacheRoot, authority), versionPointerPath(version)));
 }
 
 export async function maybeHandleProtocolNegotiation({
@@ -432,6 +509,12 @@ export function resolveProtocolDir(cacheRoot, protocol, version, authority, bund
     version,
     bundleDigest.replace(":", "-")
   );
+}
+
+function versionPointerPath(version) {
+  const match = /^agent-collab-(v\d+\.\d+)$/.exec(String(version || ""));
+  if (!match) throw new Error("version must look like agent-collab-v0.5");
+  return `versions/${match[1]}.json`;
 }
 
 async function runCli() {

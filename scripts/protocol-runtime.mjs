@@ -198,14 +198,15 @@ export async function readActiveProtocol({ cacheRoot, authority }) {
 export function buildNegotiationRequest({
   active = null,
   lastKnownGood = null,
-  protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.5"
+  protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.5",
+  taskProtocolVersion = ""
 } = {}) {
   return compact({
     runtime_version: PROTOCOL_RUNTIME_VERSION,
     runtime_capabilities: PROTOCOL_RUNTIME_CAPABILITIES,
-    supported_protocol_versions: protocolVersion === "agent-collab-v0.6"
-      ? SUPPORTED_PROTOCOL_VERSIONS
-      : ["agent-collab-v0.5"],
+    supported_protocol_versions: SUPPORTED_PROTOCOL_VERSIONS,
+    preferred_protocol_version: protocolVersion,
+    task_protocol_version: taskProtocolVersion || undefined,
     active: active ? protocolPointer(active) : undefined,
     last_known_good: lastKnownGood ? protocolPointer(lastKnownGood) : undefined
   });
@@ -215,7 +216,7 @@ export function validateNegotiationResponse(value, { baseUrl } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Protocol negotiation response must be an object");
   }
-  if (!["up_to_date", "hot_patch", "client_release_required", "hot_rollback"].includes(value.action)) {
+  if (!["up_to_date", "hot_patch", "client_release_required", "hot_rollback", "task_protocol_retired"].includes(value.action)) {
     throw new Error(`Unsupported protocol negotiation action: ${value.action}`);
   }
   const target = value.target || {};

@@ -9,10 +9,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 import { executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
-import { resyncLocalTask } from "../scripts/agentrelay-task-context-sync.mjs";
-import { hashStableJson, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
+import { resyncLocalTask, unwrapTask } from "../scripts/agentrelay-task-context-sync.mjs";
+import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
-import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, readCachedVerifiedProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
+import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, negotiateProtocolVersion, readCachedVerifiedProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
 import {
   buildSemanticRequest,
   PROTOCOL_RUNTIME_CAPABILITIES,
@@ -20,6 +20,7 @@ import {
   validateProtocolBundle,
   validateSemanticTransition
 } from "../scripts/protocol-runtime.mjs";
+import { compareRuntimeGeneration, computeRuntimeGeneration } from "../scripts/runtime-generation.mjs";
 import {
   buildCompletePayloadV04,
   buildCreatePayloadV04,
@@ -52,6 +53,15 @@ const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
 const bearerToken = process.env.AGENTRELAY_TOKEN || "";
 const allowDirectCreate = new Set(["1", "true", "yes"]).has(String(process.env.AGENTRELAY_ALLOW_DIRECT_CREATE || "").toLowerCase());
+const exposeLegacyProtocolTools = envFlag("AGENTRELAY_EXPOSE_LEGACY_PROTOCOL_TOOLS");
+const preparedActionTypes = [
+  "submit_artifact", "request_revision", "amend_task", "close_task",
+  "reply", "complete_task", "fail_task", "create_followup",
+  ...(exposeLegacyProtocolTools ? [
+    "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04",
+    "send_message_v05", "complete_task_v05", "fail_task_v05", "create_followup_v05"
+  ] : [])
+];
 const stateRoot = resolve(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));
 const localInboxAgentsMdPath = resolve(process.env.AGENTRELAY_AGENTS_MD_PATH || resolve(repoRoot, "templates/local-inbox/AGENTS.md"));
 const servicePolicyPath = process.env.AGENTRELAY_SERVICE_POLICY_PATH
@@ -62,6 +72,7 @@ let protocolStartupPromise = null;
 const agentToolRegistrations = new Map();
 let initialAgentToolMode = isNativeLifecycleProtocol ? "unavailable" : "legacy";
 let initialAgentToolDefinitions = [];
+const loadedRuntimeGeneration = computeRuntimeGeneration(repoRoot);
 
 const messagePartsSchema = z.array(
   z.record(z.string(), z.unknown()).refine((part) => Object.keys(part).length > 0, "Message parts cannot be empty")
@@ -169,9 +180,17 @@ function registerTools(mcpServer) {
     async ({ refresh = false }) => {
       if (refresh) protocolStartupPromise = refreshProtocolRuntime();
       if (protocolStartupPromise) await protocolStartupPromise;
+      const generation = runtimeGenerationState();
       return jsonResult({
         runtime_version: PROTOCOL_RUNTIME_VERSION,
         runtime_capabilities: PROTOCOL_RUNTIME_CAPABILITIES,
+        runtime_generation: {
+          loaded: loadedRuntimeGeneration,
+          installed: generation.installedGeneration,
+          restart_required: generation.restartRequired,
+          error: generation.error || undefined
+        },
+        legacy_protocol_tools_exposed: exposeLegacyProtocolTools,
         ...protocolRuntimeStatus
       });
     }
@@ -273,7 +292,7 @@ function registerTools(mcpServer) {
     }
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_create_task_v04",
     {
       title: "Create Protocol v0.4 Task",
@@ -296,7 +315,7 @@ function registerTools(mcpServer) {
     }
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_send_message_v04",
     {
       title: "Send Protocol v0.4 Message",
@@ -322,7 +341,7 @@ function registerTools(mcpServer) {
     }
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_complete_task_v04",
     {
       title: "Complete Protocol v0.4 Task",
@@ -348,7 +367,7 @@ function registerTools(mcpServer) {
     }
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_fail_task_v04",
     {
       title: "Fail Protocol v0.4 Task",
@@ -374,7 +393,7 @@ function registerTools(mcpServer) {
     }
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_create_followup_v04",
     {
       title: "Create Protocol v0.4 Follow-up",
@@ -423,7 +442,7 @@ function registerTools(mcpServer) {
     async () => jsonResult(await syncProtocolVersion({ version: "agent-collab-v0.5", baseUrl }))
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_create_task_v05",
     {
       title: "Create Protocol v0.5 Task",
@@ -447,7 +466,7 @@ function registerTools(mcpServer) {
     }
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_send_message_v05",
     {
       title: "Send Protocol v0.5 Message",
@@ -470,7 +489,7 @@ function registerTools(mcpServer) {
     }))
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_complete_task_v05",
     {
       title: "Complete Protocol v0.5 Task",
@@ -493,7 +512,7 @@ function registerTools(mcpServer) {
     }))
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_fail_task_v05",
     {
       title: "Fail Protocol v0.5 Task",
@@ -516,7 +535,7 @@ function registerTools(mcpServer) {
     }))
   );
 
-  mcpServer.registerTool(
+  registerLegacyMutationTool(mcpServer,
     "agentrelay_create_followup_v05",
     {
       title: "Create Protocol v0.5 follow-up",
@@ -663,12 +682,7 @@ function registerTools(mcpServer) {
       description: "Persist an exact proposed Relay mutation and bind it to the current local task context before asking the user for confirmation. This tool does not mutate Relay.",
       inputSchema: {
         taskId: z.string().min(1),
-        actionType: z.enum([
-          "submit_artifact", "request_revision", "amend_task", "close_task",
-          "reply", "complete_task", "fail_task", "create_followup",
-          "send_message_v04", "complete_task_v04", "fail_task_v04", "create_followup_v04",
-          "send_message_v05", "complete_task_v05", "fail_task_v05", "create_followup_v05"
-        ]),
+        actionType: z.enum(preparedActionTypes),
         payloadJson: z.string().min(2).describe("Exact JSON object of mutation arguments excluding taskId, clientActionId, and confirmationRef"),
         clientActionId: z.string().min(1).optional(),
         confirmationRef: z.string().optional().describe("Optional local confirmation reference; it may be supplied later during submission")
@@ -1050,23 +1064,46 @@ async function executeSemanticTaskAction({ args, operation, resultTaskMode }) {
       currentTask = task;
       validateSemanticTransition(operation, task, agentId, args);
     },
-    remoteRequestBuilder: (idempotencyKey) => buildActiveSemanticRequest({
-      operation,
-      input: args,
-      task: currentTask,
-      idempotencyKey
-    })
+    remoteRequestBuilder: async (idempotencyKey, { refreshTask = false } = {}) => {
+      if (refreshTask) {
+        const refreshed = unwrapTask(await relayGet(`/tasks/${encodeURIComponent(args.taskId)}`));
+        const comparison = compareTaskContextEnvelopes(
+          deriveTaskContextEnvelope(currentTask),
+          deriveTaskContextEnvelope(refreshed)
+        );
+        if (!comparison.matches) {
+          const error = new Error("Task context changed while applying the protocol update");
+          error.code = "CONTEXT_CHANGED_DURING_PROTOCOL_UPDATE";
+          error.changedFields = comparison.changedFields;
+          throw error;
+        }
+        currentTask = refreshed;
+      }
+      return buildActiveSemanticRequest({
+        operation,
+        input: args,
+        task: currentTask,
+        idempotencyKey
+      });
+    }
   });
 }
 
 async function executeMcpTaskAction({ args, actionType, remotePayload, remotePayloadBuilder, remoteRequestBuilder, path, validateCurrentTask, resultTaskMode, resolvePreparedAction = false }) {
+  const generationError = runtimeGenerationError();
+  if (generationError) {
+    return { ok: false, status: "rejected", taskId: String(args.taskId || ""), ...generationError };
+  }
   const preparedPayload = preparedActionPayload(args);
   const resolvedArgs = resolvePreparedAction && !args.clientActionId
     ? await resolvePreparedSemanticAction({ args, actionType, preparedPayload })
     : args;
   const mutate = async (idempotencyKey) => {
     if (remoteRequestBuilder) {
-      return executeSemanticRelayRequest(() => remoteRequestBuilder(idempotencyKey));
+      return executeSemanticRelayRequest(
+        () => remoteRequestBuilder(idempotencyKey),
+        () => remoteRequestBuilder(idempotencyKey, { refreshTask: true })
+      );
     }
     return relayPost(
       path,
@@ -1195,6 +1232,35 @@ function registerStableAgentTool(mcpServer, name, handler) {
   if (initialAgentToolMode === "unavailable") registered.disable();
 }
 
+function registerLegacyMutationTool(mcpServer, name, config, handler) {
+  const registered = mcpServer.registerTool(name, config, async (args) => {
+    const generationError = runtimeGenerationError();
+    if (generationError) return jsonResult({ ok: false, status: "rejected", ...generationError });
+    const expectedProtocol = name.includes("_v05")
+      ? "agent-collab-v0.5"
+      : (name.includes("_v04") ? "agent-collab-v0.4" : "");
+    if (args?.taskId && expectedProtocol) {
+      const task = unwrapTask(await relayGet(`/tasks/${encodeURIComponent(args.taskId)}`));
+      const taskProtocol = task.protocol_version || task.protocolVersion || "";
+      if (taskProtocol !== expectedProtocol) {
+        return jsonResult({
+          ok: false,
+          status: "rejected",
+          code: "LEGACY_TOOL_PROTOCOL_MISMATCH",
+          taskId: args.taskId,
+          taskProtocol,
+          toolProtocol: expectedProtocol,
+          replacementTool: legacyReplacementTool(name),
+          retryableWithStableTool: true
+        });
+      }
+    }
+    return handler(args);
+  });
+  if (!exposeLegacyProtocolTools) registered.disable();
+  return registered;
+}
+
 function setAgentToolsUnavailable() {
   initialAgentToolMode = "unavailable";
   initialAgentToolDefinitions = [];
@@ -1217,45 +1283,61 @@ async function resolvePreparedSemanticAction({ args, actionType, preparedPayload
   };
 }
 
-async function executeSemanticRelayRequest(buildRequest) {
+async function executeSemanticRelayRequest(buildRequest, rebuildRequest = buildRequest) {
   let request = await buildRequest();
   try {
-    return await relayRequest(request.method, request.path, request.payload, { skipProtocolRepair: true });
+    return await relayRequest(request.method, request.path, request.payload, {
+      skipProtocolRepair: true,
+      protocolMetadata: request
+    });
   } catch (error) {
     if (!new Set(["protocol_patch_required", "protocol_v05_required", "protocol_v06_required"]).has(error?.code)) throw error;
-    const refreshed = await refreshProtocolRuntime();
+    const refreshed = await refreshProtocolForMutation(request.protocolVersion || request.payload?.protocol_version || ACTIVE_PROTOCOL_VERSION);
     if (!new Set(["hot_patch_applied", "hot_rollback_applied", "up_to_date"]).has(refreshed.status)) {
       throw new Error(`Protocol mutation cannot retry: ${refreshed.status}`);
     }
-    request = await buildRequest();
-    return relayRequest(request.method, request.path, request.payload, { skipProtocolRepair: true });
+    request = await rebuildRequest();
+    return relayRequest(request.method, request.path, request.payload, {
+      skipProtocolRepair: true,
+      protocolMetadata: request
+    });
   }
 }
 
-async function activeProtocolBundle() {
-  if (protocolStartupPromise) await protocolStartupPromise;
-  if (protocolRuntimeStatus.status === "client_release_required") {
-    throw new Error("The Relay protocol requires a newer AgentRelay MCP runtime");
-  }
-  let active = protocolRuntimeStatus.active;
-  if (!active?.cache_dir) {
-    if (protocolRuntimeStatus.status === "hot_update_disabled") {
-      throw new Error("Protocol hot update is disabled and no verified active bundle is available");
-    }
-    const synced = await syncProtocolVersion({
-      version: ACTIVE_PROTOCOL_VERSION,
+async function refreshProtocolForMutation(protocolVersion) {
+  const generationError = runtimeGenerationError();
+  if (generationError) throw protocolRuntimeError(generationError.code, generationError.message, generationError);
+  try {
+    return await negotiateProtocolVersion({
+      version: protocolVersion,
       baseUrl,
       headers: relayHeaders(),
       log: null
     });
-    active = synced;
-    protocolRuntimeStatus = {
-      status: "explicit_bundle_sync",
-      active,
-      checked_at: new Date().toISOString(),
-      last_error: null
+  } catch (error) {
+    const cached = await readCachedVerifiedProtocol({ baseUrl, version: protocolVersion });
+    if (!cached) throw error;
+    return {
+      status: "offline_cached_bundle",
+      active: cached,
+      last_error: String(error?.message || error)
     };
   }
+}
+
+async function activeProtocolBundle(protocolVersion = ACTIVE_PROTOCOL_VERSION) {
+  const negotiated = await refreshProtocolForMutation(protocolVersion);
+  if (negotiated.status === "client_release_required") {
+    throw protocolRuntimeError("CLIENT_RELEASE_REQUIRED", "The Task protocol requires a newer AgentRelay MCP runtime", negotiated);
+  }
+  if (negotiated.status === "task_protocol_retired") {
+    throw protocolRuntimeError("TASK_PROTOCOL_RETIRED", "The Task protocol is no longer executable", negotiated);
+  }
+  let active = negotiated.active;
+  if (!active?.cache_dir) {
+    active = await readCachedVerifiedProtocol({ baseUrl, version: protocolVersion });
+  }
+  if (!active?.cache_dir) throw protocolRuntimeError("PROTOCOL_BUNDLE_UNAVAILABLE", `No verified bundle is available for ${protocolVersion}`, negotiated);
   const bundle = JSON.parse(await readFile(active.bundle_path || resolve(active.cache_dir, "bundle.json"), "utf8"));
   validateProtocolBundle(bundle, { expectedTarget: active, authority: active.authority, baseUrl });
   if (bundle.adapters?.engine !== "semantic_protocol_adapter_v2") {
@@ -1265,16 +1347,23 @@ async function activeProtocolBundle() {
 }
 
 async function buildActiveSemanticRequest({ operation, input, task = {}, idempotencyKey }) {
-  const bundle = await activeProtocolBundle();
+  const protocolVersion = task.protocol_version || task.protocolVersion || ACTIVE_PROTOCOL_VERSION;
+  const bundle = await activeProtocolBundle(protocolVersion);
   validateSemanticTransition(operation, task, agentId, input);
-  return buildSemanticRequest({
-    bundle,
-    operation,
-    input,
-    identity: { agent_id: agentId },
-    task,
-    runtime: { idempotency_key: idempotencyKey }
-  });
+  return {
+    ...buildSemanticRequest({
+      bundle,
+      operation,
+      input,
+      identity: { agent_id: agentId },
+      task,
+      runtime: { idempotency_key: idempotencyKey }
+    }),
+    protocolVersion,
+    bundleRevision: bundle.manifest.bundle_revision,
+    bundleDigest: bundle.manifest.bundle_digest,
+    adapterContractVersion: bundle.manifest.adapter_contract_version
+  };
 }
 
 function v04MutationContextSchema() {
@@ -1313,6 +1402,14 @@ async function relayPost(path, payload) {
 
 async function relayRequest(method, path, payload, options = {}) {
   const headers = { "Content-Type": "application/json", ...relayHeaders() };
+  const protocolMetadata = options.protocolMetadata;
+  if (protocolMetadata) {
+    headers["X-AgentRelay-Task-Protocol"] = protocolMetadata.protocolVersion;
+    headers["X-AgentRelay-Bundle-Revision"] = String(protocolMetadata.bundleRevision);
+    headers["X-AgentRelay-Bundle-Digest"] = protocolMetadata.bundleDigest;
+    headers["X-AgentRelay-Adapter-Contract"] = String(protocolMetadata.adapterContractVersion);
+    headers["X-AgentRelay-Runtime-Version"] = PROTOCOL_RUNTIME_VERSION;
+  }
 
   const response = await fetch(`${baseUrl}${path}`, {
     method,
@@ -1383,6 +1480,51 @@ function jsonResult(data) {
 
 function normalizeBaseUrl(value) {
   return value.replace(/\/+$/, "");
+}
+
+function runtimeGenerationError() {
+  const generation = runtimeGenerationState();
+  if (!generation.restartRequired) return null;
+  return {
+    code: "MCP_RESTART_REQUIRED",
+    message: "AgentRelay MCP runtime changed on disk; restart Codex before submitting mutations.",
+    loadedGeneration: loadedRuntimeGeneration,
+    installedGeneration: generation.installedGeneration,
+    action: "restart_codex"
+  };
+}
+
+function runtimeGenerationState() {
+  try {
+    return compareRuntimeGeneration(repoRoot, loadedRuntimeGeneration);
+  } catch (error) {
+    return {
+      loadedGeneration: loadedRuntimeGeneration,
+      installedGeneration: "unavailable",
+      restartRequired: true,
+      error: String(error?.message || error)
+    };
+  }
+}
+
+function protocolRuntimeError(code, message, detail) {
+  const error = new Error(message);
+  error.code = code;
+  error.detail = detail;
+  return error;
+}
+
+function legacyReplacementTool(name) {
+  if (name.includes("create_task")) return "agentrelay_create_task";
+  if (name.includes("send_message")) return "agentrelay_reply";
+  if (name.includes("complete_task")) return "agentrelay_complete_task";
+  if (name.includes("fail_task")) return "agentrelay_fail_task";
+  if (name.includes("create_followup")) return "agentrelay_create_followup";
+  return "";
+}
+
+function envFlag(name) {
+  return new Set(["1", "true", "yes", "on"]).has(String(process.env[name] || "").trim().toLowerCase());
 }
 
 function loadDotEnv(path) {

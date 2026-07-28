@@ -39,17 +39,23 @@ try {
   assert(tools.tools.some((tool) => tool.name === "agentrelay_amend_task"), "agentrelay_amend_task not found");
   assert(tools.tools.some((tool) => tool.name === "agentrelay_resync_local_task"), "agentrelay_resync_local_task not found");
   assert(tools.tools.some((tool) => tool.name === "agentrelay_prepare_local_action"), "agentrelay_prepare_local_action not found");
+  assert(tools.tools.some((tool) => tool.name === "agentrelay_reply"), "agentrelay_reply not found");
   for (const toolName of [
     "agentrelay_create_task_v04",
     "agentrelay_send_message_v04",
     "agentrelay_complete_task_v04",
     "agentrelay_fail_task_v04",
     "agentrelay_create_followup_v04",
-    "agentrelay_get_task_lineage_v04",
-    "agentrelay_protocol_sync_v04"
+    "agentrelay_create_task_v05",
+    "agentrelay_send_message_v05",
+    "agentrelay_complete_task_v05",
+    "agentrelay_fail_task_v05",
+    "agentrelay_create_followup_v05"
   ]) {
-    assert(tools.tools.some((tool) => tool.name === toolName), `${toolName} not found`);
+    assert(!tools.tools.some((tool) => tool.name === toolName), `${toolName} must be hidden by default`);
   }
+  assert(tools.tools.some((tool) => tool.name === "agentrelay_get_task_lineage_v04"), "v0.4 read tool not found");
+  assert(tools.tools.some((tool) => tool.name === "agentrelay_protocol_sync_v04"), "v0.4 sync tool not found");
   assert(!tools.tools.some((tool) => /delete.*task|task.*delete/i.test(tool.name)), "Task delete tool must not exist");
 
   await callJson("agentrelay_health", {});
@@ -229,6 +235,7 @@ try {
     await approveLocalAction({
       stateRoot: localStateRoot, taskId: "task_smoke_v05", clientActionId: "smoke_v05_reply"
     });
+    const fetchesBeforeReply = fakeRelay.protocolState.v05TaskFetches;
     const v05Reply = await callJson("agentrelay_reply", {
       taskId: "task_smoke_v05",
       parts: [{ kind: "text", text: "v0.5 stable reply" }]
@@ -236,6 +243,10 @@ try {
     assert(v05Reply.status === "sent", "stable reply did not use the prepared action path");
     assert(v05Reply.relayResponse.task.task_version === 2, "stable reply did not advance task version");
     assert(fakeRelay.protocolState.replyAttempts === 2, "stable reply did not retry exactly once after hot patch");
+    assert(
+      fakeRelay.protocolState.v05TaskFetches === fetchesBeforeReply + 2,
+      "stable reply did not re-fetch Task context before the protocol retry"
+    );
     const retired = await v05Session.client.callTool({
       name: "agentrelay_claim_task",
       arguments: { agentId: "frank-agent" }
@@ -285,7 +296,8 @@ function startFakeRelay() {
     events: [],
     protocolRevision: 1,
     replyAttempts: 0,
-    replyIdempotencyKey: ""
+    replyIdempotencyKey: "",
+    v05TaskFetches: 0
   };
 
   const server = http.createServer(async (request, response) => {
@@ -466,6 +478,7 @@ function startFakeRelay() {
         return sendJson(response, { task: state.task });
       }
       if (request.method === "GET" && path === "/agentrelay/tasks/task_smoke_v05") {
+        state.v05TaskFetches += 1;
         return sendJson(response, { task: state.task });
       }
       if (request.method === "POST" && path === "/agentrelay/tasks/task_smoke_v05/messages") {

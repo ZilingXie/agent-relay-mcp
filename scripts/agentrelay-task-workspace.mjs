@@ -478,14 +478,18 @@ export async function prepareLocalAction({
     const actionId = sanitizeActionId(clientActionId);
     const actionPath = join(workspace.paths.actionsDir, `${actionId}.json`);
     if (existsSync(actionPath)) throw new Error(`Local action already exists: ${clientActionId}`);
+    const actionPayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+    const payloadHash = hashStableJson(actionPayload);
+    const baseContextEnvelope = deriveTaskContextEnvelope(workspace.task);
     const action = {
-      version: 1,
+      version: 2,
       clientActionId: actionId,
       taskId: String(taskId),
       actionType,
-      payload: payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {},
-      payloadHash: hashStableJson(payload && typeof payload === "object" ? payload : {}),
-      baseContextEnvelope: deriveTaskContextEnvelope(workspace.task),
+      payload: actionPayload,
+      payloadHash,
+      baseContextEnvelope,
+      semanticActionHash: hashStableJson({ actionType, payloadHash, baseContextEnvelope }),
       idempotencyKey: `local-${actionType}-${sanitizeTaskId(taskId)}-${actionId}`,
       confirmationRef: "",
       authorization: null,
@@ -540,6 +544,11 @@ export async function approveLocalAction({
       actionType: action.actionType,
       payloadHash: action.payloadHash,
       contextHash: hashStableJson(action.baseContextEnvelope),
+      semanticActionHash: action.semanticActionHash || hashStableJson({
+        actionType: action.actionType,
+        payloadHash: action.payloadHash,
+        baseContextEnvelope: action.baseContextEnvelope
+      }),
       issuedAt: issuedAt.toISOString(),
       expiresAt: new Date(issuedAt.getTime() + Math.max(1, Number(ttlSeconds)) * 1000).toISOString(),
       status: "active"

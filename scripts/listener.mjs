@@ -32,12 +32,23 @@ const repoRoot = resolve(__dirname, "..");
 const envPath = resolveHome(getArg("--env") || process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 loadDotEnv(envPath);
 
+const configuredProtocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.3";
+const compatibilityProtocolVersions = String(process.env.AGENTRELAY_COMPAT_PROTOCOL_VERSIONS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const listenerProtocolLanes = [...new Set([configuredProtocolVersion, ...compatibilityProtocolVersions])];
+if (process.env.AGENTRELAY_LISTENER_LANE_CHILD !== "1" && listenerProtocolLanes.length > 1) {
+  await superviseProtocolLanes(listenerProtocolLanes);
+  process.exit(process.exitCode || 0);
+}
+
 const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || "https://server.stellarix.space/agentrelay/api");
 const wsBaseUrl = normalizeBaseUrl(process.env.AGENTRELAY_WS_URL || deriveWsUrl(baseUrl));
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
 const token = process.env.AGENTRELAY_TOKEN || "";
-const protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.3";
+const protocolVersion = configuredProtocolVersion;
 const isV05 = protocolVersion === PROTOCOL_V05;
 const isV06 = protocolVersion === PROTOCOL_V06;
 const isDurableProtocol = isV05 || isV06;
@@ -121,7 +132,11 @@ async function listenOnce() {
   if (isDurableProtocol && listenerIdentity?.qualified !== true) await qualifyDurableListener();
   await updateListenerStatus({ state: "connecting", connectionStartedAt: new Date().toISOString() });
   const wsQuery = isDurableProtocol
-    ? `?${new URLSearchParams({ listener_instance_id: listenerIdentity.instanceId, readiness_epoch: String(listenerIdentity.epoch) })}`
+    ? `?${new URLSearchParams({
+      listener_instance_id: listenerIdentity.instanceId,
+      readiness_epoch: String(listenerIdentity.epoch),
+      protocol_version: protocolVersion
+    })}`
     : "";
   const socket = await connectWebSocket(`${wsBaseUrl}/workers/${encodeURIComponent(agentId)}/events/ws${wsQuery}`, relayHeaders());
   try {
@@ -193,6 +208,7 @@ async function tryReconcilePending({ required = false } = {}) {
           agentId,
           listenerInstanceId: listenerIdentity.instanceId,
           readinessEpoch: listenerIdentity.epoch,
+          protocolVersion,
           relayGet: (path) => relayRequest("GET", path),
           persist: persistRecoveredEvent
         })
@@ -201,6 +217,7 @@ async function tryReconcilePending({ required = false } = {}) {
           agentId,
           listenerInstanceId: listenerIdentity.instanceId,
           readinessEpoch: listenerIdentity.epoch,
+          protocolVersion,
           relayGet: (path) => relayRequest("GET", path),
           persist: persistRecoveredEvent
         })
@@ -256,6 +273,60 @@ async function updateListenerStatus(patch) {
     await rename(temporaryPath, statusPath);
   } catch (error) {
     console.error(`[agentrelay-listener] status write failed: ${error.message}`);
+  }
+}
+
+async function superviseProtocolLanes(protocolVersions) {
+  const primaryProtocol = protocolVersions[0];
+  const defaultInboxDir = resolveHome(
+    process.env.AGENTRELAY_INBOX_DIR || resolve(repoRoot, ".agentrelay", "inbox")
+  );
+  const primaryStatusPath = resolveHome(
+    process.env.AGENTRELAY_LISTENER_STATUS_PATH || resolve(defaultInboxDir, "..", "listener-status.json")
+  );
+  const children = protocolVersions.map((laneProtocol) => {
+    const laneSuffix = laneProtocol.slice("agent-collab-".length).replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        AGENTRELAY_LISTENER_LANE_CHILD: "1",
+        AGENTRELAY_PROTOCOL_VERSION: laneProtocol,
+        AGENTRELAY_LISTENER_STATUS_PATH: laneProtocol === primaryProtocol
+          ? primaryStatusPath
+          : `${primaryStatusPath}.${laneSuffix}`
+      }
+    });
+    return { laneProtocol, child };
+  });
+  const stopChildren = (signal = "SIGTERM") => {
+    for (const { child } of children) {
+      if (!child.killed) child.kill(signal);
+    }
+  };
+  let stopping = false;
+  process.once("SIGINT", () => {
+    stopping = true;
+    stopChildren("SIGINT");
+  });
+  process.once("SIGTERM", () => {
+    stopping = true;
+    stopChildren("SIGTERM");
+  });
+  const exits = children.map(({ laneProtocol, child }) => new Promise((resolveExit) => {
+    child.once("exit", (code, signal) => resolveExit({ laneProtocol, code, signal }));
+  }));
+  if (process.argv.includes("--once")) {
+    const results = await Promise.all(exits);
+    process.exitCode = results.some(({ code }) => code !== 0) ? 1 : 0;
+    return;
+  }
+  const first = await Promise.race(exits);
+  stopChildren();
+  await Promise.all(exits);
+  if (!stopping && (first.code !== 0 || first.signal)) {
+    console.error(`[agentrelay-listener] ${first.laneProtocol} lane exited unexpectedly`);
+    process.exitCode = 1;
   }
 }
 
@@ -325,7 +396,8 @@ async function verifyDurableRuntime() {
 }
 
 async function registerDurableListener({ recoverIfStale = false } = {}) {
-  const registered = await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness/register`, {
+  const query = new URLSearchParams({ protocol_version: protocolVersion });
+  const registered = await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness/register?${query}`, {
     listener_instance_id: listenerInstanceId,
     client_version: clientVersion,
     workspace_version: "2",
@@ -359,7 +431,8 @@ async function qualifyDurableListener() {
 }
 
 async function publishDurableReadiness(ready) {
-  await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness`, {
+  const query = new URLSearchParams({ protocol_version: protocolVersion });
+  await relayRequest("POST", `/workers/${encodeURIComponent(agentId)}/readiness?${query}`, {
     listener_instance_id: listenerIdentity.instanceId,
     readiness_epoch: listenerIdentity.epoch,
     ready

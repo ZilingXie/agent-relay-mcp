@@ -42,6 +42,14 @@ export async function executePreparedTaskAction({
       receivedPayloadHash: payloadHash
     });
   }
+  const semanticActionHash = hashStableJson({
+    actionType: action.actionType,
+    payloadHash: action.payloadHash,
+    baseContextEnvelope: action.baseContextEnvelope
+  });
+  if (action.semanticActionHash && action.semanticActionHash !== semanticActionHash) {
+    return rejection("SEMANTIC_ACTION_CHANGED", taskId, clientActionId);
+  }
   if (action.status === "sent") {
     return {
       ok: true,

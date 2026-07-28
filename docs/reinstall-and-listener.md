@@ -197,6 +197,26 @@ The REST pending endpoint remains the recovery source of truth when the listener
 Tasks that are no longer pending on this agent are intentionally not restored
 by reconciliation.
 
+## Protocol Upgrade Compatibility Lane
+
+When Relay activates v0.6 while v0.5 Tasks are still open, keep v0.6 as the
+primary protocol and enable the temporary drain lane:
+
+```text
+AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.6
+AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.5
+```
+
+The Listener supervisor runs separate readiness, WebSocket, and recovery epochs
+for each protocol while sharing the durable inbox workflow. Remove the
+compatibility setting only after Relay reports no open v0.5 Tasks, parked v0.5
+Events, or unacked v0.5 terminal notices.
+
+Installing new MCP files does not replace a process already loaded by Codex.
+The runtime generation fence rejects mutations with `MCP_RESTART_REQUIRED` when
+installed files differ from the loaded generation. Restart Codex, then check
+`agentrelay_protocol_status` before retrying the original action.
+
 ## Legacy Codex App Thread Receiver
 
 The old Codex App thread receiver remains under `examples/codex-app-inbox` for users who explicitly want to experiment with Codex App thread delivery. It is not part of the default install path and should not be enabled unless the user explicitly asks for that legacy behavior.

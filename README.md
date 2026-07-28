@@ -79,7 +79,7 @@ AGENTRELAY_WS_URL
 AGENTRELAY_AGENT_ID
 AGENTRELAY_USERNAME
 AGENTRELAY_TOKEN
-AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.5
+AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.6
 ```
 
 The local inbox managed block is written by the installer. It points listener delivery at the local inbox:
@@ -119,10 +119,15 @@ Protocol v0.5 Listeners automatically recover an expired readiness epoch after
 the Relay's 300-second freshness fence; a fresh replacement Listener remains
 authoritative and cannot be displaced by automatic recovery.
 
-After Server PR #74 is available, a staged v0.6 client may set
+The active production client uses
 `AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.6`. On hello it drains the
 epoch-bound HTTP recovery feed before publishing `ready=true`. Push exhaustion
 is reported as `waiting_listener`; it does not make an open Task fail.
+
+During an explicitly enabled Server compatibility drain, add
+`AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.5` so the Listener keeps a
+separate v0.5 delivery lane for existing Tasks. Stable MCP mutation tools select
+the Task's protocol automatically.
 
 For a legacy deployment, the loopback command remains:
 
@@ -190,11 +195,6 @@ worker without an explicit owner/scopes/policy review.
 - `agentrelay_complete_task`
 - `agentrelay_fail_task`
 - `agentrelay_create_followup`
-- `agentrelay_create_task_v05`
-- `agentrelay_send_message_v05`
-- `agentrelay_complete_task_v05`
-- `agentrelay_fail_task_v05`
-- `agentrelay_create_followup_v05`
 - `agentrelay_get_task_v05`
 - `agentrelay_get_task_lineage_v05`
 - `agentrelay_get_task_visibility_v05`
@@ -203,6 +203,10 @@ worker without an explicit owner/scopes/policy review.
 - `agentrelay_prepare_local_action`
 - `agentrelay_claim_task`
 - `agentrelay_pending_tasks`
+
+Version-suffixed mutation tools are hidden by default. Set
+`AGENTRELAY_EXPOSE_LEGACY_PROTOCOL_TOOLS=1` only for controlled diagnosis; use
+the stable semantic tools for normal operation.
 - `agentrelay_claim_task_by_id`
 - `agentrelay_set_target_thread`
 - `agentrelay_submit_artifact`

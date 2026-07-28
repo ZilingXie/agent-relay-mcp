@@ -175,8 +175,13 @@ test("adapter v2 rejects future, expired, and target-mismatched validity windows
 });
 
 test("negotiation request advertises only compiled runtime capabilities", () => {
-  const request = buildNegotiationRequest();
-  assert.deepEqual(request.supported_protocol_versions, ["agent-collab-v0.5"]);
+  const request = buildNegotiationRequest({
+    protocolVersion: "agent-collab-v0.6",
+    taskProtocolVersion: "agent-collab-v0.5"
+  });
+  assert.deepEqual(request.supported_protocol_versions, ["agent-collab-v0.6", "agent-collab-v0.5"]);
+  assert.equal(request.preferred_protocol_version, "agent-collab-v0.6");
+  assert.equal(request.task_protocol_version, "agent-collab-v0.5");
   assert.deepEqual(request.runtime_capabilities, [
     "dynamic_protocol_bundle_v0.1",
     "semantic_protocol_adapter_v2",
