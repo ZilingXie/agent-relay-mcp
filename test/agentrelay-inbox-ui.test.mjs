@@ -18,7 +18,7 @@ import {
   scheduleInboxProcessing,
   runTaskDraftResponsesApi
 } from "../scripts/agentrelay-inbox-ui.mjs";
-import { persistTaskWorkspace, prepareLocalAction, readLocalAction, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
+import { approveLocalAction, persistTaskWorkspace, prepareLocalAction, readLocalAction, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
 test("loadInboxSnapshot returns an empty inbox when issues.json is missing", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
@@ -615,11 +615,28 @@ test("Local Inbox is the trusted issuer for one-time action approvals", async ()
     payload: {},
     clientActionId: "approve_complete"
   });
-  const server = createInboxUiServer({ stateRoot, localAgentId: "zac-agent", now: () => "2026-07-19T00:00:00.000Z" });
+  const expiredApproval = await approveLocalAction({
+    stateRoot,
+    taskId: task.task_id,
+    clientActionId: "approve_complete",
+    ttlSeconds: 1,
+    at: "2026-07-18T00:00:00.000Z"
+  });
+  const server = createInboxUiServer({
+    stateRoot,
+    localAgentId: "zac-agent",
+    now: () => "2026-07-19T00:00:00.000Z",
+    relayClient: { getTaskVisibilityBatch: async () => ({ items: [], errors: [] }) }
+  });
   await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
   try {
     const { port } = server.address();
     const path = `http://127.0.0.1:${port}/api/issues/task_approval/actions/approve_complete/approve`;
+    const detail = await (await fetch(`http://127.0.0.1:${port}/api/issues/task_approval`)).json();
+    assert.equal(detail.actions[0].authorizationActive, false);
+    assert.equal(detail.actions[0].canApprove, true);
+    const appJs = await (await fetch(`http://127.0.0.1:${port}/app.js`)).text();
+    assert.match(appJs, /shortActionId\(action\.clientActionId\)/);
     assert.equal((await fetch(path, { method: "POST" })).status, 403);
     const response = await fetch(path, {
       method: "POST",
@@ -628,6 +645,7 @@ test("Local Inbox is the trusted issuer for one-time action approvals", async ()
     assert.equal(response.status, 200);
     const approval = await response.json();
     assert.match(approval.confirmationRef, /^local-approval:approval_/);
+    assert.notEqual(approval.approvalId, expiredApproval.approvalId);
     const repeatedResponse = await fetch(path, {
       method: "POST",
       headers: { "X-AgentRelay-Local-Approval": "1" }
