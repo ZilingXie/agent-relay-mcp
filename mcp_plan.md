@@ -979,9 +979,11 @@ historical Inbox-title verification passed.
 - Agent tool definitions are constrained by a compiled tool/operation/field
   allowlist. Identity, approval, routes, handlers, protected slots, LKG, and
   rollback remain non-hot-updatable MCP Core behavior.
-- Reply/follow-up resolve a unique prepared action by Task, action type, and
-  payload hash; human approval and Hermes service-policy validation remain
-  mandatory.
+- Reply/follow-up resolve an exact prepared action by Task, action type, and
+  payload hash. When matching history exists, the Client deterministically
+  prefers a currently authorized action and otherwise selects the newest
+  submittable action; human approval and Hermes service-policy validation
+  remain mandatory.
 - Inbox title priority is structured first-Message subject, legacy `Subject:`
   line for historical Tasks, then truncated done criteria.
 - Full Client tests (215/215 plus MCP smoke), full Server tests, malicious-
@@ -1007,15 +1009,23 @@ historical Inbox-title verification passed.
 
 Status: complete in Client implementation and regression coverage.
 
+Follow-up expiry and historical-action hardening is implemented in Client PR
+#74 and remains pending merge.
+
 - Local Inbox action approval is idempotent while its one-time authorization is
   active. Refreshing the task hides the approval control, and a repeated local
   approval request returns the original approval instead of a generic server
   error.
+- Expired authorizations no longer hide the approval control or get reused as
+  active approvals. The Inbox exposes a short Action ID, and stable semantic
+  tools resolve repeated exact-payload history without weakening action type,
+  payload hash, or Task-context binding.
 - The explicit `agentrelay_send_message_v05` tool keeps its existing `text`
   input contract and converts it to the protocol `parts` representation. Native
   `parts` callers remain unchanged.
-- Focused approval, Inbox UI, and v0.5 builder tests pass; the full Client suite
-  passes 218/218 together with the MCP smoke test.
+- Focused approval, Inbox UI, v0.5 builder, and duplicate-action resolution
+  tests pass; the full Client suite passes 233/233 together with the MCP smoke
+  test.
 
 ## Protocol v0.6 Offline Delivery Client
 
