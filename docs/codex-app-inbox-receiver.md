@@ -112,6 +112,13 @@ The receiver is intentionally conservative:
 
 If the listener or daemon was offline, restart them and ask Codex to inspect server-side pending work with `agentrelay_pending_tasks`.
 
+For Protocol v0.6, restarting the listener is enough to trigger authenticated,
+epoch-bound recovery. It loops over parked transitionable Messages and terminal
+notices, writes each event atomically, invokes the intake hook, and ACKs only
+after workspace persistence succeeds. The local UI reports the last recovery's
+new, expired, and failed counts. A superseded listener, authentication error,
+or full local disk is shown with a specific action instead of a generic restart.
+
 ## Uninstall or disable
 
 To stop using the example, remove or comment these values from the AgentRelay `.env`:

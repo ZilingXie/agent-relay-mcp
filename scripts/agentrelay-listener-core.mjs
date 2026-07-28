@@ -100,15 +100,47 @@ export function listenerStatusHealth(status, { now = Date.now(), staleAfterMs = 
     : { healthy: false, reason: `activity stale by ${ageMs}ms`, ageMs };
 }
 
+export function listenerOperationalStatus(status = {}, options = {}) {
+  const state = String(status.state || "missing");
+  const health = listenerStatusHealth(status, options);
+  const lastError = String(status.lastError || "");
+  let suggestedAction = "none";
+  if (/ENOSPC|no space left|disk full/i.test(lastError)) {
+    suggestedAction = "free_local_storage";
+  } else if (state === "superseded" || /listener_recovery_not_allowed|stale_readiness_epoch/i.test(lastError)) {
+    suggestedAction = "inspect_active_listener";
+  } else if (/unauthorized|forbidden|authentication|\b401\b|\b403\b/i.test(lastError)) {
+    suggestedAction = "check_credentials";
+  } else if (!health.healthy) {
+    suggestedAction = "restart_listener";
+  }
+  return {
+    state,
+    healthy: health.healthy,
+    lastHeartbeatAt: status.lastHeartbeatAt || status.connectedAt || null,
+    relayReadiness: status.relayReadiness || "unknown",
+    pendingRemoteMessages: Number.isInteger(status.pendingRemoteMessages)
+      ? status.pendingRemoteMessages
+      : null,
+    lastRecovery: normalizeRecovery(status.lastRecovery),
+    suggestedAction,
+    lastError: lastError || null
+  };
+}
+
 export function v05ReadinessHealth(agent, listenerStatus) {
+  return durableReadinessHealth(agent, listenerStatus, "agent-collab-v0.5");
+}
+
+export function durableReadinessHealth(agent, listenerStatus, protocolVersion) {
   const failures = [];
   if (!agent) failures.push("agent missing from Relay registry");
   if (!listenerStatus) failures.push("local Listener status missing");
   if (agent && listenerStatus) {
     if (agent.agent_id !== listenerStatus.agentId) failures.push("agent id mismatch");
     if (agent.enabled !== true) failures.push("agent disabled");
-    if (!(agent.protocol_capabilities || []).includes("agent-collab-v0.5")) failures.push("v0.5 capability missing");
-    if (agent.readiness_protocol_version !== "agent-collab-v0.5") failures.push("readiness protocol mismatch");
+    if (!(agent.protocol_capabilities || []).includes(protocolVersion)) failures.push(`${protocolVersion.slice("agent-collab-".length)} capability missing`);
+    if (agent.readiness_protocol_version !== protocolVersion) failures.push("readiness protocol mismatch");
     if (agent.ready !== true) failures.push("Relay readiness is false");
     if (agent.readiness_fresh !== true) failures.push("Relay readiness is stale");
     if (String(agent.workspace_version || "") !== "2") failures.push("workspace version mismatch");
@@ -206,6 +238,44 @@ export async function reconcileAgentEventsV05({
     }
   }
   return { discovered, persisted, failures };
+}
+
+export async function reconcileAgentEventsV06(options) {
+  const recovered = {
+    total: 0,
+    newTasks: 0,
+    expiredWhileOffline: 0,
+    failedWhileOffline: 0
+  };
+  const result = await reconcileAgentEventsV05({
+    ...options,
+    persist: async (payload) => {
+      await options.persist(payload);
+      const event = payload.event || {};
+      const eventType = event.event_type || event.eventType;
+      const status = event.payload?.status;
+      recovered.total += 1;
+      if (eventType === "message.pending") recovered.newTasks += 1;
+      if (eventType === "task.status_changed" && status === "expired") recovered.expiredWhileOffline += 1;
+      if (eventType === "task.status_changed" && status === "failed") recovered.failedWhileOffline += 1;
+    }
+  });
+  return { ...result, recovered };
+}
+
+function normalizeRecovery(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    at: value.at || null,
+    total: nonNegativeInt(value.total),
+    newTasks: nonNegativeInt(value.newTasks),
+    expiredWhileOffline: nonNegativeInt(value.expiredWhileOffline),
+    failedWhileOffline: nonNegativeInt(value.failedWhileOffline)
+  };
+}
+
+function nonNegativeInt(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 export async function probeV05DeliveryEndpoints({

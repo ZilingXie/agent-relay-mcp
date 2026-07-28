@@ -252,7 +252,7 @@ export async function persistTaskWorkspace({
 }
 
 async function persistTaskWorkspaceUnlocked({ stateRoot, task, taskId, localAgentId, source, eventId, syncedAt, agentsMdPath }) {
-  const workspaceVersion = isProtocolV05(task) ? 2 : 1;
+  const workspaceVersion = isDurableProtocol(task) ? 2 : 1;
   await ensureTaskWorkspaceState({ stateRoot, workspaceVersion });
   const paths = workspaceVersion === 2
     ? taskWorkspacePathsV2(stateRoot, taskId)
@@ -958,12 +958,12 @@ async function verifyWorkspaceV2Write(paths, expected) {
   }
 }
 
-function isProtocolV05(task) {
-  return (task?.protocol_version || task?.protocolVersion) === "agent-collab-v0.5";
+function isDurableProtocol(task) {
+  return ["agent-collab-v0.5", "agent-collab-v0.6"].includes(task?.protocol_version || task?.protocolVersion);
 }
 
 function pendingAgentIdForTask(task, fallback = "") {
-  if (isProtocolV05(task)) {
+  if (isDurableProtocol(task)) {
     return task?.status === "open" ? String(task?.to_agent_id || task?.toAgentId || "") : "";
   }
   if ((task?.protocol_version || task?.protocolVersion) === "agent-collab-v0.4") {

@@ -983,6 +983,34 @@ Status: complete in Client implementation and regression coverage.
 - Focused approval, Inbox UI, and v0.5 builder tests pass; the full Client suite
   passes 218/218 together with the MCP smoke test.
 
+## Protocol v0.6 Offline Delivery Client
+
+Status: implemented and locally verified on `feat/v06-offline-delivery`; not
+merged or deployed. This Client change depends on Server PR #74 and must merge
+after it.
+
+- The protocol runtime advertises v0.6 before v0.5 and strictly validates each
+  signed bundle against its matching protocol constant and v06/v05 schemas.
+- The existing single-listener epoch fence remains. Startup and reconnect run
+  register/qualify, publish not-ready, connect WS, drain the epoch-bound HTTP
+  Event feed, persist and ACK through intake, then publish ready.
+- v0.6 recovery counts `message.pending`, offline `expired`, and offline
+  `failed` notices. Push exhaustion is a parked delivery condition and is not
+  mapped to Task failure by the client.
+- Inbox intake and task context use workspace v2 for v0.5 and v0.6. Message
+  Events sync durable context before ACK; local persistence failure alone may
+  send the guarded persistence NACK; terminal notices use informational ACK.
+- Local Inbox shows Listener state, last heartbeat, Relay readiness, known or
+  unknown remote backlog, a state-specific suggested action, and last recovery
+  counts. Visibility supports the Server's `waiting_listener` diagnosis.
+- Focused coverage includes v0.6 dynamic MCP bundle create, process-level
+  listener recovery through the real intake hook, Message-before-ACK, expired
+  notice ACK, UI create/visibility, and health-state guidance.
+
+Merge order: Server PR #74, this Client PR, then the separate Hermes change.
+Do not enable v0.6 in installed services until both Server and Client changes
+are merged and the cross-repository E2E passes.
+
 ## Immediate Next Steps
 
 1. Coordinate Relay `409 Conflict` enforcement without moving protocol authority

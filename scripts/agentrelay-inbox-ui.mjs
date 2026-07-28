@@ -9,9 +9,11 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
+import { listenerOperationalStatus } from "./agentrelay-listener-core.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
 import { resyncLocalTask, unwrapTask } from "./agentrelay-task-context-sync.mjs";
 import { buildCreatePayloadV05, PROTOCOL_V05 } from "./agentrelay-v05.mjs";
+import { buildCreatePayloadV06, PROTOCOL_V06 } from "./agentrelay-v06.mjs";
 import {
   archiveTaskWorkspace,
   approveLocalAction,
@@ -41,6 +43,8 @@ loadDotEnv(envPath);
 export async function loadInboxSnapshot({
   stateRoot = process.env.AGENTRELAY_STATE_DIR || join(PROJECT_ROOT, "state"),
   localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent",
+  listenerStatusPath = resolveLocalPath(process.env.AGENTRELAY_LISTENER_STATUS_PATH
+    || resolve(process.env.AGENTRELAY_INBOX_DIR || resolve(PROJECT_ROOT, ".agentrelay", "inbox"), "..", "listener-status.json")),
   now = () => new Date().toISOString()
 } = {}) {
   const generatedAt = now();
@@ -56,13 +60,32 @@ export async function loadInboxSnapshot({
     .map((taskId) => ({ ...(parsed.issues?.[taskId] || {}), ...(index.tasks?.[taskId] || {}), taskId }))
     .map((issue) => normalizeIssue(issue, eventsById, { localAgentId }))
     .sort((a, b) => compareIsoDesc(a.updatedAt || a.createdAt, b.updatedAt || b.createdAt));
+  const listener = await readListenerOperationalStatus(listenerStatusPath, generatedAt);
 
   return {
     version: parsed.version || 1,
     generatedAt,
     counts: countIssues(issues),
-    issues
+    issues,
+    listener
   };
+}
+
+async function readListenerOperationalStatus(statusPath, generatedAt) {
+  try {
+    const status = JSON.parse(await readFile(statusPath, "utf8"));
+    return listenerOperationalStatus(status, { now: Date.parse(generatedAt) });
+  } catch (error) {
+    return listenerOperationalStatus({
+      state: "missing",
+      lastError: error?.code === "ENOENT" ? "Listener status file is missing" : error.message
+    }, { now: Date.parse(generatedAt) });
+  }
+}
+
+function resolveLocalPath(value) {
+  const text = String(value || "");
+  return text === "~" ? homedir() : text.startsWith("~/") ? resolve(homedir(), text.slice(2)) : resolve(text);
 }
 
 async function ensureWorkspaceBackfill({ stateRoot, localAgentId, now }) {
@@ -587,7 +610,7 @@ function doneCriteriaTitle(value, maxLength = 120) {
 
 async function enrichSnapshotVisibility(snapshot, relayClient) {
   const taskIds = snapshot.issues
-    .filter((issue) => issue.protocolVersion === "agent-collab-v0.5")
+    .filter((issue) => [PROTOCOL_V05, PROTOCOL_V06].includes(issue.protocolVersion))
     .map((issue) => issue.taskId);
   if (!taskIds.length || typeof relayClient.getTaskVisibilityBatch !== "function") return snapshot;
   try {
@@ -1488,8 +1511,7 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
   const requesterAgentId = draft.from || localAgentId;
   const targetAgentId = draft.to;
   const protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || LEGACY_PROTOCOL_VERSION;
-  const payload = protocolVersion === PROTOCOL_V05
-      ? buildCreatePayloadV05({
+  const nativeCreateArgs = {
         requesterAgentId,
         targetAgentId,
         message: {
@@ -1499,7 +1521,11 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
         doneCriteria: draft.doneCriteria,
         maxTurns: draft.maxTurns,
         taskExpiresAt: draft.taskExpiresAt
-      }, `local-ui-create-${draftId}`)
+      };
+  const payload = protocolVersion === PROTOCOL_V06
+    ? buildCreatePayloadV06(nativeCreateArgs, `local-ui-create-${draftId}`)
+    : protocolVersion === PROTOCOL_V05
+      ? buildCreatePayloadV05(nativeCreateArgs, `local-ui-create-${draftId}`)
     : {
     protocol_version: LEGACY_PROTOCOL_VERSION,
     idempotency_key: `local-ui-create-${draftId}`,
@@ -1549,7 +1575,7 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
     localAgentId,
     now: () => updatedAt
   });
-  const completeTask = protocolVersion === PROTOCOL_V05
+  const completeTask = [PROTOCOL_V05, PROTOCOL_V06].includes(protocolVersion)
     ? unwrapTask(response)
     : {
         ...task,
@@ -2084,6 +2110,7 @@ const INDEX_HTML = String.raw`<!doctype html>
           <p id="freshness">Loading local inbox...</p>
         </div>
       </div>
+      <section id="listener-health" class="listener-health" aria-live="polite"></section>
       <div class="list-tools">
         <input id="search" type="search" placeholder="Search tasks or agents" autocomplete="off" />
         <button id="show-completed" class="toggle-button" type="button" aria-pressed="false">Show Completed</button>
@@ -2311,6 +2338,35 @@ p {
   margin-top: 4px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.listener-health {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  min-height: 74px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.listener-health strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.listener-health .listener-recovery {
+  grid-column: 1 / -1;
+}
+
+.listener-health[data-healthy="false"] {
+  border-left: 3px solid var(--danger);
+  padding-left: 13px;
 }
 
 .list-tools {
@@ -3267,6 +3323,7 @@ let collapsedFolders = loadCollapsedFolders();
 
 const el = {
   freshness: document.querySelector("#freshness"),
+  listenerHealth: document.querySelector("#listener-health"),
   metrics: document.querySelector("#metrics"),
   fileAccessRoots: document.querySelector("#file-access-roots"),
   fileAccessForm: document.querySelector("#file-access-form"),
@@ -3371,6 +3428,7 @@ async function refresh({ passive = false } = {}) {
     const response = await fetch("/api/issues", { cache: "no-store" });
     snapshot = await response.json();
     await loadAgents();
+    renderListenerHealth();
     renderMetrics();
     renderList();
     if (el.freshness) el.freshness.textContent = "Updated " + formatTime(snapshot.generatedAt);
@@ -3381,6 +3439,32 @@ async function refresh({ passive = false } = {}) {
   } finally {
     refreshInFlight = false;
   }
+}
+
+function renderListenerHealth() {
+  if (!el.listenerHealth) return;
+  const listener = snapshot?.listener || {};
+  const pending = Number.isInteger(listener.pendingRemoteMessages) ? String(listener.pendingRemoteMessages) : "Unknown";
+  const recovery = listener.lastRecovery;
+  const actionLabels = {
+    none: "None",
+    restart_listener: "Restart listener",
+    inspect_active_listener: "Inspect active listener",
+    free_local_storage: "Free local storage",
+    check_credentials: "Check credentials"
+  };
+  el.listenerHealth.dataset.healthy = String(listener.healthy === true);
+  el.listenerHealth.innerHTML =
+    '<div><span>Listener</span><strong>' + escapeHtml(listener.state || "missing") + '</strong></div>' +
+    '<div><span>Last heartbeat</span><strong>' + escapeHtml(formatTime(listener.lastHeartbeatAt)) + '</strong></div>' +
+    '<div><span>Relay readiness</span><strong>' + escapeHtml(listener.relayReadiness || "unknown") + '</strong></div>' +
+    '<div><span>Remote messages</span><strong>' + escapeHtml(pending) + '</strong></div>' +
+    '<div><span>Suggested action</span><strong>' + escapeHtml(actionLabels[listener.suggestedAction] || listener.suggestedAction || "None") + '</strong></div>' +
+    '<div class="listener-recovery"><span>Last recovery</span><strong>' +
+      escapeHtml(recovery
+        ? "New " + recovery.newTasks + " · Expired " + recovery.expiredWhileOffline + " · Failed " + recovery.failedWhileOffline
+        : "None") +
+    '</strong></div>';
 }
 
 function shouldRefreshSelectedDetail() {
@@ -3672,7 +3756,7 @@ function issueRow(issue) {
   const current = issue.taskId === selectedTaskId ? ' aria-current="true"' : "";
   return '<article class="' + classes + '" role="button" tabindex="0" data-task-id="' + escapeAttr(issue.taskId) + '"' + current + '>' +
     '<div class="row-main"><span class="subject">' + escapeHtml(issue.subject || "(untitled)") + '</span><div class="row-actions"><span class="time">' + formatTime(issue.updatedAt) + '</span><button class="delete-issue" type="button" data-task-id="' + escapeAttr(issue.taskId) + '" title="Archive thread" aria-label="Archive thread">' + trashIcon() + '</button></div></div>' +
-    (issue.protocolVersion === "agent-collab-v0.5" ? '<div class="row-state-tags">' + taskStateChip(issue) + deliveryStateChip(issue) + '</div>' : "") +
+    (["agent-collab-v0.5", "agent-collab-v0.6"].includes(issue.protocolVersion) ? '<div class="row-state-tags">' + taskStateChip(issue) + deliveryStateChip(issue) + '</div>' : "") +
   '</article>';
 }
 
@@ -4120,7 +4204,7 @@ function renderEvent(event) {
 }
 
 function tags(issue) {
-  return issue.protocolVersion === "agent-collab-v0.5"
+  return ["agent-collab-v0.5", "agent-collab-v0.6"].includes(issue.protocolVersion)
     ? [statusChip(issue), taskStateChip(issue), deliveryStateChip(issue)]
     : [statusChip(issue)];
 }

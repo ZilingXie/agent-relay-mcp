@@ -102,7 +102,7 @@ export function unwrapTask(response) {
   const envelope = response?.data || response;
   const task = envelope?.task || envelope || null;
   if (!task || typeof task !== "object") return task;
-  if ((task.protocol_version || task.protocolVersion) === "agent-collab-v0.5") {
+  if (["agent-collab-v0.5", "agent-collab-v0.6"].includes(task.protocol_version || task.protocolVersion)) {
     return {
       ...task,
       messages: Array.isArray(envelope.messages) ? envelope.messages : (task.messages || []),

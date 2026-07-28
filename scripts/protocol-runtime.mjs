@@ -10,7 +10,7 @@ export const PROTOCOL_RUNTIME_CAPABILITIES = [
   "local_authorization_v1",
   "dynamic_agent_tool_schema_v1"
 ];
-export const SUPPORTED_PROTOCOL_VERSIONS = ["agent-collab-v0.5"];
+export const SUPPORTED_PROTOCOL_VERSIONS = ["agent-collab-v0.6", "agent-collab-v0.5"];
 export const ADAPTER_ENGINE = "semantic_protocol_adapter_v2";
 export const ADAPTER_CONTRACT_VERSION = 2;
 export const SUPPORTED_ADAPTER_CONTRACT_VERSIONS = [1, 2];
@@ -195,11 +195,17 @@ export async function readActiveProtocol({ cacheRoot, authority }) {
   }
 }
 
-export function buildNegotiationRequest({ active = null, lastKnownGood = null } = {}) {
+export function buildNegotiationRequest({
+  active = null,
+  lastKnownGood = null,
+  protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.5"
+} = {}) {
   return compact({
     runtime_version: PROTOCOL_RUNTIME_VERSION,
     runtime_capabilities: PROTOCOL_RUNTIME_CAPABILITIES,
-    supported_protocol_versions: SUPPORTED_PROTOCOL_VERSIONS,
+    supported_protocol_versions: protocolVersion === "agent-collab-v0.6"
+      ? SUPPORTED_PROTOCOL_VERSIONS
+      : ["agent-collab-v0.5"],
     active: active ? protocolPointer(active) : undefined,
     last_known_good: lastKnownGood ? protocolPointer(lastKnownGood) : undefined
   });
@@ -281,7 +287,7 @@ export function validateProtocolBundle(bundle, { expectedTarget, authority, base
         && expectedTarget.adapter_contract_version !== manifest.adapter_contract_version)) {
       throw new Error(`Unsupported adapter contract version: ${manifest.adapter_contract_version}`);
     }
-    validateAdapterDefinition(bundle.adapters);
+    validateAdapterDefinition(bundle.adapters, manifest.version);
     if (manifest.adapter_contract_version === ADAPTER_CONTRACT_VERSION) {
       validateAgentToolDefinition(bundle.agent_tools);
     } else if (bundle.agent_tools !== undefined) {
@@ -323,7 +329,7 @@ export function verifyProtocolManifestSignature(manifest) {
   return signature;
 }
 
-export function validateAdapterDefinition(adapters) {
+export function validateAdapterDefinition(adapters, protocolVersion = "agent-collab-v0.5") {
   if (!adapters || adapters.engine !== ADAPTER_ENGINE) {
     throw new Error(`Protocol bundle requires the ${ADAPTER_ENGINE} engine`);
   }
@@ -343,7 +349,7 @@ export function validateAdapterDefinition(adapters) {
   if (!operations || typeof operations !== "object" || Array.isArray(operations)) {
     throw new Error("Protocol adapters.operations must be an object");
   }
-  const contracts = operationContractsFor(adapters.contract_version);
+  const contracts = operationContractsFor(adapters.contract_version, protocolVersion);
   const expectedOperations = Object.keys(contracts);
   if (Object.keys(operations).length !== expectedOperations.length
     || expectedOperations.some((operation) => !Object.hasOwn(operations, operation))) {
@@ -396,7 +402,7 @@ export function agentToolDefinitions(bundle) {
 }
 
 export function buildSemanticRequest({ bundle, operation, input = {}, identity = {}, task = {}, runtime = {} }) {
-  validateAdapterDefinition(bundle?.adapters);
+  validateAdapterDefinition(bundle?.adapters, bundle?.manifest?.version);
   const definition = bundle.adapters.operations[operation];
   if (!definition) throw new Error(`Protocol bundle does not define operation ${operation}`);
   validateSemanticInput(operation, input, identity, task, runtime, bundle.adapters.contract_version);
@@ -706,8 +712,18 @@ function validateSemanticInput(operation, input, identity, task, runtime, contra
   }
 }
 
-function operationContractsFor(contractVersion) {
-  return contractVersion === 1 ? LEGACY_OPERATION_CONTRACTS : OPERATION_CONTRACTS;
+function operationContractsFor(contractVersion, protocolVersion) {
+  const base = contractVersion === 1 ? LEGACY_OPERATION_CONTRACTS : OPERATION_CONTRACTS;
+  if (protocolVersion === "agent-collab-v0.5") return base;
+  if (protocolVersion !== "agent-collab-v0.6") throw new Error(`Unsupported semantic protocol version: ${protocolVersion}`);
+  return Object.fromEntries(Object.entries(base).map(([operation, contract]) => [operation, {
+    ...contract,
+    requestSchema: contract.requestSchema.replace("-v05.", "-v06."),
+    slots: Object.fromEntries(Object.entries(contract.slots).map(([slot, rule]) => [
+      slot,
+      slot === "protocol_version" ? { ...rule, value: protocolVersion } : rule
+    ]))
+  }]));
 }
 
 function validateStructuredMessage(message, field) {

@@ -184,7 +184,7 @@ export async function executePreparedTaskAction({
         patch: {
           status: "stale",
           staleAt: now(),
-          changedFields: (action.baseContextEnvelope?.protocolVersion === "agent-collab-v0.5")
+          changedFields: (["agent-collab-v0.5", "agent-collab-v0.6"].includes(action.baseContextEnvelope?.protocolVersion))
             ? ["currentMessageId", "turnSequence", "taskVersion"]
             : ["currentMessageId", "turnSequence", "statusVersion"],
           relayConflictCode: error.code

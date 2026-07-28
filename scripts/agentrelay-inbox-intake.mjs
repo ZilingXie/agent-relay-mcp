@@ -13,6 +13,7 @@ import {
   messageAckPayloadV05,
   PROTOCOL_V05
 } from "./agentrelay-v05.mjs";
+import { PROTOCOL_V06 } from "./agentrelay-v06.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -47,9 +48,10 @@ export async function processInboxEvent({
   const taskId = task.task_id || event.taskId || event.task_id;
   if (!taskId) throw new Error(`Inbox event is missing task id: ${eventPath}`);
   const eventId = event.eventId || event.event_id || `${taskId}:${task.updated_at || payload.receivedAt || event.type || "event"}`;
-  const isV05 = (event.protocolVersion || event.protocol_version || task.protocol_version) === PROTOCOL_V05;
-  const transitionableV05 = isV05 && Boolean(event.canTransitionMessage ?? event.can_transition_message);
-  const workspaceVersion = isV05 ? 2 : 1;
+  const eventProtocolVersion = event.protocolVersion || event.protocol_version || task.protocol_version;
+  const isDurableProtocol = eventProtocolVersion === PROTOCOL_V05 || eventProtocolVersion === PROTOCOL_V06;
+  const transitionableDurable = isDurableProtocol && Boolean(event.canTransitionMessage ?? event.can_transition_message);
+  const workspaceVersion = isDurableProtocol ? 2 : 1;
   const relaySnapshotKey = buildRelaySnapshotKey(taskId, task);
   const stateDir = stateRoot || process.env.AGENTRELAY_STATE_DIR || join(projectPath, "state");
 
@@ -92,7 +94,7 @@ export async function processInboxEvent({
   const messageAck = messageAckMetadataV04(event, agentId);
   let ackResult;
   let contextSync;
-  if (transitionableV05) {
+  if (transitionableDurable) {
     contextSync = await syncInboxTaskContext();
     let v05MessageAck = null;
     if (contextSync.task) {
@@ -152,7 +154,7 @@ export async function processInboxEvent({
     const acknowledgedTask = unwrapTask(ackResult.response);
     if (acknowledgedTask) contextSync = await syncInboxTaskContext(acknowledgedTask);
   } else {
-    const informationalAck = isV05
+    const informationalAck = isDurableProtocol
       ? informationalAckPayloadV05({ event, listenerInstanceId, readinessEpoch })
       : null;
     ackResult = await ackDurableEvent({

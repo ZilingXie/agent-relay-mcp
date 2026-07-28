@@ -9,7 +9,7 @@ import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
 import { negotiateCurrentProtocol, syncCurrentProtocol } from "./protocol-sync.mjs";
-import { listenerStatusHealth, readJsonFrame, v05ReadinessHealth } from "./agentrelay-listener-core.mjs";
+import { durableReadinessHealth, listenerStatusHealth, readJsonFrame } from "./agentrelay-listener-core.mjs";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -98,10 +98,10 @@ try {
   check("AgentRelay authenticated agents", false, `${error.message} at ${baseUrl}/agents`);
 }
 
-if (currentProtocolVersion === "agent-collab-v0.5") {
-  const readiness = v05ReadinessHealth(registeredAgent, localListenerStatus);
+if (["agent-collab-v0.5", "agent-collab-v0.6"].includes(currentProtocolVersion)) {
+  const readiness = durableReadinessHealth(registeredAgent, localListenerStatus, currentProtocolVersion);
   check(
-    "AgentRelay v0.5 Listener readiness",
+    `AgentRelay ${currentProtocolVersion.slice("agent-collab-".length)} Listener readiness`,
     readiness.healthy,
     readiness.healthy ? "local Listener identity matches fresh Relay readiness" : readiness.reason
   );
