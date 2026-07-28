@@ -985,10 +985,12 @@ Status: complete in Client implementation and regression coverage.
 
 ## Protocol v0.6 Offline Delivery Client
 
-Status: merged in Client PR #67 as `f4cff07` and compatibility-deployed to
-Zac's production Listener and Local Inbox UI. Zac remains on Protocol v0.5 and
-passes `doctor`; v0.6 activation is pending the Server data-continuity gate and
-v0.6 support from every production target Listener, including Hermes and Vivi.
+Status: active in production as of 2026-07-28. Client PR #67 delivered the base
+v0.6 recovery flow, and Client PR #69 fixed protocol stamping for recovered
+Events whose recovery API envelope omits the top-level protocol version. Zac
+and Vivi run merge commit `273f3ea`; Project Hermes also publishes fresh v0.6
+readiness. Zac's full `doctor` passes, while Vivi's isolated runtime passes the
+applicable Listener freshness, Relay readiness, bundle, and protocol checks.
 
 - The protocol runtime advertises v0.6 before v0.5 and strictly validates each
   signed bundle against its matching protocol constant and v06/v05 schemas.
@@ -1008,10 +1010,19 @@ v0.6 support from every production target Listener, including Hermes and Vivi.
   listener recovery through the real intake hook, Message-before-ACK, expired
   notice ACK, UI create/visibility, and health-state guidance.
 
-Merge and compatibility deployment completed in order: Server PR #74, Client
-PR #67, then Hermes PR #7. Do not enable v0.6 in installed services until the
-Server data-continuity plan and all target Listener upgrades are complete; the
-live offline-create/recovery E2E remains the activation gate.
+Base implementation merged in order as Server PR #74, Client PR #67, then
+Hermes PR #7. The production activation used Server PR #76 and Hermes PR #8,
+followed by Server PRs #77/#78 and Client PR #69 for issues found at the live
+cutover boundary. Client PR #69 passed the two focused recovery tests, the full
+228/228 suite, and MCP smoke.
+
+Production Task `task_cb366d360b2d4174a6cddc21de31a0c3` proved the complete
+offline path: Zac created while Vivi was unavailable; the Server retained an
+open Task, pending Message, and parked Event with `waiting_listener`; Vivi's
+upgraded Listener recovered, persisted, and ACKed it; Vivi replied; Zac's
+Listener ACKed the reply; and Zac completed the Task at version 5. The first
+probe expired normally under its TTL during cutover debugging and was never
+misclassified as failed.
 
 ## Immediate Next Steps
 
