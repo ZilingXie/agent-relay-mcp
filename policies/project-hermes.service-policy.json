@@ -13,11 +13,15 @@
       "operation": "fail_task",
       "allowed_reasons": ["agent_reported_failure"],
       "side_effects": "none"
+    },
+    {
+      "id": "complete-requester-owned-task",
+      "operation": "complete_task",
+      "side_effects": "none"
     }
   ],
   "denied_operations": [
     "create_task",
-    "complete_task",
     "create_followup",
     "amend_task",
     "change_participants"

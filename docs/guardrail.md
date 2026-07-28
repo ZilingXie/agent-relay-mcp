@@ -53,13 +53,16 @@ require a separate OS identity or an external approval service.
 
 - reply to the current delivered Message when Hermes is the current target and
   action owner of an open Protocol v0.5 Task, with at most 20,000 UTF-8 bytes;
-- report `agent_reported_failure` under the same ownership and delivery checks.
+- report `agent_reported_failure` under the same ownership and delivery checks;
+- complete an open Protocol v0.5 or v0.6 Task only when Hermes is both requester
+  and completion owner and the delivered current Message came from the target.
 
-It cannot create or complete Tasks, create follow-ups, amend goals, change
-participants, authorize local side effects, or use requester authority. A policy
-grant is valid for 60 seconds and is bound to agent id, rule, operation, payload
-hash, and Task context hash. MCP regenerates the first grant from the configured
-policy instead of trusting a grant embedded in a prepared action.
+It cannot create Tasks, create follow-ups, amend goals, change participants,
+complete another requester's Task, authorize local side effects, or use human
+authority. A policy grant is valid for 60 seconds and is bound to agent id,
+rule, operation, payload hash, and Task context hash. MCP regenerates the first
+grant from the configured policy instead of trusting a grant embedded in a
+prepared action.
 
 ## Enforcement sequence
 
@@ -70,6 +73,7 @@ policy instead of trusting a grant embedded in a prepared action.
    the authoritative state machine again.
 5. Only then does Relay persist the mutation and notify the peer.
 
-Production release verification covers Zac and Hermes only: allowed reply and
-failure, denied requester-owned mutations, hot patch, malicious-bundle rejection,
-last-known-good recovery, authorized rollback, and both emergency-disable paths.
+Production release verification covers Zac and Hermes only: allowed reply,
+failure, and requester-owned completion; denied cross-owner mutations; hot
+patch; malicious-bundle rejection; last-known-good recovery; authorized
+rollback; and both emergency-disable paths.
