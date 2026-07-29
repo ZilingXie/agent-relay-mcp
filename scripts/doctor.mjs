@@ -70,10 +70,15 @@ try {
   check("AgentRelay HTTP health", false, `${error.message} at ${baseUrl}`);
 }
 
+const configuredProtocolMatchesRelay = Boolean(
+  configuredProtocolVersion && currentProtocolVersion && configuredProtocolVersion === currentProtocolVersion
+);
 check(
   "Configured primary protocol matches Relay",
-  Boolean(configuredProtocolVersion && currentProtocolVersion && configuredProtocolVersion === currentProtocolVersion),
-  `configured ${configuredProtocolVersion || "missing"}; Relay ${currentProtocolVersion || "unknown"}. Re-run the local installer to migrate managed protocol settings.`
+  configuredProtocolMatchesRelay,
+  configuredProtocolMatchesRelay
+    ? `configured ${configuredProtocolVersion}; Relay ${currentProtocolVersion}`
+    : `configured ${configuredProtocolVersion || "missing"}; Relay ${currentProtocolVersion || "unknown"}. Re-run the local installer to migrate managed protocol settings.`
 );
 
 try {
