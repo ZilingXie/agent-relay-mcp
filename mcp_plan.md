@@ -2,13 +2,11 @@
 
 Last updated: 2026-07-29
 
-Latest update: Client PR
-[#77](https://github.com/ZilingXie/agent-relay-mcp/pull/77) adds standard MCP
-form elicitation for exact prepared mutations. Compatible MCP clients now keep
-approval and submission in the active agent session, while the Local Inbox
-remains a compatibility fallback and displays full action ids. The existing
-payload/context binding, one-time authorization, service policy, and ambiguous
-submission guards remain unchanged.
+Latest update: the conversational approval compatibility correction makes the
+explicit approval in a later chat message the default and only user interaction.
+The exact prepared action still receives a payload/context-bound one-time
+authorization, while form elicitation remains an explicit operator mode for
+clients that reliably implement it.
 
 ## Audience And Sources
 
@@ -344,9 +342,9 @@ planning focus is cloud Relay guardrails for mutation authority.
 Conversational approval correction: the initial copied-prompt turn is
 explanation-and-draft only and must stop without preparing or calling a Relay
 mutation. Discussion may continue without side effects. Only explicit approval
-of the exact draft in a later user message unlocks preparation, and MCP
-Elicitation requires both `accept` and `confirm=true`; an empty accepted form is
-rejected without sending.
+of the exact draft in a later user message unlocks preparation. Default
+`conversation` mode then submits without a second approval UI; optional
+`elicitation` mode requires both `accept` and `confirm=true`.
 
 1. Default receive mode.
    - Keep `personal_agent` installs in `notify_only` mode.
@@ -383,8 +381,8 @@ rejected without sending.
      proposed action or reply, and stops. It may continue discussing or revising
      the draft, but calls the prepare and matching mutation tools only after the
      user explicitly approves that exact draft in a later message.
-   - MCP Elicitation requires both `accept` and `confirm=true`; empty acceptance,
-     opening, or handing off a task is not approval.
+   - Default conversation approval requires no second UI after that later user
+     message. Merely opening or handing off a task is not approval.
    - The optional local processor/executor path enforces the same boundary:
      without a durable local human-reply id it neither creates a mutation outbox
      item nor executes submit, revision, amendment, or close actions.
@@ -413,7 +411,8 @@ rejected without sending.
   - incoming tasks pending on the local agent appear as needing attention;
   - prompt text contains task id and `AGENTS.md` handoff instructions but not
     remote task subject/body or duplicated MCP tool instructions;
-  - prompt/template require MCP client confirmation before Relay mutations;
+  - prompt/template require explicit later-message confirmation before Relay
+    mutations;
   - live task-detail sync handles the current Relay response envelope.
 
 ### Phase 4 Maintenance
@@ -894,14 +893,16 @@ Guardrail.
      unauthorized downgrade, and same-revision digest replacement.
    - Preserve staging, atomic activation, last-known-good, authorized rollback,
      and local/Server emergency-disable switches.
-2. Trusted local human approval.
+2. Local human approval modes.
    - Ignore confirmation refs supplied while preparing an action.
-   - Let only an MCP client's form-elicitation response or the Local Inbox
-     fallback issue the approval record, bound to exact action, payload hash,
-     Task context hash, expiry, and confirmation ref.
-   - Resync context and require the embedded authorization to match the
-     independent approval record before mutation; consume it after success and
-     reuse it only for an ambiguous same-idempotency retry.
+   - In default conversation mode, trust the two-turn handoff contract and issue
+     the approval record only for the exact action prepared after the later user
+     approval. Optional form elicitation and the Local Inbox provide an
+     independent signal.
+   - Bind every approval record to exact action, payload hash, Task context
+     hash, expiry, and confirmation ref. Resync context and require the embedded
+     authorization to match before mutation; consume it after success and reuse
+     it only for an ambiguous same-idempotency retry.
    - Keep direct v0.5 create disabled by default; reviewed-draft Send is the
      normal create authority.
 3. Hermes service policy.
@@ -945,9 +946,10 @@ Requester-completion implementation and release record:
      use Ed25519 signatures, but the public key is first learned through Relay
      TLS; external KMS/key pinning remains deferred and total Relay-host plus
      signing-key compromise is outside this boundary.
-   - Local approval protects against remote content and normal MCP calls, not a
-     malicious process with write access as the same OS user. Stronger isolation
-     requires a separate OS identity or external approval service.
+   - Conversation mode protects action and context integrity but does not
+     independently prove that the Agent observed the later user message. Form
+     elicitation or Local Inbox approval adds that signal. None protects against
+     a malicious process with same-user filesystem access.
 5. Release gate.
    - **Complete.** Client full tests passed 204/204 plus MCP smoke; Server full
      tests passed; the real cross-repo HTTP E2E applied `hot_patch`, activated
@@ -1023,11 +1025,11 @@ Status: complete in Client implementation and regression coverage.
 Follow-up expiry and historical-action hardening is implemented by Client PR
 #74.
 
-- MCP form elicitation is the primary personal-agent approval path. It presents
-  the full action in the current client, issues the same one-time authorization
-  on accept, and submits without requiring a Local Inbox round trip. Decline or
-  cancel sends nothing; unsupported clients receive a full action id and Local
-  Inbox fallback URL.
+- Conversation approval is the primary personal-agent path. The initial turn is
+  draft-only; a later explicit user approval permits preparation, and the Core
+  issues a one-time authorization without a second user interaction. Form
+  elicitation remains an explicit operator mode; decline or cancel sends
+  nothing, and the Local Inbox remains a trusted fallback.
 - Local Inbox fallback approval is idempotent while its one-time authorization is
   active. Refreshing the task hides the approval control, and a repeated local
   approval request returns the original approval instead of a generic server

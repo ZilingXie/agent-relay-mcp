@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { authorizePreparedTaskActionWithElicitation, executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
-import { approveLocalAction, persistTaskWorkspace, prepareLocalAction, readLocalAction, readLocalApproval, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
+import { authorizePreparedTaskActionFromConversation, authorizePreparedTaskActionWithElicitation, executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
+import { approveLocalAction, hashStableJson, persistTaskWorkspace, prepareLocalAction, readLocalAction, readLocalApproval, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
 function task(overrides = {}) {
   return {
@@ -114,6 +114,44 @@ test("MCP elicitation authorizes the exact prepared action without a Local Inbox
   });
   assert.equal(stored.action.authorization.type, "human_approval");
   assert.equal(stored.action.authorization.approvedBy, "mcp_elicitation:codex");
+});
+
+test("conversation mode authorizes the exact action prepared after a later chat approval", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-conversation-"));
+  const payload = { text: "Send the approved chat draft" };
+  await persistTaskWorkspace({ stateRoot, task: task(), localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    actionType: "request_revision",
+    payload,
+    clientActionId: "action_conversation_approved"
+  });
+
+  const result = await authorizePreparedTaskActionFromConversation({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "action_conversation_approved",
+    clientName: "codex"
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "approved");
+  assert.match(result.confirmationRef, /^local-approval:approval_/);
+  const stored = await readLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "action_conversation_approved"
+  });
+  assert.equal(stored.action.authorization.type, "human_approval");
+  assert.equal(stored.action.authorization.approvedBy, "mcp_conversation:codex");
+  const approval = await readLocalApproval({
+    stateRoot,
+    taskId: "task_guard",
+    approvalId: stored.action.authorization.approvalId
+  });
+  assert.equal(approval.approval.payloadHash, stored.action.payloadHash);
+  assert.equal(approval.approval.contextHash, hashStableJson(stored.action.baseContextEnvelope));
 });
 
 test("MCP elicitation decline and unsupported clients do not authorize prepared actions", async () => {

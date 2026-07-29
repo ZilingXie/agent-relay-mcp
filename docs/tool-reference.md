@@ -77,12 +77,14 @@ notification. For v0.5 the Agent-facing shapes are:
 
 The first-Message subject is UI metadata, not Task state. Replies cannot carry
 subject. The MCP resolves the matching prepared local action for reply and
-follow-up, so `clientActionId` and confirmation data stay internal. A compatible
-MCP client confirms the exact action in the current agent session; the Local
-Inbox remains a fallback. The initial handoff turn is explanation-and-draft
-only. After the user approves that exact draft in a later message, Elicitation
-must return both `accept` and `confirm=true`; empty acceptance sends nothing.
-Neither path bypasses Core authorization or service policy.
+follow-up, so `clientActionId` and confirmation data stay internal. The initial
+handoff turn is explanation-and-draft only. In the default `conversation` mode,
+after the user approves that exact draft in a later message, the Agent prepares
+it and the Core issues the payload-bound approval record without a second user
+interaction. `AGENTRELAY_HUMAN_APPROVAL_MODE=elicitation` adds an independent
+MCP form that must return both `accept` and `confirm=true`; the Local Inbox
+remains a fallback. No mode bypasses payload/context binding, transition
+validation, or service policy.
 
 `message.metadata` is a bounded, non-authoritative first-Message container. The
 local runtime fixes its only destination, size/depth limits, safe JSON types,
@@ -96,9 +98,11 @@ arbitrary tools, execute scripts, read files, choose arbitrary endpoints, replac
 identity, bypass confirmation, or control local side effects.
 
 All Task mutations except Local Inbox reviewed-draft create require a prepared
-action plus either a matching one-time approval record from MCP elicitation or
-the Local Inbox, or a Core-validated service-policy grant. A confirmation string
-supplied by an Agent does not authorize a mutation. Direct v0.5 create is disabled unless the operator
+action plus a matching one-time approval record issued by the configured human
+approval mode, or a Core-validated service-policy grant. In `conversation` mode,
+the Core trusts the two-turn handoff rule and records the MCP client as the
+approval source; a caller-supplied confirmation string still cannot authorize a
+mutation. Direct v0.5 create is disabled unless the operator
 explicitly sets `AGENTRELAY_ALLOW_DIRECT_CREATE=1` for a controlled environment.
 See [`guardrail.md`](guardrail.md) for the complete boundary.
 

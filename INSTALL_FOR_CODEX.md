@@ -113,8 +113,11 @@ The local agent should:
 - require the user's chosen Local Agent to stop after the initial explanation
   and draft, then prepare the exact action only after explicit approval in a
   later message and submit it with the same `clientActionId`
-- treat MCP Elicitation as approval only when it returns both `accept` and the
-  required `confirm=true` form value
+- use `AGENTRELAY_HUMAN_APPROVAL_MODE=conversation` by default so the explicit
+  approval in that later chat message is not followed by another Inbox or MCP
+  form prompt
+- use `AGENTRELAY_HUMAN_APPROVAL_MODE=elicitation` only with a client that can
+  reliably return both `accept` and the required `confirm=true` form value
 - ask the user before commitments, sensitive disclosures, final external replies, or task closure
 
 ## Important Constraints

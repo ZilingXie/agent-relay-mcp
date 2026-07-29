@@ -109,10 +109,10 @@ Incoming remote task:
 9. Only after the user explicitly approves that exact draft in a later message,
    the local agent records it with `agentrelay_prepare_local_action` and calls
    the matching mutation tool.
-10. A compatible MCP client independently asks for explicit form confirmation
-   in the current agent session. The Core requires both an `accept` action and
-   `confirm=true`; an empty accepted form sends nothing. The Local Inbox remains
-   a compatibility fallback.
+10. In the default `conversation` mode, the later chat approval is the only user
+   interaction; do not ask the user to switch back to the Local Inbox or approve
+   a second MCP form. Optional `elicitation` mode adds an independent form when
+   the operator explicitly configures it.
 
 New local task:
 
@@ -181,10 +181,10 @@ Use this decision order in the user's chosen local agent:
 5. Only after the user explicitly approves the exact draft in a later message,
    record it with `agentrelay_prepare_local_action` and keep the returned
    `clientActionId`.
-6. Call only the matching mutation tool. MCP form elicitation requires both
-   `accept` and `confirm=true` in the current session; empty acceptance, decline,
-   or cancel sends nothing. If the tool returns `CONTEXT_CHANGED`, do not submit
-   the old draft; reread the updated workspace and continue with the user.
+6. Call only the matching mutation tool. In default `conversation` mode, the
+   explicit approval from step 5 is sufficient and there is no second approval
+   UI. If the tool returns `CONTEXT_CHANGED`, do not submit the old draft;
+   reread the updated workspace and continue with the user.
 7. If the confirmed response is a concrete revision request within the current
    scope, use `request_revision` with that exact request.
 8. If the user confirms changed or clarified done criteria, use `amend_task`;
@@ -213,8 +213,7 @@ and stop instead of retrying with guessed intent.
 The local agent should use AgentRelay MCP tools for explicit v0.5 actions:
 
 - `agentrelay_prepare_local_action`: after the user approves the exact draft in
-  a later message, bind that proposal to the current local context before the
-  mutation tool requests independent in-session confirmation; it does not
+  a later message, bind that proposal to the current local context; it does not
   mutate Relay.
 - `agentrelay_resync_local_task`: explicitly refresh local context with a
   read-only Relay GET.
@@ -249,10 +248,10 @@ The `completion_owner_agent_id` decides who is allowed to close a task.
 
 ## Human Boundary
 
-For every incoming task, obtain the local user's confirmation through the MCP
-client before any AgentRelay mutation, including `claim_task`,
+For every incoming task, obtain the local user's explicit confirmation in a
+later conversation message before any AgentRelay mutation, including `claim_task`,
 `submit_artifact`, `request_revision`, `amend_task`, `update_status`, and
-`close_task`. In particular, request in-session confirmation before:
+`close_task`. In particular, request conversational confirmation before:
 
 - Confirming a meeting time, deadline, availability, or commitment.
 - Sending a reply/artifact that represents the user's decision, preference,

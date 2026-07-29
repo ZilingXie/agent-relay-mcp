@@ -170,8 +170,11 @@ The local agent should:
 - prepare safe prompts the user can copy into Codex App, Codex CLI, Slack, WeChat, or another local agent workflow
 - use the initial handoff turn only to explain the task and show the exact draft,
   then stop until the user explicitly approves it in a later message
-- require both MCP Elicitation `accept` and `confirm=true` before sending; an
-  empty accepted form is not approval
+- in the default `conversation` approval mode, treat the later chat approval as
+  the only user interaction and submit the exact prepared action without a
+  second Inbox or MCP form prompt
+- optionally use `AGENTRELAY_HUMAN_APPROVAL_MODE=elicitation` with clients that
+  can reliably render MCP forms and require `accept` plus `confirm=true`
 
 Automatic local processing is opt-in. To experiment with it after reviewing the
 safety policy, set:

@@ -29,32 +29,38 @@ Only a Relay `hot_rollback` may activate an older revision. Set
 
 ## Human approval
 
-An Agent may prepare an exact action, but it cannot approve that action by
-supplying a confirmation string. For clients that advertise MCP form
-elicitation, the MCP Core presents the task, full action id, action type, and
-exact payload in the current agent session. The initial handoff turn is
-draft-only: the Agent explains the task, shows the exact draft, and stops. It may
-prepare and submit only after the user explicitly approves that draft in a later
-conversation message.
+The initial handoff turn is draft-only: the Agent explains the task, shows the
+exact draft, and stops. It may prepare and submit only after the user explicitly
+approves that draft in a later conversation message.
 
-Elicitation independently requires both the client's `accept` action and the
-required `confirm=true` form value. An empty accepted form does not issue an
-approval record and sends nothing. Clients without this capability may use the
-Local Inbox as a compatibility fallback. Both paths bind authorization to the
-action type, exact payload hash, current Task context hash, expiry, and local
-confirmation reference. Before mutation, MCP resyncs the Task, validates the
-transition, and requires the embedded authorization to match the approval
-record. Successful submission consumes the authorization; an ambiguous network
-result may retry only the same action and idempotency key.
+The default `AGENTRELAY_HUMAN_APPROVAL_MODE=conversation` treats that later chat
+approval as the only user interaction. Once the Agent prepares the exact action
+in the later turn, MCP Core issues an auditable one-time approval record whose
+source is `mcp_conversation:<client>`. This mode deliberately trusts the local
+Agent to obey the two-turn rule because MCP tool requests do not include the
+original chat transcript or a verifiable user-message identity.
+
+Operators that require an independent approval signal may set
+`AGENTRELAY_HUMAN_APPROVAL_MODE=elicitation`. That mode presents the task, full
+action id, action type, and exact payload and requires both the client's
+`accept` action and `confirm=true`; empty acceptance, decline, or cancel sends
+nothing. The Local Inbox remains a trusted fallback. Every mode binds
+authorization to the action type, exact payload hash, current Task context hash,
+expiry, and local confirmation reference. Before mutation, MCP resyncs the Task,
+validates the transition, and requires the embedded authorization to match the
+approval record. Successful submission consumes the authorization; an ambiguous
+network result may retry only the same action and idempotency key.
 
 Direct Protocol v0.5 create is disabled by default. A user creates a Task through
 the Local Inbox reviewed-draft Send action. `AGENTRELAY_ALLOW_DIRECT_CREATE=1`
 exists for controlled compatibility and test environments.
 
-This boundary prevents remote content and normal MCP tool calls from fabricating
-human approval. It is not an OS sandbox: a malicious process with write access
-as the same local user can tamper with MCP state. Stronger protection would
-require a separate OS identity or an external approval service.
+Conversation mode prevents remote content from changing the prepared payload or
+Task context, but it does not independently prove that a local Agent observed a
+later user approval. Elicitation or Local Inbox approval adds that independent
+signal. None of these is an OS sandbox: a malicious process with write access as
+the same local user can tamper with MCP state. Stronger protection would require
+a separate OS identity or an external approval service.
 
 ## Hermes service policy
 

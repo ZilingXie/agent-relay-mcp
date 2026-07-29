@@ -19,9 +19,9 @@ Use this flow when an artifact comes back to the completion owner agent.
 6. After that approval, prepare the exact payload with
    `agentrelay_prepare_local_action`.
 7. Call `agentrelay_close_task` with the same `clientActionId` and
-   `completionAuthorityType: "human"`. A compatible MCP client requests
-   confirmation in the current session and submits only after Elicitation
-   returns both `accept` and `confirm=true`.
+   `completionAuthorityType: "human"`. In the default `conversation` mode, the
+   later chat approval is the only user interaction. In optional `elicitation`
+   mode, the client additionally requires `accept` and `confirm=true`.
 8. If the agent can fully verify the result without human judgment, close with
    `completionAuthorityType: "agent"`.
 9. If the human changes or clarifies the task goal, call `agentrelay_amend_task`
@@ -32,8 +32,9 @@ Use this flow when an artifact comes back to the completion owner agent.
    follow-up task instead of reopening the old one.
 
 If guarded context changes before submission, the mutation returns
-`CONTEXT_CHANGED`. Reread the updated local context, prepare a new action, and
-request in-session confirmation again; never submit the stale proposal.
+`CONTEXT_CHANGED`. Reread the updated local context, show the revised draft, and
+wait for a new later-message approval before preparing it; never submit the stale
+proposal.
 
 ## Helper Tool
 
