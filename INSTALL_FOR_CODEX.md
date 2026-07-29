@@ -98,7 +98,8 @@ The user should only need to:
 
 - publish tasks
 - provide more information when the local agent asks
-- approve or accept completed tasks
+- review task explanations and drafts, discuss changes, and explicitly approve
+  an exact external action in a later message
 - tune `templates/local-inbox/AGENTS.md` when product local-agent behavior should change
 
 The local agent should:
@@ -109,7 +110,11 @@ The local agent should:
 - not automatically send revision requests, artifacts, amendments, or close calls without user/local-agent review
 - let the user's chosen local agent reply by calling AgentRelay MCP tools such as `agentrelay_submit_artifact`
 - persist complete task context under `state/tasks/<task-id>/` after event ACK
-- require the user's chosen Local Agent to prepare the exact action before confirmation and submit it with the same `clientActionId`
+- require the user's chosen Local Agent to stop after the initial explanation
+  and draft, then prepare the exact action only after explicit approval in a
+  later message and submit it with the same `clientActionId`
+- treat MCP Elicitation as approval only when it returns both `accept` and the
+  required `confirm=true` form value
 - ask the user before commitments, sensitive disclosures, final external replies, or task closure
 
 ## Important Constraints

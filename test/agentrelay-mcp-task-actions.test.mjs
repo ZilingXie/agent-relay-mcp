@@ -94,7 +94,7 @@ test("MCP elicitation authorizes the exact prepared action without a Local Inbox
     clientName: "codex",
     elicit: async (params) => {
       request = params;
-      return { action: "accept", content: {} };
+      return { action: "accept", content: { confirm: true } };
     }
   });
 
@@ -105,6 +105,8 @@ test("MCP elicitation authorizes the exact prepared action without a Local Inbox
   assert.match(request.message, /action_full_id_for_agent_session/);
   assert.match(request.message, /request_revision/);
   assert.match(request.message, /Send this exact response/);
+  assert.deepEqual(request.requestedSchema.required, ["confirm"]);
+  assert.equal(request.requestedSchema.properties.confirm.type, "boolean");
   const stored = await readLocalAction({
     stateRoot,
     taskId: "task_guard",
@@ -145,6 +147,18 @@ test("MCP elicitation decline and unsupported clients do not authorize prepared 
     elicit: async () => ({ action: "cancel" })
   });
   assert.equal(cancelled.code, "LOCAL_APPROVAL_CANCELLED");
+
+  const emptyAccept = await authorizePreparedTaskActionWithElicitation({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "action_declined",
+    clientName: "codex",
+    elicit: async () => ({ action: "accept", content: {} })
+  });
+  assert.equal(emptyAccept.code, "LOCAL_APPROVAL_CONFIRMATION_REQUIRED");
+  assert.equal((await readLocalAction({
+    stateRoot, taskId: "task_guard", clientActionId: "action_declined"
+  })).action.authorization, null);
 
   const unsupported = await authorizePreparedTaskActionWithElicitation({
     stateRoot,

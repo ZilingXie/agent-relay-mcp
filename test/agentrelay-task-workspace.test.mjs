@@ -57,7 +57,9 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   assert.equal(workspace.handoffPrompt, [
     `Handle AgentRelay task task_complete at ${workspace.paths.contextPath}. Follow ${agentsMdPath}.`,
     "",
-    "First explain what this task asks me to decide or provide and show the exact external action or reply. Then use the matching AgentRelay MCP mutation so my MCP client can request confirmation here before sending.",
+    "In this turn, only explain what this task asks, what I need to decide or provide, and the exact draft external action or reply.",
+    "Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this turn. Stop after the draft and wait for my next message so I can approve it, revise it, or continue discussing the task.",
+    "Only after I explicitly approve the exact draft in a later message should you prepare that action and call the matching AgentRelay MCP mutation.",
     ""
   ].join("\n"));
   assert.doesNotMatch(workspace.handoffPrompt, /remote\.json/);
@@ -325,11 +327,14 @@ test("rebuildTaskIndex regenerates task projection only from local workspaces", 
   const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
   const stateRoot = join(root, "state");
   await persistTaskWorkspace({ stateRoot, task: sampleTask("task_rebuild"), localAgentId: "zac-agent" });
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_rebuild" });
+  await writeFile(workspace.paths.handoffPath, "Old prompt that sends immediately.\n");
   await rm(join(stateRoot, "task-index.json"));
 
   const result = await rebuildTaskIndex({
     stateRoot,
     localAgentId: "zac-agent",
+    agentsMdPath: join(root, "AGENTS.md"),
     now: () => "2026-07-13T02:10:00.000Z"
   });
 
@@ -337,6 +342,12 @@ test("rebuildTaskIndex regenerates task projection only from local workspaces", 
   const index = await readTaskIndex({ stateRoot });
   assert.equal(index.tasks.task_rebuild.contextSyncStatus, "context_ready");
   assert.equal(index.tasks.task_rebuild.taskId, "task_rebuild");
+  assert.match(index.tasks.task_rebuild.handoffPrompt, /Stop after the draft and wait for my next message/);
+  assert.doesNotMatch(index.tasks.task_rebuild.handoffPrompt, /Old prompt/);
+  assert.equal(
+    await readFile(workspace.paths.handoffPath, "utf8"),
+    index.tasks.task_rebuild.handoffPrompt
+  );
 });
 
 test("context envelopes compare stable ids and reject unsafe task paths", () => {

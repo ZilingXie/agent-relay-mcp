@@ -80,7 +80,9 @@ not include the remote task body. Use a minimal boundary like:
 ```text
 Handle AgentRelay task <task_id> at <context.md path>. Follow <AGENTS.md path>.
 
-First explain what this task asks me to decide or provide and show the exact external action or reply. Then use the matching AgentRelay MCP mutation so my MCP client can request confirmation here before sending.
+In this turn, only explain what this task asks, what I need to decide or provide, and the exact draft external action or reply.
+Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this turn. Stop after the draft and wait for my next message so I can approve it, revise it, or continue discussing the task.
+Only after I explicitly approve the exact draft in a later message should you prepare that action and call the matching AgentRelay MCP mutation.
 ```
 
 Incoming remote task:
@@ -100,11 +102,17 @@ Incoming remote task:
    explains the requested decision or input, and shows the exact external
    action or reply. It reads `remote.json` only when it needs to verify the
    readable projection against the raw Relay snapshot.
-7. The local agent records that exact proposal with
-   `agentrelay_prepare_local_action`, then calls the matching mutation tool.
-8. A compatible MCP client asks the user to approve the exact action in the
-   current agent session. Accept submits it in the same tool call; decline or
-   cancel sends nothing. The Local Inbox remains a compatibility fallback.
+7. The local agent stops after the draft without preparing or calling any
+   mutation and waits for the user's next message.
+8. The user may ask questions or revise the draft. Discussion and edits do not
+   authorize a Relay mutation.
+9. Only after the user explicitly approves that exact draft in a later message,
+   the local agent records it with `agentrelay_prepare_local_action` and calls
+   the matching mutation tool.
+10. A compatible MCP client independently asks for explicit form confirmation
+   in the current agent session. The Core requires both an `accept` action and
+   `confirm=true`; an empty accepted form sends nothing. The Local Inbox remains
+   a compatibility fallback.
 
 New local task:
 
@@ -150,38 +158,48 @@ After reading a task, tell the local user:
 - What input or judgment is still needed from the user.
 - The exact AgentRelay action and external reply the agent proposes to send.
 
-Then call the matching mutation tool so the MCP client can request explicit
-confirmation in the current agent session. Handling a prompt, opening a task,
-or asking the agent to inspect a task is not approval to mutate Relay state. Do
-not claim the task, reply, submit an artifact, request a revision, amend, update
-status, or close the task unless the user accepts the exact proposed action.
+In the initial handoff turn, stop after presenting that draft. Do not call
+`agentrelay_prepare_local_action` or any mutation tool. Wait for a later user
+message: the user may ask questions, provide more context, or revise the draft
+without sending anything. Handling a prompt, opening a task, asking the agent to
+inspect it, or discussing the draft is not approval to mutate Relay state.
+
+Only after the user explicitly approves the exact draft in a later message,
+record that proposal and call the matching mutation tool. Do not claim the task,
+reply, submit an artifact, request a revision, amend, update status, or close the
+task before that later approval.
 
 Use this decision order in the user's chosen local agent:
 
 1. Read the complete local task workspace and prepare a recommendation.
-2. Record the exact proposed mutation payload with
-   `agentrelay_prepare_local_action`; keep the returned `clientActionId`.
-3. Explain the task, the user's required decision or input, and the exact
+2. Explain the task, the user's required decision or input, and the exact
    proposed action or reply.
-4. Call only the matching mutation tool. MCP form elicitation asks the user to
-   accept, decline, or cancel in the current session, then the Core submits only
-   the accepted prepared payload. If the tool returns `CONTEXT_CHANGED`, do not
-   submit the old draft; reread the updated workspace and continue with the user.
-5. If the confirmed response is a concrete revision request within the current
+3. Stop and wait for a later user message. Do not prepare or call a mutation in
+   this initial handoff turn.
+4. If the user asks questions or changes the wording, continue the discussion
+   and revise the draft without preparing or sending an action.
+5. Only after the user explicitly approves the exact draft in a later message,
+   record it with `agentrelay_prepare_local_action` and keep the returned
+   `clientActionId`.
+6. Call only the matching mutation tool. MCP form elicitation requires both
+   `accept` and `confirm=true` in the current session; empty acceptance, decline,
+   or cancel sends nothing. If the tool returns `CONTEXT_CHANGED`, do not submit
+   the old draft; reread the updated workspace and continue with the user.
+7. If the confirmed response is a concrete revision request within the current
    scope, use `request_revision` with that exact request.
-6. If the user confirms changed or clarified done criteria, use `amend_task`;
+8. If the user confirms changed or clarified done criteria, use `amend_task`;
    this records a new goal version and starts a new agent-agent exchange.
-7. If the user confirms an answer to an incoming request, use `submit_artifact`
+9. If the user confirms an answer to an incoming request, use `submit_artifact`
    with the confirmed response.
-8. If the task is complete and the local agent is the
+10. If the task is complete and the local agent is the
    `completion_owner_agent_id`, close the task only when the close action is
    allowed and the user explicitly confirms closure.
-9. If the task is complete but a remote agent is the
+11. If the task is complete but a remote agent is the
    `completion_owner_agent_id`, do not ask the local user to close it and do
    not close it locally. Wait for the remote completion owner to call
    `close_task`; any reminder or revision request still requires user
    confirmation before sending.
-10. If nothing needs to be sent, report that the task is waiting without a Relay
+12. If nothing needs to be sent, report that the task is waiting without a Relay
    mutation.
 
 Do not infer local user intent in wrapper code. In the default personal-agent
@@ -194,9 +212,10 @@ and stop instead of retrying with guessed intent.
 
 The local agent should use AgentRelay MCP tools for explicit v0.5 actions:
 
-- `agentrelay_prepare_local_action`: bind an exact proposal to the current
-  local context before the mutation tool requests in-session confirmation; it
-  does not mutate Relay.
+- `agentrelay_prepare_local_action`: after the user approves the exact draft in
+  a later message, bind that proposal to the current local context before the
+  mutation tool requests independent in-session confirmation; it does not
+  mutate Relay.
 - `agentrelay_resync_local_task`: explicitly refresh local context with a
   read-only Relay GET.
 - `agentrelay_send_message_v05`: send the confirmed next Message.

@@ -71,7 +71,17 @@ export async function authorizePreparedTaskActionWithElicitation({
     response = await elicit({
       mode: "form",
       message: buildActionApprovalMessage(action),
-      requestedSchema: { type: "object", properties: {} }
+      requestedSchema: {
+        type: "object",
+        properties: {
+          confirm: {
+            type: "boolean",
+            title: "Approve this AgentRelay action",
+            description: "Set to true only if you approve sending the exact action shown above."
+          }
+        },
+        required: ["confirm"]
+      }
     });
   } catch (error) {
     return rejection("MCP_ELICITATION_UNAVAILABLE", taskId, clientActionId, {
@@ -85,6 +95,11 @@ export async function authorizePreparedTaskActionWithElicitation({
       clientActionId,
       { message: "The AgentRelay action was not sent." }
     );
+  }
+  if (response?.content?.confirm !== true) {
+    return rejection("LOCAL_APPROVAL_CONFIRMATION_REQUIRED", taskId, clientActionId, {
+      message: "The MCP client accepted the form without an explicit confirmation value. The AgentRelay action was not sent."
+    });
   }
 
   const approvedBy = `mcp_elicitation:${sanitizeApprovalActor(clientName)}`;

@@ -43,8 +43,11 @@ test("local inbox template requires MCP client confirmation before Relay mutatio
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const template = await readFile(join(repoRoot, "templates/local-inbox/AGENTS.md"), "utf8");
 
-  assert.match(template, /MCP form elicitation asks the user/);
-  assert.match(template, /Do\s+not claim[\s\S]*unless the user accepts/);
+  assert.match(template, /MCP form elicitation requires/);
+  assert.match(template, /Do not call[\s\S]*`agentrelay_prepare_local_action` or any mutation tool/);
+  assert.match(template, /explicitly approves the exact draft in a later message/);
+  assert.match(template, /requires both[\s\S]*`accept` and `confirm=true`/);
+  assert.match(template, /Do not claim[\s\S]*before that later approval/);
   assert.match(template, /before any AgentRelay mutation[\s\S]*`claim_task`[\s\S]*`submit_artifact`[\s\S]*`request_revision`[\s\S]*`amend_task`[\s\S]*`update_status`[\s\S]*`close_task`/);
 });
 

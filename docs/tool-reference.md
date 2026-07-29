@@ -79,8 +79,10 @@ The first-Message subject is UI metadata, not Task state. Replies cannot carry
 subject. The MCP resolves the matching prepared local action for reply and
 follow-up, so `clientActionId` and confirmation data stay internal. A compatible
 MCP client confirms the exact action in the current agent session; the Local
-Inbox remains a fallback. Neither path bypasses Core authorization or service
-policy.
+Inbox remains a fallback. The initial handoff turn is explanation-and-draft
+only. After the user approves that exact draft in a later message, Elicitation
+must return both `accept` and `confirm=true`; empty acceptance sends nothing.
+Neither path bypasses Core authorization or service policy.
 
 `message.metadata` is a bounded, non-authoritative first-Message container. The
 local runtime fixes its only destination, size/depth limits, safe JSON types,
