@@ -22,43 +22,11 @@ export async function authorizePreparedTaskActionWithElicitation({
   elicit,
   now = () => new Date().toISOString()
 }) {
-  const { action } = await readLocalAction({ stateRoot, taskId, clientActionId });
-  if (action.status === "sent") {
-    return {
-      ok: true,
-      status: "already_sent",
-      taskId: String(taskId),
-      clientActionId,
-      confirmationRef: action.confirmationRef
-    };
-  }
-  if (action.status === "stale") {
-    return rejection("CONTEXT_CHANGED", taskId, clientActionId, {
-      changedFields: action.changedFields || []
-    });
-  }
-  if (!new Set(["awaiting_confirmation", "submission_unknown"]).has(action.status)) {
-    return rejection("ACTION_NOT_SUBMITTABLE", taskId, clientActionId, {
-      actionStatus: action.status
-    });
-  }
-  if (isLocalAuthorizationCurrent(action.authorization, {
-    at: now(),
-    allowedStatuses: ["active", "submitting"]
-  })) {
-    return {
-      ok: true,
-      status: "already_authorized",
-      taskId: String(taskId),
-      clientActionId,
-      confirmationRef: action.confirmationRef
-    };
-  }
-  if (action.status === "submission_unknown") {
-    return rejection("LOCAL_AUTHORIZATION_EXPIRED", taskId, clientActionId, {
-      message: "The authorization for this ambiguous submission expired. Inspect Relay state before preparing another action."
-    });
-  }
+  const preflight = await inspectPreparedActionAuthorization({
+    stateRoot, taskId, clientActionId, now
+  });
+  if (preflight.result) return preflight.result;
+  const { action } = preflight;
   if (typeof elicit !== "function") {
     return rejection("MCP_ELICITATION_UNSUPPORTED", taskId, clientActionId, {
       message: "This MCP client cannot show in-session action confirmation. Use a client with MCP form elicitation support or approve the exact action in the Local Inbox.",
@@ -119,6 +87,88 @@ export async function authorizePreparedTaskActionWithElicitation({
     confirmationRef: approval.confirmationRef,
     expiresAt: approval.expiresAt
   };
+}
+
+export async function authorizePreparedTaskActionFromConversation({
+  stateRoot,
+  taskId,
+  clientActionId,
+  clientName = "mcp-client",
+  now = () => new Date().toISOString()
+}) {
+  const preflight = await inspectPreparedActionAuthorization({
+    stateRoot, taskId, clientActionId, now
+  });
+  if (preflight.result) return preflight.result;
+
+  const approvedBy = `mcp_conversation:${sanitizeApprovalActor(clientName)}`;
+  const approval = await approveLocalAction({
+    stateRoot,
+    taskId,
+    clientActionId,
+    approvedBy,
+    at: now()
+  });
+  return {
+    ok: true,
+    status: approval.alreadyApproved ? "already_authorized" : "approved",
+    taskId: String(taskId),
+    clientActionId,
+    approvalId: approval.approvalId,
+    confirmationRef: approval.confirmationRef,
+    expiresAt: approval.expiresAt
+  };
+}
+
+async function inspectPreparedActionAuthorization({ stateRoot, taskId, clientActionId, now }) {
+  const { action } = await readLocalAction({ stateRoot, taskId, clientActionId });
+  if (action.status === "sent") {
+    return {
+      result: {
+        ok: true,
+        status: "already_sent",
+        taskId: String(taskId),
+        clientActionId,
+        confirmationRef: action.confirmationRef
+      }
+    };
+  }
+  if (action.status === "stale") {
+    return {
+      result: rejection("CONTEXT_CHANGED", taskId, clientActionId, {
+        changedFields: action.changedFields || []
+      })
+    };
+  }
+  if (!new Set(["awaiting_confirmation", "submission_unknown"]).has(action.status)) {
+    return {
+      result: rejection("ACTION_NOT_SUBMITTABLE", taskId, clientActionId, {
+        actionStatus: action.status
+      })
+    };
+  }
+  if (isLocalAuthorizationCurrent(action.authorization, {
+    at: now(),
+    allowedStatuses: ["active", "submitting"]
+  })) {
+    return {
+      result: {
+        ok: true,
+        status: "already_authorized",
+        taskId: String(taskId),
+        clientActionId,
+        confirmationRef: action.confirmationRef
+      }
+    };
+  }
+  if (action.status === "submission_unknown") {
+    return {
+      result: rejection("LOCAL_AUTHORIZATION_EXPIRED", taskId, clientActionId, {
+        message: "The authorization for this ambiguous submission expired. Inspect Relay state before preparing another action."
+      })
+    };
+  }
+  return { action };
 }
 
 export async function executePreparedTaskAction({

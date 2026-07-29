@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { authorizePreparedTaskActionWithElicitation, executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
+import { authorizePreparedTaskActionFromConversation, authorizePreparedTaskActionWithElicitation, executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
 import { resyncLocalTask, unwrapTask } from "../scripts/agentrelay-task-context-sync.mjs";
 import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, isLocalAuthorizationCurrent, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
@@ -54,6 +54,7 @@ const username = process.env.AGENTRELAY_USERNAME || "";
 const bearerToken = process.env.AGENTRELAY_TOKEN || "";
 const allowDirectCreate = new Set(["1", "true", "yes"]).has(String(process.env.AGENTRELAY_ALLOW_DIRECT_CREATE || "").toLowerCase());
 const exposeLegacyProtocolTools = envFlag("AGENTRELAY_EXPOSE_LEGACY_PROTOCOL_TOOLS");
+const humanApprovalMode = parseHumanApprovalMode(process.env.AGENTRELAY_HUMAN_APPROVAL_MODE || "conversation");
 const preparedActionTypes = [
   "submit_artifact", "request_revision", "amend_task", "close_task",
   "reply", "complete_task", "fail_task", "create_followup",
@@ -192,6 +193,7 @@ function registerTools(mcpServer) {
           error: generation.error || undefined
         },
         legacy_protocol_tools_exposed: exposeLegacyProtocolTools,
+        human_approval_mode: humanApprovalMode,
         ...protocolRuntimeStatus
       });
     }
@@ -1115,16 +1117,23 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
   };
   if (resolvedArgs.clientActionId) {
     if (!servicePolicyPath) {
-      const clientCapabilities = server.server.getClientCapabilities();
-      const approval = await authorizePreparedTaskActionWithElicitation({
-        stateRoot,
-        taskId: resolvedArgs.taskId,
-        clientActionId: resolvedArgs.clientActionId,
-        clientName: server.server.getClientVersion()?.name || "mcp-client",
-        elicit: clientCapabilities?.elicitation?.form
-          ? (params) => server.server.elicitInput(params)
-          : null
-      });
+      const clientName = server.server.getClientVersion()?.name || "mcp-client";
+      const approval = humanApprovalMode === "conversation"
+        ? await authorizePreparedTaskActionFromConversation({
+          stateRoot,
+          taskId: resolvedArgs.taskId,
+          clientActionId: resolvedArgs.clientActionId,
+          clientName
+        })
+        : await authorizePreparedTaskActionWithElicitation({
+          stateRoot,
+          taskId: resolvedArgs.taskId,
+          clientActionId: resolvedArgs.clientActionId,
+          clientName,
+          elicit: server.server.getClientCapabilities()?.elicitation?.form
+            ? (params) => server.server.elicitInput(params)
+            : null
+        });
       if (!approval.ok) return approval;
       resolvedArgs = { ...resolvedArgs, confirmationRef: approval.confirmationRef };
     }
@@ -1149,7 +1158,7 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
     status: "rejected",
     code: "LOCAL_AUTHORIZATION_REQUIRED",
     taskId: String(resolvedArgs.taskId || ""),
-    message: "Prepare the exact action, show it to the user, then call the matching mutation tool. A compatible MCP client will request confirmation in the current session before submission."
+    message: "Show the exact draft and stop. Only after the user approves it in a later conversation message, prepare the exact action and call the matching mutation tool."
   };
 }
 
@@ -1562,6 +1571,12 @@ function legacyReplacementTool(name) {
 
 function envFlag(name) {
   return new Set(["1", "true", "yes", "on"]).has(String(process.env[name] || "").trim().toLowerCase());
+}
+
+function parseHumanApprovalMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  if (new Set(["conversation", "elicitation"]).has(mode)) return mode;
+  throw new Error(`Unsupported AGENTRELAY_HUMAN_APPROVAL_MODE: ${value}`);
 }
 
 function loadDotEnv(path) {

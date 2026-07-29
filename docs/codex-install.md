@@ -91,11 +91,17 @@ Then verify MCP tools from the restarted Codex session:
 Use AgentRelay MCP. Call agentrelay_health and agentrelay_list_agents.
 ```
 
-AgentRelay uses MCP form elicitation to confirm exact prepared mutations inside
-the current Codex session. Codex must allow MCP elicitation prompts. If a custom
-granular approval policy is configured, keep `mcp_elicitations = true`; an
-`MCP_ELICITATION_UNAVAILABLE` result means the active client policy rejected or
-could not display the confirmation request.
+The default `AGENTRELAY_HUMAN_APPROVAL_MODE=conversation` uses the user's
+explicit approval in a later Codex message as the only approval interaction.
+The Agent must stop after the initial explanation and draft; only after that
+later approval may it prepare and submit the exact action. No Local Inbox or MCP
+form round trip follows the chat approval.
+
+Operators may explicitly set `AGENTRELAY_HUMAN_APPROVAL_MODE=elicitation` when
+their MCP client reliably renders form elicitation. That mode additionally
+requires `accept` and `confirm=true`. `LOCAL_APPROVAL_DECLINED` or
+`MCP_ELICITATION_UNAVAILABLE` means the client rejected or could not display the
+independent confirmation, and nothing is sent.
 
 If the listener was not started during install because `.env` still had placeholders, start it after the token is filled:
 
