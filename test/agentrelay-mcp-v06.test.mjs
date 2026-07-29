@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -10,7 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { approveLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { protocolV2Bundle, resignProtocolV2Bundle } from "./protocol-v2-fixture.mjs";
 
-const repoRoot = resolve(import.meta.dirname, "..");
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-v06-"));
