@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { approveLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { protocolV2Bundle, resignProtocolV2Bundle } from "./protocol-v2-fixture.mjs";
@@ -120,7 +121,15 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
   await new Promise((resolveListen) => relay.listen(0, "127.0.0.1", resolveListen));
   t.after(() => new Promise((resolveClose) => relay.close(resolveClose)));
 
-  const client = new Client({ name: "agentrelay-v06-test", version: "1.0.0" });
+  const client = new Client(
+    { name: "agentrelay-v06-test", version: "1.0.0" },
+    { capabilities: { elicitation: { form: {} } } }
+  );
+  const elicitationRequests = [];
+  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    elicitationRequests.push(request.params);
+    return { action: "accept", content: {} };
+  });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["mcp/server.mjs"],
@@ -194,21 +203,6 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
       payloadJson: JSON.stringify({ parts: [{ kind: "text", text: "reply through v0.5" }] })
     }
   });
-  const unapprovedReplyResult = await client.callTool({
-    name: "agentrelay_reply",
-    arguments: {
-      taskId: legacyTask.task_id,
-      parts: [{ kind: "text", text: "reply through v0.5" }]
-    }
-  });
-  const unapprovedReply = JSON.parse(unapprovedReplyResult.content[0].text);
-  assert.equal(unapprovedReply.code, "LOCAL_AUTHORIZATION_REQUIRED");
-  assert.equal(unapprovedReply.clientActionId, "v05-drain-reply-current");
-  await approveLocalAction({
-    stateRoot,
-    taskId: legacyTask.task_id,
-    clientActionId: "v05-drain-reply-current"
-  });
   const replyResult = await client.callTool({
     name: "agentrelay_reply",
     arguments: {
@@ -217,6 +211,9 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
     }
   });
   assert.notEqual(replyResult.isError, true, `${replyResult.content?.[0]?.text}\n${seenRequests.join("\n")}`);
+  assert.equal(elicitationRequests.length, 1);
+  assert.match(elicitationRequests[0].message, /v05-drain-reply-current/);
+  assert.doesNotMatch(elicitationRequests[0].message, /v05-drain-reply-expired/);
   assert.equal(legacyReplyPayload.message_id, "msg_mcp_v05_drain");
   assert.equal(legacyReplyHeaders["x-agentrelay-task-protocol"], "agent-collab-v0.5");
   assert.equal(legacyReplyHeaders["x-agentrelay-bundle-digest"], legacyBundleDigest(baseUrlFor(relay)));

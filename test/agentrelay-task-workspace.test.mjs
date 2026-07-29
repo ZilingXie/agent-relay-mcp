@@ -57,7 +57,7 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   assert.equal(workspace.handoffPrompt, [
     `Handle AgentRelay task task_complete at ${workspace.paths.contextPath}. Follow ${agentsMdPath}.`,
     "",
-    "First explain what this task asks me to decide or provide, propose the exact external action or reply, and wait for my explicit confirmation before any AgentRelay mutation.",
+    "First explain what this task asks me to decide or provide and show the exact external action or reply. Then use the matching AgentRelay MCP mutation so my MCP client can request confirmation here before sending.",
     ""
   ].join("\n"));
   assert.doesNotMatch(workspace.handoffPrompt, /remote\.json/);

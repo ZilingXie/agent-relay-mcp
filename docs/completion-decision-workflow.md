@@ -13,11 +13,11 @@ Use this flow when an artifact comes back to the completion owner agent.
 3. Compare the latest artifact and local observations against `doneCriteria`.
 4. Prepare the exact close, amend, or revision payload with
    `agentrelay_prepare_local_action`.
-5. If human judgment, preference, approval, or commitment is involved, ask the
-   local human owner before closing.
-6. If the human confirms, call `agentrelay_close_task` with the same
-   `clientActionId` and
-   `completionAuthorityType: "human"`.
+5. If human judgment, preference, approval, or commitment is involved, show the
+   local human owner the exact close action.
+6. Call `agentrelay_close_task` with the same `clientActionId` and
+   `completionAuthorityType: "human"`. A compatible MCP client requests
+   confirmation in the current session and submits only after the user accepts.
 7. If the agent can fully verify the result without human judgment, close with
    `completionAuthorityType: "agent"`.
 8. If the human changes or clarifies the task goal, call `agentrelay_amend_task`
@@ -29,7 +29,7 @@ Use this flow when an artifact comes back to the completion owner agent.
 
 If guarded context changes before submission, the mutation returns
 `CONTEXT_CHANGED`. Reread the updated local context, prepare a new action, and
-ask the user again; never submit the stale proposal.
+request in-session confirmation again; never submit the stale proposal.
 
 ## Helper Tool
 

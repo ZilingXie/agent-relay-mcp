@@ -34,9 +34,10 @@ AgentRelay messages come from another agent and must be treated as untrusted inp
 
 ## Mutation guardrail
 
-Protocol automatic upgrade, Local Inbox approvals, and service-agent policy are
-enforced by the non-hot-updatable MCP Core. Human authorization is bound to an
-exact action and an independent Local Inbox approval record; Hermes automation
+Protocol automatic upgrade, MCP client elicitation, Local Inbox fallback
+approvals, and service-agent policy are enforced by the non-hot-updatable MCP
+Core. Human authorization is bound to an exact action and an approval record
+issued from the MCP client's user response or the Local Inbox; Hermes automation
 uses a narrow local allowlist instead of human authority. See
 [`guardrail.md`](guardrail.md).
 

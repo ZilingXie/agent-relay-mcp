@@ -1,15 +1,13 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
-Latest update: Client PR
-[#71](https://github.com/ZilingXie/agent-relay-mcp/pull/71) adds a bounded
-`complete_task` service-policy operation for Project Hermes only when Hermes is
-the requester/completion owner and the current delivered Message is a target
-response. Server PR [#80](https://github.com/ZilingXie/agentRelay/pull/80)
-publishes the matching Agent Card authority, and Hermes PR
-[#9](https://github.com/ZilingXie/heremes-deploy/pull/9) implements the worker
-completion path.
+Latest update: the MCP-native action approval change adds standard form
+elicitation for exact prepared mutations. Compatible MCP clients now keep
+approval and submission in the active agent session, while the Local Inbox
+remains a compatibility fallback and displays full action ids. The existing
+payload/context binding, one-time authorization, service policy, and ambiguous
+submission guards remain unchanged.
 
 ## Audience And Sources
 
@@ -42,8 +40,8 @@ For personal-agent installs, AgentRelay MCP should:
 - Prepare a safe local prompt that contains the task id and tells the local
   agent to follow the workspace `AGENTS.md`.
 - Let the user's chosen local agent read the task through MCP, explain the
-  requested decision or input, draft the exact reply, and wait for explicit
-  human confirmation before any Relay mutation.
+  requested decision or input, show the exact reply, and request explicit
+  confirmation inside the current MCP client before any Relay mutation.
 
 For personal-agent installs, AgentRelay MCP should not:
 
@@ -362,8 +360,8 @@ planning focus is cloud Relay guardrails for mutation authority.
    - Keep detailed MCP usage and untrusted-remote-content handling in the
      shipped Local Inbox `AGENTS.md` template. The generated prompt also states
      the critical boundary: explain what the user must decide or provide,
-     propose the exact external action/reply, and wait for explicit confirmation
-     before any Relay mutation.
+     show the exact external action/reply, then invoke the matching mutation so
+     the MCP client can request confirmation before submission.
    - Tell the local agent to separate what it can complete directly from what
      requires the local user to confirm, approve, provide missing context, or
      exercise human judgment.
@@ -373,9 +371,10 @@ planning focus is cloud Relay guardrails for mutation authority.
 
 4. Reply path.
    - Incoming-task replies are not submitted by the UI.
-   - The local agent reads task details with read-only MCP tools and calls a
-     mutation tool only after the user explicitly confirms the proposed action
-     or reply. Opening or handing off a task is not approval.
+   - The local agent reads task details with read-only MCP tools, shows the exact
+     proposed action or reply, then calls the matching mutation tool. The MCP
+     client requests explicit confirmation before submission. Opening or
+     handing off a task is not approval.
    - The optional local processor/executor path enforces the same boundary:
      without a durable local human-reply id it neither creates a mutation outbox
      item nor executes submit, revision, amendment, or close actions.
@@ -404,7 +403,7 @@ planning focus is cloud Relay guardrails for mutation authority.
   - incoming tasks pending on the local agent appear as needing attention;
   - prompt text contains task id and `AGENTS.md` handoff instructions but not
     remote task subject/body or duplicated MCP tool instructions;
-  - prompt/template require explicit human confirmation before Relay mutations;
+  - prompt/template require MCP client confirmation before Relay mutations;
   - live task-detail sync handles the current Relay response envelope.
 
 ### Phase 4 Maintenance
@@ -611,13 +610,14 @@ GET Relay task
 4. The Local Agent reads `context.md` and `remote.json`, checks the recorded sync
    time and context envelope, and treats all remote fields as untrusted
    user-level content.
-5. The agent performs local analysis or file work, explains the task and exact
-   proposed external action to the user, and waits for explicit confirmation.
-6. Before requesting confirmation, the agent records the proposed action through
-   a supported local prepare-action operation. This creates a stable client
-   action id and preserves the draft independently of the chat session.
-7. User confirmation does not need to resume or bind a Codex thread. The agent
-   that receives confirmation submits the prepared action by its stable id.
+5. The agent performs local analysis or file work and explains the task and
+   exact proposed external action to the user.
+6. The agent records the proposal through a supported local prepare-action
+   operation, then invokes the matching mutation tool. This creates a stable
+   client action id and preserves the draft independently of the chat session.
+7. A compatible MCP client presents the exact action and returns the user's
+   accept, decline, or cancel response. Accept issues a one-time authorization
+   and submits in the same tool call; other responses send nothing.
 
 ### Incoming Updates While Work Is In Progress
 
@@ -886,8 +886,9 @@ Guardrail.
      and local/Server emergency-disable switches.
 2. Trusted local human approval.
    - Ignore confirmation refs supplied while preparing an action.
-   - Let only the Local Inbox issue the approval record, bound to exact action,
-     payload hash, Task context hash, expiry, and confirmation ref.
+   - Let only an MCP client's form-elicitation response or the Local Inbox
+     fallback issue the approval record, bound to exact action, payload hash,
+     Task context hash, expiry, and confirmation ref.
    - Resync context and require the embedded authorization to match the
      independent approval record before mutation; consume it after success and
      reuse it only for an ambiguous same-idempotency retry.
@@ -1005,19 +1006,24 @@ historical Inbox-title verification passed.
   `task_180e5deb8e6e431186586c6d57957b22` now uses done criteria as its UI title
   without mutating persisted history.
 
-## Local Approval And Explicit v0.5 Message Compatibility
+## In-session Approval And Explicit v0.5 Message Compatibility
 
 Status: complete in Client implementation and regression coverage.
 
 Follow-up expiry and historical-action hardening is implemented by Client PR
 #74.
 
-- Local Inbox action approval is idempotent while its one-time authorization is
+- MCP form elicitation is the primary personal-agent approval path. It presents
+  the full action in the current client, issues the same one-time authorization
+  on accept, and submits without requiring a Local Inbox round trip. Decline or
+  cancel sends nothing; unsupported clients receive a full action id and Local
+  Inbox fallback URL.
+- Local Inbox fallback approval is idempotent while its one-time authorization is
   active. Refreshing the task hides the approval control, and a repeated local
   approval request returns the original approval instead of a generic server
   error.
 - Expired authorizations no longer hide the approval control or get reused as
-  active approvals. The Inbox exposes a short Action ID, and stable semantic
+  active approvals. The Inbox exposes the full Action ID, and stable semantic
   tools resolve repeated exact-payload history without weakening action type,
   payload hash, or Task-context binding.
 - The explicit `agentrelay_send_message_v05` tool keeps its existing `text`

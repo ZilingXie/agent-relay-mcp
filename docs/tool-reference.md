@@ -76,9 +76,11 @@ notification. For v0.5 the Agent-facing shapes are:
   currently declared optional `message.metadata` fields.
 
 The first-Message subject is UI metadata, not Task state. Replies cannot carry
-subject. The MCP resolves the unique matching prepared local action for reply
-and follow-up, so `clientActionId` and confirmation data stay internal without
-bypassing Local Inbox approval or service-policy authorization.
+subject. The MCP resolves the matching prepared local action for reply and
+follow-up, so `clientActionId` and confirmation data stay internal. A compatible
+MCP client confirms the exact action in the current agent session; the Local
+Inbox remains a fallback. Neither path bypasses Core authorization or service
+policy.
 
 `message.metadata` is a bounded, non-authoritative first-Message container. The
 local runtime fixes its only destination, size/depth limits, safe JSON types,
@@ -92,9 +94,9 @@ arbitrary tools, execute scripts, read files, choose arbitrary endpoints, replac
 identity, bypass confirmation, or control local side effects.
 
 All Task mutations except Local Inbox reviewed-draft create require a prepared
-action plus either a matching one-time Local Inbox approval record or a
-Core-validated service-policy grant. A confirmation string supplied by an Agent
-does not authorize a mutation. Direct v0.5 create is disabled unless the operator
+action plus either a matching one-time approval record from MCP elicitation or
+the Local Inbox, or a Core-validated service-policy grant. A confirmation string
+supplied by an Agent does not authorize a mutation. Direct v0.5 create is disabled unless the operator
 explicitly sets `AGENTRELAY_ALLOW_DIRECT_CREATE=1` for a controlled environment.
 See [`guardrail.md`](guardrail.md) for the complete boundary.
 
@@ -142,7 +144,8 @@ Protocol v0.4 is explicit while mixed client versions coexist:
   parsing Task ids.
 
 Prepare Message, completion, failure, and follow-up mutations with
-`agentrelay_prepare_local_action` before requesting confirmation. A stale
+`agentrelay_prepare_local_action` before invoking the mutation tool for
+in-session confirmation. A stale
 Message/turn/version returns `STALE_TASK_STATE`, refreshes the local workspace,
 and invalidates the prepared action. The Listener performs Message delivery ACK
 only after durable local Inbox persistence; there is no public Task delete tool.
@@ -242,8 +245,8 @@ read-only legacy data.
 ### `agentrelay_prepare_local_action`
 
 Persists the exact proposed mutation payload and binds it to the current local
-context envelope. Call it before asking the user for confirmation. It does not
-mutate Relay.
+context envelope. Call it after showing the proposal and before invoking the
+matching mutation tool. It does not mutate Relay.
 
 ```json
 {
@@ -255,10 +258,11 @@ mutate Relay.
 ```
 
 `payloadJson` must contain the exact mutation arguments except `taskId`,
-`clientActionId`, and `confirmationRef`. After confirmation, pass the returned
-`clientActionId` and a local `confirmationRef` to the matching mutation tool.
-The client re-fetches the task immediately before submission. A changed
-envelope returns `CONTEXT_CHANGED` without a Relay mutation.
+`clientActionId`, and `confirmationRef`. Invoke the matching mutation tool with
+the same payload. If the MCP client supports form elicitation, it shows the
+exact action and submits after the user accepts in the current session. The
+client re-fetches the task immediately before submission. A changed envelope
+returns `CONTEXT_CHANGED` without a Relay mutation.
 
 ### `agentrelay_submit_artifact`
 

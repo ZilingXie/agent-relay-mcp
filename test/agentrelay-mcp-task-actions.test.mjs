@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
+import { authorizePreparedTaskActionWithElicitation, executePreparedTaskAction, legacyActionIdempotencyKey } from "../scripts/agentrelay-mcp-task-actions.mjs";
 import { approveLocalAction, persistTaskWorkspace, prepareLocalAction, readLocalAction, readLocalApproval, readTaskWorkspace } from "../scripts/agentrelay-task-workspace.mjs";
 
 function task(overrides = {}) {
@@ -65,6 +65,97 @@ test("prepared action submits once with stable idempotency and refreshes local c
     mutate: async () => { throw new Error("already-sent retry must not mutate"); }
   });
   assert.equal(repeated.status, "already_sent");
+  const authorization = await authorizePreparedTaskActionWithElicitation({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "confirmed_1",
+    elicit: async () => { throw new Error("already-sent retry must not elicit"); }
+  });
+  assert.equal(authorization.status, "already_sent");
+});
+
+test("MCP elicitation authorizes the exact prepared action without a Local Inbox round trip", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-elicitation-"));
+  const payload = { text: "Send this exact response" };
+  await persistTaskWorkspace({ stateRoot, task: task(), localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    actionType: "request_revision",
+    payload,
+    clientActionId: "action_full_id_for_agent_session"
+  });
+  let request;
+
+  const result = await authorizePreparedTaskActionWithElicitation({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "action_full_id_for_agent_session",
+    clientName: "codex",
+    elicit: async (params) => {
+      request = params;
+      return { action: "accept", content: {} };
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "approved");
+  assert.match(result.confirmationRef, /^local-approval:approval_/);
+  assert.match(request.message, /task_guard/);
+  assert.match(request.message, /action_full_id_for_agent_session/);
+  assert.match(request.message, /request_revision/);
+  assert.match(request.message, /Send this exact response/);
+  const stored = await readLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "action_full_id_for_agent_session"
+  });
+  assert.equal(stored.action.authorization.type, "human_approval");
+  assert.equal(stored.action.authorization.approvedBy, "mcp_elicitation:codex");
+});
+
+test("MCP elicitation decline and unsupported clients do not authorize prepared actions", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-elicitation-decline-"));
+  await persistTaskWorkspace({ stateRoot, task: task(), localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    actionType: "request_revision",
+    payload: { text: "Do not send" },
+    clientActionId: "action_declined"
+  });
+
+  const declined = await authorizePreparedTaskActionWithElicitation({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "action_declined",
+    clientName: "codex",
+    elicit: async () => ({ action: "decline" })
+  });
+  assert.equal(declined.code, "LOCAL_APPROVAL_DECLINED");
+  assert.equal((await readLocalAction({
+    stateRoot, taskId: "task_guard", clientActionId: "action_declined"
+  })).action.authorization, null);
+
+  const cancelled = await authorizePreparedTaskActionWithElicitation({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "action_declined",
+    clientName: "codex",
+    elicit: async () => ({ action: "cancel" })
+  });
+  assert.equal(cancelled.code, "LOCAL_APPROVAL_CANCELLED");
+
+  const unsupported = await authorizePreparedTaskActionWithElicitation({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "action_declined",
+    clientName: "legacy-client"
+  });
+  assert.equal(unsupported.code, "MCP_ELICITATION_UNSUPPORTED");
+  assert.equal(unsupported.taskId, "task_guard");
+  assert.equal(unsupported.clientActionId, "action_declined");
+  assert.equal(unsupported.fallbackUrl, "http://127.0.0.1:8787/");
 });
 
 test("prepared action returns CONTEXT_CHANGED and never mutates Relay", async () => {

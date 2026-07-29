@@ -3051,6 +3051,10 @@ button.list-header:focus-visible {
   font-size: 12px;
 }
 
+.local-approval-item .status-text {
+  overflow-wrap: anywhere;
+}
+
 .status-text:empty {
   display: none;
 }
@@ -3795,17 +3799,12 @@ function renderLocalApprovals(actions) {
   return '<div class="local-approval-list">' + pending.map((action) =>
     '<div class="local-approval-item">' +
       '<strong>' + escapeHtml(action.actionType || "AgentRelay action") + '</strong>' +
-      '<span class="status-text">Action ' + escapeHtml(shortActionId(action.clientActionId)) + '</span>' +
+      '<span class="status-text">Action ' + escapeHtml(action.clientActionId || "") + '</span>' +
       '<pre>' + escapeHtml(JSON.stringify(action.payload || {}, null, 2)) + '</pre>' +
       '<button type="button" data-approve-local-action="' + escapeAttr(action.clientActionId || "") + '">Approve once</button>' +
       '<span class="status-text" data-approval-status></span>' +
     '</div>'
   ).join("") + '</div>';
-}
-
-function shortActionId(actionId) {
-  const value = String(actionId || "");
-  return value.length > 18 ? value.slice(0, 15) + "..." : value;
 }
 
 function renderHandoffPrompt(issue) {
