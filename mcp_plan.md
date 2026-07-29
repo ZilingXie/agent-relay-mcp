@@ -2,8 +2,9 @@
 
 Last updated: 2026-07-29
 
-Latest update: the MCP-native action approval change adds standard form
-elicitation for exact prepared mutations. Compatible MCP clients now keep
+Latest update: Client PR
+[#77](https://github.com/ZilingXie/agent-relay-mcp/pull/77) adds standard MCP
+form elicitation for exact prepared mutations. Compatible MCP clients now keep
 approval and submission in the active agent session, while the Local Inbox
 remains a compatibility fallback and displays full action ids. The existing
 payload/context binding, one-time authorization, service policy, and ambiguous
