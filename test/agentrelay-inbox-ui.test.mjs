@@ -39,13 +39,13 @@ test("loadInboxSnapshot returns an empty inbox when issues.json is missing", asy
   });
 });
 
-test("local inbox template requires explicit human confirmation before Relay mutations", async () => {
+test("local inbox template requires MCP client confirmation before Relay mutations", async () => {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const template = await readFile(join(repoRoot, "templates/local-inbox/AGENTS.md"), "utf8");
 
-  assert.match(template, /waits for the user's explicit confirmation/);
-  assert.match(template, /Do not claim[\s\S]*until the local user confirms/);
-  assert.match(template, /including `claim_task`, `submit_artifact`, `request_revision`, `amend_task`,[\s\S]*`update_status`, and `close_task`/);
+  assert.match(template, /MCP form elicitation asks the user/);
+  assert.match(template, /Do\s+not claim[\s\S]*unless the user accepts/);
+  assert.match(template, /before any AgentRelay mutation[\s\S]*`claim_task`[\s\S]*`submit_artifact`[\s\S]*`request_revision`[\s\S]*`amend_task`[\s\S]*`update_status`[\s\S]*`close_task`/);
 });
 
 test("loadInboxSnapshot normalizes and sorts issues from issues.json", async () => {
@@ -589,7 +589,7 @@ test("inbox UI detail reads local workspace and explicit resync fetches Relay wi
   }
 });
 
-test("Local Inbox is the trusted issuer for one-time action approvals", async () => {
+test("Local Inbox remains a trusted fallback issuer for one-time action approvals", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-approval-"));
   const stateRoot = join(root, "state");
   const task = {
@@ -636,7 +636,8 @@ test("Local Inbox is the trusted issuer for one-time action approvals", async ()
     assert.equal(detail.actions[0].authorizationActive, false);
     assert.equal(detail.actions[0].canApprove, true);
     const appJs = await (await fetch(`http://127.0.0.1:${port}/app.js`)).text();
-    assert.match(appJs, /shortActionId\(action\.clientActionId\)/);
+    assert.match(appJs, /Action ' \+ escapeHtml\(action\.clientActionId \|\| ""\)/);
+    assert.doesNotMatch(appJs, /shortActionId/);
     assert.equal((await fetch(path, { method: "POST" })).status, 403);
     const response = await fetch(path, {
       method: "POST",

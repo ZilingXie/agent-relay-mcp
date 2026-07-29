@@ -158,7 +158,7 @@ The user should only need to:
 
 - create tasks
 - provide extra information when the local agent asks
-- approve/accept completed work
+- approve exact external actions in the current MCP agent session
 - tune `templates/local-inbox/AGENTS.md` when product local-agent behavior should change
 
 The local agent should:
@@ -167,7 +167,7 @@ The local agent should:
 - write durable local issue state before ACK, including a `localWorkflowBinding` that maps the Relay task to this local inbox without forcing Codex App, CLI, Slack, WeChat, or another UI
 - display pending task context in the inbox UI
 - prepare safe prompts the user can copy into Codex App, Codex CLI, Slack, WeChat, or another local agent workflow
-- ask the user before commitments, sensitive disclosures, external replies that represent user decisions, task amendment, and task closure
+- show exact commitments, sensitive disclosures, external replies, amendments, and closures before requesting in-session MCP confirmation
 
 Automatic local processing is opt-in. To experiment with it after reviewing the
 safety policy, set:
@@ -256,8 +256,9 @@ allowlists, and local side effects remain in non-hot-updatable MCP core. Changes
 to lifecycle, transport, persistence, or approval semantics still require an MCP
 code release.
 
-Protocol activation, trusted Local Inbox approval, and the bounded Hermes
-service policy are documented in [`docs/guardrail.md`](docs/guardrail.md).
+Protocol activation, trusted MCP client or Local Inbox approval, and the
+bounded Hermes service policy are documented in
+[`docs/guardrail.md`](docs/guardrail.md).
 
 ## Legacy Codex App Thread Receiver
 

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
+import { authorizePreparedTaskActionWithElicitation, executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
 import { resyncLocalTask, unwrapTask } from "../scripts/agentrelay-task-context-sync.mjs";
 import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, isLocalAuthorizationCurrent, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
@@ -1095,7 +1095,7 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
     return { ok: false, status: "rejected", taskId: String(args.taskId || ""), ...generationError };
   }
   const preparedPayload = preparedActionPayload(args);
-  const resolvedArgs = resolvePreparedAction && !args.clientActionId
+  let resolvedArgs = resolvePreparedAction && !args.clientActionId
     ? await resolvePreparedSemanticAction({ args, actionType, preparedPayload })
     : args;
   const mutate = async (idempotencyKey) => {
@@ -1113,6 +1113,20 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
     );
   };
   if (resolvedArgs.clientActionId) {
+    if (!servicePolicyPath) {
+      const clientCapabilities = server.server.getClientCapabilities();
+      const approval = await authorizePreparedTaskActionWithElicitation({
+        stateRoot,
+        taskId: resolvedArgs.taskId,
+        clientActionId: resolvedArgs.clientActionId,
+        clientName: server.server.getClientVersion()?.name || "mcp-client",
+        elicit: clientCapabilities?.elicitation?.form
+          ? (params) => server.server.elicitInput(params)
+          : null
+      });
+      if (!approval.ok) return approval;
+      resolvedArgs = { ...resolvedArgs, confirmationRef: approval.confirmationRef };
+    }
     return executePreparedTaskAction({
       stateRoot,
       taskId: resolvedArgs.taskId,
@@ -1134,7 +1148,7 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
     status: "rejected",
     code: "LOCAL_AUTHORIZATION_REQUIRED",
     taskId: String(resolvedArgs.taskId || ""),
-    message: "Prepare the exact action and approve it through the trusted Local Inbox before submission."
+    message: "Prepare the exact action, show it to the user, then call the matching mutation tool. A compatible MCP client will request confirmation in the current session before submission."
   };
 }
 

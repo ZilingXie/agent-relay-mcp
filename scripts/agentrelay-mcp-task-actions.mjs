@@ -1,6 +1,8 @@
 import {
+  approveLocalAction,
   compareTaskContextEnvelopes,
   hashStableJson,
+  isLocalAuthorizationCurrent,
   readLocalAction,
   readLocalApproval,
   updateLocalAction
@@ -11,6 +13,98 @@ import {
   loadServicePolicy,
   validateLocalAuthorization
 } from "./agentrelay-service-policy.mjs";
+
+export async function authorizePreparedTaskActionWithElicitation({
+  stateRoot,
+  taskId,
+  clientActionId,
+  clientName = "mcp-client",
+  elicit,
+  now = () => new Date().toISOString()
+}) {
+  const { action } = await readLocalAction({ stateRoot, taskId, clientActionId });
+  if (action.status === "sent") {
+    return {
+      ok: true,
+      status: "already_sent",
+      taskId: String(taskId),
+      clientActionId,
+      confirmationRef: action.confirmationRef
+    };
+  }
+  if (action.status === "stale") {
+    return rejection("CONTEXT_CHANGED", taskId, clientActionId, {
+      changedFields: action.changedFields || []
+    });
+  }
+  if (!new Set(["awaiting_confirmation", "submission_unknown"]).has(action.status)) {
+    return rejection("ACTION_NOT_SUBMITTABLE", taskId, clientActionId, {
+      actionStatus: action.status
+    });
+  }
+  if (isLocalAuthorizationCurrent(action.authorization, {
+    at: now(),
+    allowedStatuses: ["active", "submitting"]
+  })) {
+    return {
+      ok: true,
+      status: "already_authorized",
+      taskId: String(taskId),
+      clientActionId,
+      confirmationRef: action.confirmationRef
+    };
+  }
+  if (action.status === "submission_unknown") {
+    return rejection("LOCAL_AUTHORIZATION_EXPIRED", taskId, clientActionId, {
+      message: "The authorization for this ambiguous submission expired. Inspect Relay state before preparing another action."
+    });
+  }
+  if (typeof elicit !== "function") {
+    return rejection("MCP_ELICITATION_UNSUPPORTED", taskId, clientActionId, {
+      message: "This MCP client cannot show in-session action confirmation. Use a client with MCP form elicitation support or approve the exact action in the Local Inbox.",
+      fallbackUrl: "http://127.0.0.1:8787/"
+    });
+  }
+
+  let response;
+  try {
+    response = await elicit({
+      mode: "form",
+      message: buildActionApprovalMessage(action),
+      requestedSchema: { type: "object", properties: {} }
+    });
+  } catch (error) {
+    return rejection("MCP_ELICITATION_UNAVAILABLE", taskId, clientActionId, {
+      message: `The MCP client could not show action confirmation: ${String(error?.message || error)}`
+    });
+  }
+  if (response?.action !== "accept") {
+    return rejection(
+      response?.action === "decline" ? "LOCAL_APPROVAL_DECLINED" : "LOCAL_APPROVAL_CANCELLED",
+      taskId,
+      clientActionId,
+      { message: "The AgentRelay action was not sent." }
+    );
+  }
+
+  const approvedBy = `mcp_elicitation:${sanitizeApprovalActor(clientName)}`;
+  const approval = await approveLocalAction({
+    stateRoot,
+    taskId,
+    clientActionId,
+    approvedBy,
+    at: now()
+  });
+  return {
+    ok: true,
+    status: approval.alreadyApproved ? "already_authorized" : "approved",
+    taskId: String(taskId),
+    clientActionId,
+    approvalId: approval.approvalId,
+    confirmationRef: approval.confirmationRef,
+    expiresAt: approval.expiresAt
+  };
+}
 
 export async function executePreparedTaskAction({
   stateRoot,
@@ -258,6 +352,22 @@ export async function executePreparedTaskAction({
     relayResponse,
     contextSyncStatus: postSync.status
   };
+}
+
+function buildActionApprovalMessage(action) {
+  return [
+    "Approve this exact AgentRelay action once?",
+    "",
+    `Task: ${action.taskId}`,
+    `Action ID: ${action.clientActionId}`,
+    `Action type: ${action.actionType}`,
+    "Payload:",
+    JSON.stringify(action.payload || {}, null, 2)
+  ].join("\n");
+}
+
+function sanitizeApprovalActor(value) {
+  return String(value || "mcp-client").replace(/[\r\n\t]/g, " ").slice(0, 80) || "mcp-client";
 }
 
 export function legacyActionIdempotencyKey({ taskId, actionType, payload }) {

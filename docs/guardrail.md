@@ -30,13 +30,16 @@ Only a Relay `hot_rollback` may activate an older revision. Set
 ## Human approval
 
 An Agent may prepare an exact action, but it cannot approve that action by
-supplying a confirmation string. The Local Inbox issues the one-time approval
-record and binds it to the action type, exact payload hash, current Task context
-hash, expiry, and local confirmation reference. Before mutation, MCP resyncs the
-Task, validates the transition, and requires the embedded authorization to match
-the independent Local Inbox approval record. Successful submission consumes the
-authorization; an ambiguous network result may retry only the same action and
-idempotency key.
+supplying a confirmation string. For clients that advertise MCP form
+elicitation, the MCP Core presents the task, full action id, action type, and
+exact payload in the current agent session. Only the client's `accept` response
+issues the one-time approval record. Clients without this capability may use
+the Local Inbox as a compatibility fallback. Both paths bind authorization to
+the action type, exact payload hash, current Task context hash, expiry, and
+local confirmation reference. Before mutation, MCP resyncs the Task, validates
+the transition, and requires the embedded authorization to match the approval
+record. Successful submission consumes the authorization; an ambiguous network
+result may retry only the same action and idempotency key.
 
 Direct Protocol v0.5 create is disabled by default. A user creates a Task through
 the Local Inbox reviewed-draft Send action. `AGENTRELAY_ALLOW_DIRECT_CREATE=1`

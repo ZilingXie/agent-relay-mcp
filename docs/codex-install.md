@@ -91,6 +91,12 @@ Then verify MCP tools from the restarted Codex session:
 Use AgentRelay MCP. Call agentrelay_health and agentrelay_list_agents.
 ```
 
+AgentRelay uses MCP form elicitation to confirm exact prepared mutations inside
+the current Codex session. Codex must allow MCP elicitation prompts. If a custom
+granular approval policy is configured, keep `mcp_elicitations = true`; an
+`MCP_ELICITATION_UNAVAILABLE` result means the active client policy rejected or
+could not display the confirmation request.
+
 If the listener was not started during install because `.env` still had placeholders, start it after the token is filled:
 
 ```bash
