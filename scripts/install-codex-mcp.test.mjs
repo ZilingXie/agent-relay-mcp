@@ -58,6 +58,8 @@ test("installer writes an env template when no env file exists", async () => {
   assert.match(env, /AGENTRELAY_AGENT_ID="template-agent"/);
   assert.match(env, /AGENTRELAY_TOKEN="replace-with-cloud-token"/);
   assert.match(env, /AGENTRELAY_HUMAN_APPROVAL_MODE=conversation/);
+  assert.match(env, /AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0\.6/);
+  assert.match(env, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0\.5/);
 });
 
 test("installer overwrites an existing env file only when explicitly requested", async () => {

@@ -35,7 +35,8 @@ export function buildLocalInboxEnvBlock({
   agentRole = "personal_agent",
   executionMode = "notify_only",
   humanApprovalMode = "conversation",
-  protocolVersion = "agent-collab-v0.5",
+  protocolVersion = "agent-collab-v0.6",
+  compatProtocolVersions = "agent-collab-v0.5",
   processOnReceive = false,
   executeOnReceive = false,
   host = "127.0.0.1",
@@ -47,6 +48,9 @@ export function buildLocalInboxEnvBlock({
     `AGENTRELAY_EXECUTION_MODE=${envValue(executionMode)}`,
     `AGENTRELAY_HUMAN_APPROVAL_MODE=${envValue(humanApprovalMode)}`,
     `AGENTRELAY_PROTOCOL_VERSION=${envValue(protocolVersion)}`,
+    ...(String(compatProtocolVersions || "").trim()
+      ? [`AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=${envValue(compatProtocolVersions)}`]
+      : []),
     `AGENTRELAY_INBOX_DIR=${envValue(inboxDir)}`,
     `AGENTRELAY_STATE_DIR=${envValue(stateDir)}`,
     `AGENTRELAY_LISTENER_HOOK=${envValue(hookCommand)}`,
@@ -65,8 +69,17 @@ export function buildLocalInboxEnvBlock({
 export function upsertLocalInboxEnvBlock(current, block) {
   const pattern = /# BEGIN AgentRelay Local Inbox managed block\n[\s\S]*?# END AgentRelay Local Inbox managed block\n?/m;
   const normalized = current.endsWith("\n") || current.length === 0 ? current : `${current}\n`;
-  if (pattern.test(normalized)) return normalized.replace(pattern, block);
-  return `${normalized}${normalized ? "\n" : ""}${block}`;
+  const managedKeys = new Set([
+    ...block.split("\n").map(envAssignmentKey).filter(Boolean),
+    "AGENTRELAY_COMPAT_PROTOCOL_VERSIONS"
+  ]);
+  const preserved = normalized
+    .replace(pattern, "")
+    .split("\n")
+    .filter((line) => !managedKeys.has(envAssignmentKey(line)))
+    .join("\n")
+    .trimEnd();
+  return `${preserved}${preserved ? "\n\n" : ""}${block}`;
 }
 
 export function buildInitialEnv({ baseUrl, wsUrl, agentId, username, token, localBlock }) {
@@ -113,11 +126,17 @@ async function installLocalInbox({
   const port = Number.parseInt(args.port || process.env.AGENTRELAY_INBOX_UI_PORT || "8787", 10);
   const processOnReceive = Boolean(args["enable-auto-processor"]);
   const executeOnReceive = Boolean(args["enable-auto-executor"]);
+  const protocolVersion = args["protocol-version"] || "agent-collab-v0.6";
+  const compatProtocolVersions = args["no-compat-protocols"]
+    ? ""
+    : (args["compat-protocol-versions"] || "agent-collab-v0.5");
   const localBlock = buildLocalInboxEnvBlock({
     repoRoot: root,
     inboxDir,
     stateDir,
     hookCommand: `${shellQuote(nodePath)} ${shellQuote(resolve(root, "scripts/agentrelay-inbox-intake.mjs"))}`,
+    protocolVersion,
+    compatProtocolVersions,
     processOnReceive,
     executeOnReceive,
     host,
@@ -177,6 +196,7 @@ async function installLocalInbox({
   console.log(`Env file: ${envPath}`);
   console.log(`Inbox UI: http://${host}:${port}/`);
   console.log("Default receive mode: personal_agent notify_only. Incoming tasks are saved and shown; no local agent is auto-run.");
+  console.log(`Protocol: ${protocolVersion}${compatProtocolVersions ? `; compatibility lanes: ${compatProtocolVersions}` : ""}`);
   console.log("Next steps:");
   console.log("1. Fill AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, and AGENTRELAY_TOKEN in .env without sharing the token.");
   console.log("2. Restart Codex App or open a new Codex session.");
@@ -239,6 +259,7 @@ function parseArgs(argv) {
       "skip-listener-service",
       "enable-auto-processor",
       "enable-auto-executor",
+      "no-compat-protocols",
       "help"
     ].includes(rawKey)) {
       parsed[rawKey] = true;
@@ -270,6 +291,9 @@ Options:
   --config PATH               Codex config path. Default: ~/.codex/config.toml
   --host HOST                 Inbox UI host. Default: 127.0.0.1
   --port PORT                 Inbox UI port. Default: 8787
+  --protocol-version VERSION  Primary protocol. Default: agent-collab-v0.6
+  --compat-protocol-versions  Comma-separated Listener compatibility lanes. Default: agent-collab-v0.5
+  --no-compat-protocols       Disable compatibility Listener lanes
   --enable-auto-processor     Opt in to running the local LLM processor when a message arrives
   --enable-auto-executor      Opt in to running the structured action executor after processor output
   --skip-ui-service           Do not install/start the inbox UI service
@@ -285,6 +309,11 @@ function resolveHome(path) {
 
 function envValue(value) {
   return JSON.stringify(String(value || ""));
+}
+
+function envAssignmentKey(line) {
+  const match = String(line || "").match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+  return match?.[1] || "";
 }
 
 function shellQuote(value) {

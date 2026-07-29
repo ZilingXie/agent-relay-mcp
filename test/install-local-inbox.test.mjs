@@ -30,7 +30,8 @@ test("buildLocalInboxEnvBlock configures listener hook and local inbox state", (
   assert.match(block, /AGENTRELAY_STATE_DIR="\/Users\/zac\/project\/agentRelay\/state"/);
   assert.match(block, /AGENTRELAY_LISTENER_HOOK="\/usr\/local\/bin\/node \/Users\/zac\/project\/agentRelay\/scripts\/agentrelay-inbox-intake\.mjs"/);
   assert.match(block, /AGENTRELAY_ACK_ON_INBOX_RECEIVED=1/);
-  assert.match(block, /AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0\.5"/);
+  assert.match(block, /AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0\.6"/);
+  assert.match(block, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0\.5"/);
   assert.match(block, /AGENTRELAY_READINESS_PUBLISH_MS=60000/);
   assert.match(block, /AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0/);
   assert.match(block, /AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0/);
@@ -50,10 +51,38 @@ test("buildLocalInboxEnvBlock can explicitly opt into automatic processing", () 
   assert.match(block, /AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=1/);
 });
 
+test("buildLocalInboxEnvBlock can disable protocol compatibility lanes", () => {
+  const block = buildLocalInboxEnvBlock({
+    repoRoot: "/repo",
+    compatProtocolVersions: ""
+  });
+
+  assert.doesNotMatch(block, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS/);
+});
+
+test("upsertLocalInboxEnvBlock removes disabled legacy compatibility lanes", () => {
+  const existing = "AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.5\n";
+  const block = buildLocalInboxEnvBlock({
+    repoRoot: "/repo",
+    compatProtocolVersions: ""
+  });
+
+  const next = upsertLocalInboxEnvBlock(existing, block);
+
+  assert.doesNotMatch(next, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS/);
+});
+
 test("upsertLocalInboxEnvBlock preserves existing credentials", () => {
   const existing = [
     "AGENTRELAY_BASE_URL=https://server.stellarix.space/agentrelay/api",
     "AGENTRELAY_TOKEN=secret-token",
+    "AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.5",
+    "AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.4",
+    "AGENTRELAY_CUSTOM_SETTING=preserved",
+    "# BEGIN AgentRelay Local Inbox managed block",
+    "AGENTRELAY_PROTOCOL_VERSION=\"agent-collab-v0.5\"",
+    "AGENTRELAY_INBOX_UI_PORT=\"7777\"",
+    "# END AgentRelay Local Inbox managed block",
     ""
   ].join("\n");
   const block = buildLocalInboxEnvBlock({
@@ -66,7 +95,13 @@ test("upsertLocalInboxEnvBlock preserves existing credentials", () => {
   const next = upsertLocalInboxEnvBlock(existing, block);
 
   assert.match(next, /AGENTRELAY_TOKEN=secret-token/);
+  assert.match(next, /AGENTRELAY_CUSTOM_SETTING=preserved/);
   assert.match(next, /AGENTRELAY_LISTENER_HOOK="node \/repo\/scripts\/agentrelay-inbox-intake\.mjs"/);
+  assert.match(next, /AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0\.6"/);
+  assert.match(next, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0\.5"/);
+  assert.equal((next.match(/^AGENTRELAY_PROTOCOL_VERSION=/gm) || []).length, 1);
+  assert.equal((next.match(/^AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=/gm) || []).length, 1);
+  assert.equal((next.match(/^AGENTRELAY_INBOX_UI_PORT=/gm) || []).length, 1);
 });
 
 test("buildInitialEnv writes placeholders plus local inbox defaults", () => {
@@ -88,6 +123,8 @@ test("buildInitialEnv writes placeholders plus local inbox defaults", () => {
   assert.match(env, /AGENTRELAY_AGENT_ID="replace-with-agent-id"/);
   assert.match(env, /AGENTRELAY_USERNAME="replace-with-username"/);
   assert.match(env, /AGENTRELAY_TOKEN="replace-with-cloud-token"/);
+  assert.match(env, /AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0\.6"/);
+  assert.match(env, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0\.5"/);
   assert.match(env, /BEGIN AgentRelay Local Inbox managed block/);
 });
 

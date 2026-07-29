@@ -88,7 +88,7 @@ npm run health:install
 Installation is complete when `health:install` receives the synthetic
 `agentrelay-healthcheck` ACK Message, confirms the Task appears in the Local
 Inbox state/UI, waits for delivery ACK, and completes the Task with current
-v0.5 context.
+protocol context.
 
 A real `project-hermes` task is optional E2E validation. If it fails after `health:install` passes, debug Hermes or its adapter rather than the MCP install.
 
@@ -122,7 +122,10 @@ The local agent should:
 
 ## Important Constraints
 
-- Preserve an existing `.env`; only update the non-secret local inbox managed block.
+- Preserve credentials and unrelated settings in an existing `.env`; update the
+  non-secret local inbox managed block and remove duplicate managed keys.
+- Migrate the managed primary protocol to `agent-collab-v0.6` and keep the
+  temporary `agent-collab-v0.5` Listener compatibility lane.
 - Keep `AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0` and `AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0` by default.
 - Store tokens in `.env`, not in `~/.codex/config.toml`.
 - Do not print secrets.

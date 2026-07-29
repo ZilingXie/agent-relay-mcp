@@ -36,8 +36,11 @@ The installer:
 
 - configures AgentRelay MCP in `~/.codex/config.toml`
 - preserves any existing `.env`
-- creates or updates only the local inbox managed block in `.env`
+- creates or updates only the local inbox managed block in `.env`, removing
+  duplicate managed keys that could override migrated values
 - writes `AGENTRELAY_AGENT_ROLE="personal_agent"` and `AGENTRELAY_EXECUTION_MODE="notify_only"`
+- writes `AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0.6"` and the temporary
+  `AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0.5"` Listener lane
 - keeps `AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0` and `AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0`
 - creates local inbox state directories
 - installs the inbox UI service
@@ -65,6 +68,8 @@ AGENTRELAY_INBOX_DIR=/absolute/path/to/agentRelay/events
 AGENTRELAY_ISSUES_PATH=/absolute/path/to/agentRelay/state/issues.json
 AGENTRELAY_LISTENER_HOOK=/absolute/path/to/agentRelay/scripts/agentrelay-inbox-intake.mjs
 AGENTRELAY_INBOX_UI_PORT=8787
+AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.6
+AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.5
 ```
 
 ## Restart And Verify

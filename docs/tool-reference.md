@@ -15,8 +15,9 @@ allowlist, protected bindings, and schemas are checked before activation.
 ### `agentrelay_protocol_status`
 
 Reports the MCP runtime version and capabilities, current negotiation action,
-active verified bundle, and whether a new MCP code release is required. Set
-`refresh=true` to negotiate again.
+active verified bundle, configured primary protocol, Listener compatibility
+protocols, and whether a new MCP code release is required. Set `refresh=true`
+to negotiate again.
 
 The response also includes the process-loaded and currently installed runtime
 generations. When they differ, `restart_required` is true and every mutation

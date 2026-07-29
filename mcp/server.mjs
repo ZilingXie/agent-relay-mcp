@@ -55,6 +55,10 @@ const bearerToken = process.env.AGENTRELAY_TOKEN || "";
 const allowDirectCreate = new Set(["1", "true", "yes"]).has(String(process.env.AGENTRELAY_ALLOW_DIRECT_CREATE || "").toLowerCase());
 const exposeLegacyProtocolTools = envFlag("AGENTRELAY_EXPOSE_LEGACY_PROTOCOL_TOOLS");
 const humanApprovalMode = parseHumanApprovalMode(process.env.AGENTRELAY_HUMAN_APPROVAL_MODE || "conversation");
+const compatibilityProtocolVersions = String(process.env.AGENTRELAY_COMPAT_PROTOCOL_VERSIONS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const preparedActionTypes = [
   "submit_artifact", "request_revision", "amend_task", "close_task",
   "reply", "complete_task", "fail_task", "create_followup",
@@ -194,6 +198,8 @@ function registerTools(mcpServer) {
         },
         legacy_protocol_tools_exposed: exposeLegacyProtocolTools,
         human_approval_mode: humanApprovalMode,
+        configured_protocol_version: ACTIVE_PROTOCOL_VERSION,
+        compatibility_protocol_versions: compatibilityProtocolVersions,
         ...protocolRuntimeStatus
       });
     }
