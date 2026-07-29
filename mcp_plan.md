@@ -2,11 +2,11 @@
 
 Last updated: 2026-07-29
 
-Latest update: the conversational approval compatibility correction makes the
-explicit approval in a later chat message the default and only user interaction.
-The exact prepared action still receives a payload/context-bound one-time
-authorization, while form elicitation remains an explicit operator mode for
-clients that reliably implement it.
+Latest update: the production installer migrates its managed primary protocol
+from v0.5 to v0.6, keeps a temporary v0.5 Listener compatibility lane, and
+deduplicates managed `.env` keys without touching credentials. Doctor now fails
+when the configured primary protocol differs from Relay, matching the MCP tool
+activation guard instead of reporting a false-green installation.
 
 ## Audience And Sources
 

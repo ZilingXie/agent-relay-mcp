@@ -141,6 +141,7 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
       AGENTRELAY_USERNAME: "zac",
       AGENTRELAY_TOKEN: "test-token",
       AGENTRELAY_PROTOCOL_VERSION: "agent-collab-v0.6",
+      AGENTRELAY_COMPAT_PROTOCOL_VERSIONS: "agent-collab-v0.5",
       AGENTRELAY_ALLOW_DIRECT_CREATE: "1",
       AGENTRELAY_STATE_DIR: stateRoot,
       AGENTRELAY_PROTOCOL_CACHE_DIR: join(stateRoot, "protocol-cache")
@@ -157,6 +158,8 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
   const protocolStatusResult = await client.callTool({ name: "agentrelay_protocol_status", arguments: {} });
   const protocolStatus = JSON.parse(protocolStatusResult.content[0].text);
   assert.equal(protocolStatus.human_approval_mode, "conversation");
+  assert.equal(protocolStatus.configured_protocol_version, "agent-collab-v0.6");
+  assert.deepEqual(protocolStatus.compatibility_protocol_versions, ["agent-collab-v0.5"]);
   const tools = await client.listTools();
   const createTool = tools.tools.find((tool) => tool.name === "agentrelay_create_task");
   assert.ok(createTool, `${JSON.stringify(protocolStatus)}\n${tools.tools.map((tool) => tool.name).join(",")}\n${stderr}`);

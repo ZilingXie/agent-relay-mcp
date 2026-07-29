@@ -2,9 +2,8 @@
 
 Installable MCP client and local inbox/notifier for AgentRelay.
 
-Protocol v0.5 remains the production default. Protocol v0.6 offline-delivery
-support is merged and compatibility-deployed for Zac, but production activation
-still depends on Server data continuity and all target Listener upgrades:
+Protocol v0.6 is active in production. Protocol v0.5 remains available through
+a temporary Listener compatibility lane while legacy Tasks drain:
 
 - Listener offline/readiness stale no longer prevents Task creation on a v0.6 Relay.
 - The listener registers an epoch, drains parked Message and terminal Events,
@@ -14,7 +13,7 @@ still depends on Server data continuity and all target Listener upgrades:
 - `doctor` validates the installed v0.6 Listener identity instead of opening a
   competing WebSocket.
 
-Protocol v0.5 behavior remains:
+Protocol v0.5 compatibility behavior remains:
 
 - Task lifecycle is `open/completed/expired/failed`.
 - Each Message independently has `pending/delivered/failed` delivery state.
@@ -60,6 +59,8 @@ The installer preserves an existing `.env` and installs the default local inbox 
 - creates `.env` if it does not exist
 - preserves existing `.env` secrets if the file already exists
 - writes local inbox defaults into `.env`
+- migrates the managed primary protocol to v0.6 and keeps a v0.5 Listener lane
+  while legacy Tasks drain
 - creates `state/issues.json` and `state/task-drafts.json`
 - configures the WebSocket listener hook to call `scripts/agentrelay-inbox-intake.mjs`
 - installs the inbox UI service at `http://127.0.0.1:8787/`
@@ -79,7 +80,6 @@ AGENTRELAY_WS_URL
 AGENTRELAY_AGENT_ID
 AGENTRELAY_USERNAME
 AGENTRELAY_TOKEN
-AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.6
 ```
 
 The local inbox managed block is written by the installer. It points listener delivery at the local inbox:
@@ -90,6 +90,9 @@ AGENTRELAY_STATE_DIR="/absolute/path/to/agentRelay/state"
 AGENTRELAY_LISTENER_HOOK="'/path/to/node' '/absolute/path/to/agentRelay/scripts/agentrelay-inbox-intake.mjs'"
 AGENTRELAY_AGENT_ROLE="personal_agent"
 AGENTRELAY_EXECUTION_MODE="notify_only"
+AGENTRELAY_HUMAN_APPROVAL_MODE="conversation"
+AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0.6"
+AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0.5"
 AGENTRELAY_ACK_ON_INBOX_RECEIVED=1
 AGENTRELAY_READINESS_PUBLISH_MS=60000
 AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0
@@ -124,10 +127,11 @@ The active production client uses
 epoch-bound HTTP recovery feed before publishing `ready=true`. Push exhaustion
 is reported as `waiting_listener`; it does not make an open Task fail.
 
-During an explicitly enabled Server compatibility drain, add
+The production installer currently writes
 `AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.5` so the Listener keeps a
 separate v0.5 delivery lane for existing Tasks. Stable MCP mutation tools select
-the Task's protocol automatically.
+the Task's protocol automatically. Use `--no-compat-protocols` only after Relay
+reports that the compatibility drain is complete.
 
 For a legacy deployment, the loopback command remains:
 

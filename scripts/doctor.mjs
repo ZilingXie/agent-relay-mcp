@@ -25,6 +25,7 @@ const listenerStatusPath = resolveHome(process.env.AGENTRELAY_LISTENER_STATUS_PA
 const listenerInactivityMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_INACTIVITY_MS || "90000", 10);
 const inboxUiHost = process.env.AGENTRELAY_INBOX_UI_HOST || "127.0.0.1";
 const inboxUiPort = process.env.AGENTRELAY_INBOX_UI_PORT || "8787";
+const configuredProtocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "";
 let ok = true;
 let currentProtocolVersion = "";
 let localListenerStatus = null;
@@ -69,6 +70,12 @@ try {
   check("AgentRelay HTTP health", false, `${error.message} at ${baseUrl}`);
 }
 
+check(
+  "Configured primary protocol matches Relay",
+  Boolean(configuredProtocolVersion && currentProtocolVersion && configuredProtocolVersion === currentProtocolVersion),
+  `configured ${configuredProtocolVersion || "missing"}; Relay ${currentProtocolVersion || "unknown"}. Re-run the local installer to migrate managed protocol settings.`
+);
+
 try {
   const result = await syncCurrentProtocol({ baseUrl, log: null });
   check("AgentRelay protocol bundle sync", true, `${result.version} ${result.schema_digest} -> ${result.cache_dir}`);
@@ -80,8 +87,8 @@ try {
   const result = await negotiateCurrentProtocol({ baseUrl, headers: relayHeaders(), log: null });
   check(
     "AgentRelay protocol runtime compatibility",
-    result.status !== "client_release_required",
-    `${result.status} ${result.negotiation?.target?.version || ""}`.trim()
+    result.status !== "client_release_required" && result.active?.version === configuredProtocolVersion,
+    `${result.status}; configured ${configuredProtocolVersion || "missing"}; active ${result.active?.version || "missing"}`
   );
 } catch (error) {
   check("AgentRelay protocol runtime compatibility", false, error.message);
