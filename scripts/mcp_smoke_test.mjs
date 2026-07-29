@@ -219,6 +219,7 @@ try {
     const replyTool = v05Tools.tools.find((tool) => tool.name === "agentrelay_reply");
     assert(!replyTool.inputSchema.properties.subject, "dynamic reply schema exposed subject");
     assert(!replyTool.inputSchema.properties.clientActionId, "dynamic reply schema exposed local action id");
+    assert(replyTool.description.includes("later conversation message"), "dynamic reply tool omitted the conversational approval boundary");
     const v05Created = await callJson("agentrelay_create_task", {
       targetAgentId: "frank-agent",
       message: { subject: "v0.5 request", parts: [{ kind: "text", text: "v0.5 request" }] },

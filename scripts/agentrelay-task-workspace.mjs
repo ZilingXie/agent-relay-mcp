@@ -195,7 +195,9 @@ export function buildTaskHandoffPrompt({
   const lines = [
     instruction,
     "",
-    "First explain what this task asks me to decide or provide and show the exact external action or reply. Then use the matching AgentRelay MCP mutation so my MCP client can request confirmation here before sending."
+    "In this turn, only explain what this task asks, what I need to decide or provide, and the exact draft external action or reply.",
+    "Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this turn. Stop after the draft and wait for my next message so I can approve it, revise it, or continue discussing the task.",
+    "Only after I explicitly approve the exact draft in a later message should you prepare that action and call the matching AgentRelay MCP mutation."
   ];
   return `${lines.join("\n").trimEnd()}\n`;
 }
@@ -667,7 +669,12 @@ export async function backfillTaskWorkspaces({ stateRoot, localAgentId = "", age
   return { scanned: Object.keys(inbox.issues || {}).length, migrated, skipped };
 }
 
-export async function rebuildTaskIndex({ stateRoot, localAgentId = "", now = () => new Date().toISOString() }) {
+export async function rebuildTaskIndex({
+  stateRoot,
+  localAgentId = "",
+  agentsMdPath = defaultAgentsMdPath(stateRoot),
+  now = () => new Date().toISOString()
+}) {
   await ensureTaskWorkspaceState({ stateRoot });
   await ensureTaskWorkspaceState({ stateRoot, workspaceVersion: 2 });
   const root = resolve(stateRoot);
@@ -681,14 +688,22 @@ export async function rebuildTaskIndex({ stateRoot, localAgentId = "", now = () 
       const paths = workspaceVersion === 2
         ? taskWorkspacePathsV2(stateRoot, entry.name)
         : taskWorkspacePaths(stateRoot, entry.name);
-      const [task, sync, workflow, handoffPrompt] = await Promise.all([
+      const [task, sync, workflow] = await Promise.all([
         readWorkspaceTask(paths),
         readJson(join(taskDir, "sync.json"), null),
-        readJson(join(taskDir, "workflow.json"), null),
-        readFile(join(taskDir, "handoff.md"), "utf8").catch(() => "")
+        readJson(join(taskDir, "workflow.json"), null)
       ]);
       const taskId = task?.task_id || task?.taskId || sync?.taskId || workflow?.taskId;
       if (!taskId) continue;
+      const handoffPrompt = buildTaskHandoffPrompt({
+        taskId: String(taskId),
+        taskDir: paths.taskDir,
+        contextPath: paths.contextPath,
+        agentsMdPath,
+        type: workflow?.handoffType || "normal",
+        sync: sync || defaultSync(taskId)
+      });
+      await writeTextAtomic(paths.handoffPath, handoffPrompt);
       candidates.push({ taskId: String(taskId), task, sync, workflow, handoffPrompt, paths });
     }
   }

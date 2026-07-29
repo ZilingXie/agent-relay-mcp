@@ -70,6 +70,7 @@ const servicePolicyPath = process.env.AGENTRELAY_SERVICE_POLICY_PATH
 let protocolRuntimeStatus = { status: "checking", checked_at: new Date().toISOString() };
 let protocolStartupPromise = null;
 const agentToolRegistrations = new Map();
+const conversationalApprovalToolNames = new Set(["agentrelay_reply", "agentrelay_create_followup"]);
 let initialAgentToolMode = isNativeLifecycleProtocol ? "unavailable" : "legacy";
 let initialAgentToolDefinitions = [];
 const loadedRuntimeGeneration = computeRuntimeGeneration(repoRoot);
@@ -470,7 +471,7 @@ function registerTools(mcpServer) {
     "agentrelay_send_message_v05",
     {
       title: "Send Protocol v0.5 Message",
-      description: "Send the strictly alternating next Message from the exact current Task version.",
+      description: "Send the strictly alternating next Message from the exact current Task version. Call only after the user approves the exact draft in a later conversation message.",
       inputSchema: {
         taskId: z.string().min(1),
         actorAgentId: z.string().min(1),
@@ -493,7 +494,7 @@ function registerTools(mcpServer) {
     "agentrelay_complete_task_v05",
     {
       title: "Complete Protocol v0.5 Task",
-      description: "Record requester confirmation against the current delivered target Message.",
+      description: "Record requester confirmation against the current delivered target Message. Call only after the user approves this exact completion in a later conversation message.",
       inputSchema: {
         taskId: z.string().min(1),
         actorAgentId: z.string().min(1),
@@ -516,7 +517,7 @@ function registerTools(mcpServer) {
     "agentrelay_fail_task_v05",
     {
       title: "Fail Protocol v0.5 Task",
-      description: "End a v0.5 Task with a Relay-authorized failure reason.",
+      description: "End a v0.5 Task with a Relay-authorized failure reason. Call only after the user approves this exact failure in a later conversation message.",
       inputSchema: {
         taskId: z.string().min(1),
         actorAgentId: z.string().min(1),
@@ -539,7 +540,7 @@ function registerTools(mcpServer) {
     "agentrelay_create_followup_v05",
     {
       title: "Create Protocol v0.5 follow-up",
-      description: "Create a new Task under a terminal v0.5 root lineage.",
+      description: "Create a new Task under a terminal v0.5 root lineage. Call only after the user approves the exact follow-up in a later conversation message.",
       inputSchema: {
         taskId: z.string().min(1),
         message: initialMessageSchema,
@@ -569,7 +570,7 @@ function registerTools(mcpServer) {
     "agentrelay_complete_task",
     {
       title: "Complete an AgentRelay task",
-      description: "Complete the current Task through the active verified protocol adapter.",
+      description: "Complete the current Task through the active verified protocol adapter. Call only after the user approves this exact completion in a later conversation message.",
       inputSchema: {
         taskId: z.string().min(1),
         clientActionId: z.string().min(1),
@@ -583,7 +584,7 @@ function registerTools(mcpServer) {
     "agentrelay_fail_task",
     {
       title: "Fail an AgentRelay task",
-      description: "Fail the current Task for a Relay-authorized reason through the active verified protocol adapter.",
+      description: "Fail the current Task for a Relay-authorized reason through the active verified protocol adapter. Call only after the user approves this exact failure in a later conversation message.",
       inputSchema: {
         taskId: z.string().min(1),
         reason: z.string().min(1),
@@ -679,7 +680,7 @@ function registerTools(mcpServer) {
     "agentrelay_prepare_local_action",
     {
       title: "Prepare local AgentRelay action",
-      description: "Persist an exact proposed Relay mutation and bind it to the current local task context before asking the user for confirmation. This tool does not mutate Relay.",
+      description: "After the user approves an exact draft in a later conversation message, persist that proposed Relay mutation and bind it to the current local task context. Never call during the initial task explanation or drafting turn. This tool does not mutate Relay.",
       inputSchema: {
         taskId: z.string().min(1),
         actionType: z.enum(preparedActionTypes),
@@ -1209,7 +1210,7 @@ async function applyAgentToolBundle(active) {
       const registered = agentToolRegistrations.get(name);
       registered?.update({
         title: config.title,
-        description: config.description,
+        description: withConversationalApprovalBoundary(name, config.description),
         paramsSchema: config.inputSchema
       });
       registered?.enable();
@@ -1224,7 +1225,7 @@ async function applyAgentToolBundle(active) {
     if (!registered) continue;
     registered.update({
       title: definition.title,
-      description: definition.description,
+      description: withConversationalApprovalBoundary(definition.name, definition.description),
       paramsSchema: definition.paramsSchema
     });
     registered.enable();
@@ -1239,11 +1240,24 @@ async function applyAgentToolBundle(active) {
 function registerStableAgentTool(mcpServer, name, handler) {
   const definition = initialAgentToolDefinitions.find((item) => item.name === name);
   const config = definition
-    ? { title: definition.title, description: definition.description, inputSchema: definition.paramsSchema }
-    : LEGACY_AGENT_TOOL_CONFIGS[name];
+    ? {
+        title: definition.title,
+        description: withConversationalApprovalBoundary(name, definition.description),
+        inputSchema: definition.paramsSchema
+      }
+    : {
+        ...LEGACY_AGENT_TOOL_CONFIGS[name],
+        description: withConversationalApprovalBoundary(name, LEGACY_AGENT_TOOL_CONFIGS[name].description)
+      };
   const registered = mcpServer.registerTool(name, config, handler);
   agentToolRegistrations.set(name, registered);
   if (initialAgentToolMode === "unavailable") registered.disable();
+}
+
+function withConversationalApprovalBoundary(name, description) {
+  const base = String(description || "").trim();
+  if (!conversationalApprovalToolNames.has(name)) return base;
+  return `${base} Do not call during the initial task explanation or drafting turn; call only after the user approves the exact draft in a later conversation message.`;
 }
 
 function registerLegacyMutationTool(mcpServer, name, config, handler) {

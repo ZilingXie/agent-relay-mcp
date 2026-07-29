@@ -17,7 +17,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-v06-"));
   let createPayload;
-  let legacyReplyPayload;
+  let legacyReplyPayload = null;
   let legacyReplyHeaders;
   const seenRequests = [];
   const legacyTask = {
@@ -126,9 +126,10 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
     { capabilities: { elicitation: { form: {} } } }
   );
   const elicitationRequests = [];
+  let elicitationResponse = { action: "accept", content: {} };
   client.setRequestHandler(ElicitRequestSchema, async (request) => {
     elicitationRequests.push(request.params);
-    return { action: "accept", content: {} };
+    return elicitationResponse;
   });
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -203,6 +204,17 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
       payloadJson: JSON.stringify({ parts: [{ kind: "text", text: "reply through v0.5" }] })
     }
   });
+  const emptyAcceptedReply = JSON.parse((await client.callTool({
+    name: "agentrelay_reply",
+    arguments: {
+      taskId: legacyTask.task_id,
+      parts: [{ kind: "text", text: "reply through v0.5" }]
+    }
+  })).content[0].text);
+  assert.equal(emptyAcceptedReply.code, "MCP_ELICITATION_UNAVAILABLE");
+  assert.equal(legacyReplyPayload, null);
+
+  elicitationResponse = { action: "accept", content: { confirm: true } };
   const replyResult = await client.callTool({
     name: "agentrelay_reply",
     arguments: {
@@ -211,9 +223,10 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
     }
   });
   assert.notEqual(replyResult.isError, true, `${replyResult.content?.[0]?.text}\n${seenRequests.join("\n")}`);
-  assert.equal(elicitationRequests.length, 1);
+  assert.equal(elicitationRequests.length, 2);
   assert.match(elicitationRequests[0].message, /v05-drain-reply-current/);
   assert.doesNotMatch(elicitationRequests[0].message, /v05-drain-reply-expired/);
+  assert.deepEqual(elicitationRequests[0].requestedSchema.required, ["confirm"]);
   assert.equal(legacyReplyPayload.message_id, "msg_mcp_v05_drain");
   assert.equal(legacyReplyHeaders["x-agentrelay-task-protocol"], "agent-collab-v0.5");
   assert.equal(legacyReplyHeaders["x-agentrelay-bundle-digest"], legacyBundleDigest(baseUrlFor(relay)));

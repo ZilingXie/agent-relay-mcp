@@ -341,6 +341,13 @@ personal agents.
 Status: implemented in the Phase 4 notifier branch. After merge, the next
 planning focus is cloud Relay guardrails for mutation authority.
 
+Conversational approval correction: the initial copied-prompt turn is
+explanation-and-draft only and must stop without preparing or calling a Relay
+mutation. Discussion may continue without side effects. Only explicit approval
+of the exact draft in a later user message unlocks preparation, and MCP
+Elicitation requires both `accept` and `confirm=true`; an empty accepted form is
+rejected without sending.
+
 1. Default receive mode.
    - Keep `personal_agent` installs in `notify_only` mode.
    - Do not auto-run processor or executor in the default local UI server.
@@ -360,9 +367,9 @@ planning focus is cloud Relay guardrails for mutation authority.
    - Do not copy the remote task body into the prompt.
    - Keep detailed MCP usage and untrusted-remote-content handling in the
      shipped Local Inbox `AGENTS.md` template. The generated prompt also states
-     the critical boundary: explain what the user must decide or provide,
-     show the exact external action/reply, then invoke the matching mutation so
-     the MCP client can request confirmation before submission.
+     the critical boundary: explain what the user must decide or provide, show
+     the exact draft external action/reply, and stop. Preparation and mutation
+     are allowed only after explicit approval in a later user message.
    - Tell the local agent to separate what it can complete directly from what
      requires the local user to confirm, approve, provide missing context, or
      exercise human judgment.
@@ -373,9 +380,11 @@ planning focus is cloud Relay guardrails for mutation authority.
 4. Reply path.
    - Incoming-task replies are not submitted by the UI.
    - The local agent reads task details with read-only MCP tools, shows the exact
-     proposed action or reply, then calls the matching mutation tool. The MCP
-     client requests explicit confirmation before submission. Opening or
-     handing off a task is not approval.
+     proposed action or reply, and stops. It may continue discussing or revising
+     the draft, but calls the prepare and matching mutation tools only after the
+     user explicitly approves that exact draft in a later message.
+   - MCP Elicitation requires both `accept` and `confirm=true`; empty acceptance,
+     opening, or handing off a task is not approval.
    - The optional local processor/executor path enforces the same boundary:
      without a durable local human-reply id it neither creates a mutation outbox
      item nor executes submit, revision, amendment, or close actions.

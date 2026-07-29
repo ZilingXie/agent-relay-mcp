@@ -32,12 +32,18 @@ Only a Relay `hot_rollback` may activate an older revision. Set
 An Agent may prepare an exact action, but it cannot approve that action by
 supplying a confirmation string. For clients that advertise MCP form
 elicitation, the MCP Core presents the task, full action id, action type, and
-exact payload in the current agent session. Only the client's `accept` response
-issues the one-time approval record. Clients without this capability may use
-the Local Inbox as a compatibility fallback. Both paths bind authorization to
-the action type, exact payload hash, current Task context hash, expiry, and
-local confirmation reference. Before mutation, MCP resyncs the Task, validates
-the transition, and requires the embedded authorization to match the approval
+exact payload in the current agent session. The initial handoff turn is
+draft-only: the Agent explains the task, shows the exact draft, and stops. It may
+prepare and submit only after the user explicitly approves that draft in a later
+conversation message.
+
+Elicitation independently requires both the client's `accept` action and the
+required `confirm=true` form value. An empty accepted form does not issue an
+approval record and sends nothing. Clients without this capability may use the
+Local Inbox as a compatibility fallback. Both paths bind authorization to the
+action type, exact payload hash, current Task context hash, expiry, and local
+confirmation reference. Before mutation, MCP resyncs the Task, validates the
+transition, and requires the embedded authorization to match the approval
 record. Successful submission consumes the authorization; an ambiguous network
 result may retry only the same action and idempotency key.
 

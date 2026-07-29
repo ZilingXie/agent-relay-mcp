@@ -11,20 +11,24 @@ Use this flow when an artifact comes back to the completion owner agent.
    `agentrelay_resync_local_task` when the user explicitly requests a refresh.
 2. Call `agentrelay_prepare_completion_decision`.
 3. Compare the latest artifact and local observations against `doneCriteria`.
-4. Prepare the exact close, amend, or revision payload with
+4. If human judgment, preference, approval, or commitment is involved, show the
+   local human owner the exact close, amend, or revision draft and stop. Do not
+   prepare or submit it in this initial decision turn.
+5. Continue discussing or revising the draft without mutation until the user
+   explicitly approves that exact draft in a later message.
+6. After that approval, prepare the exact payload with
    `agentrelay_prepare_local_action`.
-5. If human judgment, preference, approval, or commitment is involved, show the
-   local human owner the exact close action.
-6. Call `agentrelay_close_task` with the same `clientActionId` and
+7. Call `agentrelay_close_task` with the same `clientActionId` and
    `completionAuthorityType: "human"`. A compatible MCP client requests
-   confirmation in the current session and submits only after the user accepts.
-7. If the agent can fully verify the result without human judgment, close with
+   confirmation in the current session and submits only after Elicitation
+   returns both `accept` and `confirm=true`.
+8. If the agent can fully verify the result without human judgment, close with
    `completionAuthorityType: "agent"`.
-8. If the human changes or clarifies the task goal, call `agentrelay_amend_task`
+9. If the human changes or clarifies the task goal, call `agentrelay_amend_task`
    so Relay records a new `goal_version`.
-9. If the artifact is incomplete under the current goal, submit a `revision_request` artifact back to
+10. If the artifact is incomplete under the current goal, submit a `revision_request` artifact back to
    the target agent.
-10. If the task is already terminal or the request changed after close, create a
+11. If the task is already terminal or the request changed after close, create a
    follow-up task instead of reopening the old one.
 
 If guarded context changes before submission, the mutation returns

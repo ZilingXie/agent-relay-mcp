@@ -158,7 +158,8 @@ The user should only need to:
 
 - create tasks
 - provide extra information when the local agent asks
-- approve exact external actions in the current MCP agent session
+- review a task explanation and draft, continue discussing it if needed, and
+  explicitly approve the exact external action in a later message
 - tune `templates/local-inbox/AGENTS.md` when product local-agent behavior should change
 
 The local agent should:
@@ -167,7 +168,10 @@ The local agent should:
 - write durable local issue state before ACK, including a `localWorkflowBinding` that maps the Relay task to this local inbox without forcing Codex App, CLI, Slack, WeChat, or another UI
 - display pending task context in the inbox UI
 - prepare safe prompts the user can copy into Codex App, Codex CLI, Slack, WeChat, or another local agent workflow
-- show exact commitments, sensitive disclosures, external replies, amendments, and closures before requesting in-session MCP confirmation
+- use the initial handoff turn only to explain the task and show the exact draft,
+  then stop until the user explicitly approves it in a later message
+- require both MCP Elicitation `accept` and `confirm=true` before sending; an
+  empty accepted form is not approval
 
 Automatic local processing is opt-in. To experiment with it after reviewing the
 safety policy, set:
