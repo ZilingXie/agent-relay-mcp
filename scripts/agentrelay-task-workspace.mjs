@@ -7,6 +7,20 @@ const TERMINAL_ACTION_STATUSES = new Set(["sent", "cancelled", "superseded"]);
 const DEFAULT_LOCK_TIMEOUT_MS = 10000;
 const DEFAULT_STALE_LOCK_MS = 30000;
 
+export function isLocalAuthorizationCurrent(
+  authorization,
+  { at = new Date().toISOString(), allowedStatuses = ["active"] } = {}
+) {
+  if (!authorization || !new Set(allowedStatuses).has(authorization.status)) return false;
+  const issuedAt = new Date(authorization.issuedAt).getTime();
+  const expiresAt = new Date(authorization.expiresAt).getTime();
+  const checkedAt = new Date(at).getTime();
+  return [issuedAt, expiresAt, checkedAt].every(Number.isFinite)
+    && expiresAt > issuedAt
+    && issuedAt <= checkedAt
+    && expiresAt > checkedAt;
+}
+
 export function sanitizeTaskId(taskId) {
   const value = String(taskId || "").trim();
   if (!value) throw new Error("Task id is required");
@@ -521,7 +535,7 @@ export async function approveLocalAction({
   return withTaskWorkspaceLock({ stateRoot, taskId }, async () => {
     const workspace = await readTaskWorkspace({ stateRoot, taskId });
     const { action, path } = await readLocalAction({ stateRoot, taskId, clientActionId });
-    if (action.authorization?.status === "active") {
+    if (isLocalAuthorizationCurrent(action.authorization, { at })) {
       return {
         approvalId: action.authorization.approvalId,
         confirmationRef: action.confirmationRef,

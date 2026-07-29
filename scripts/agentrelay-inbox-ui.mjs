@@ -18,6 +18,7 @@ import {
   archiveTaskWorkspace,
   approveLocalAction,
   backfillTaskWorkspaces,
+  isLocalAuthorizationCurrent,
   listLocalActions,
   persistTaskWorkspace,
   readTaskIndex,
@@ -333,7 +334,15 @@ export function createInboxUiServer({
           return;
         }
         const detail = await loadIssueDetail({ stateRoot, taskId, issue, localAgentId, now });
-        detail.actions = await listLocalActions({ stateRoot, taskId });
+        const checkedAt = now();
+        detail.actions = (await listLocalActions({ stateRoot, taskId })).map((action) => {
+          const authorizationActive = isLocalAuthorizationCurrent(action.authorization, { at: checkedAt });
+          return {
+            ...action,
+            authorizationActive,
+            canApprove: action.status === "awaiting_confirmation" && !authorizationActive
+          };
+        });
         sendJson(res, 200, detail);
         return;
       }
@@ -3780,17 +3789,23 @@ function renderChat({ issue, timeline, actions = [] }) {
 
 function renderLocalApprovals(actions) {
   const pending = (actions || []).filter(
-    (action) => action.status === "awaiting_confirmation" && action.authorization?.status !== "active"
+    (action) => action.canApprove === true
   );
   if (!pending.length) return "";
   return '<div class="local-approval-list">' + pending.map((action) =>
     '<div class="local-approval-item">' +
       '<strong>' + escapeHtml(action.actionType || "AgentRelay action") + '</strong>' +
+      '<span class="status-text">Action ' + escapeHtml(shortActionId(action.clientActionId)) + '</span>' +
       '<pre>' + escapeHtml(JSON.stringify(action.payload || {}, null, 2)) + '</pre>' +
       '<button type="button" data-approve-local-action="' + escapeAttr(action.clientActionId || "") + '">Approve once</button>' +
       '<span class="status-text" data-approval-status></span>' +
     '</div>'
   ).join("") + '</div>';
+}
+
+function shortActionId(actionId) {
+  const value = String(actionId || "");
+  return value.length > 18 ? value.slice(0, 15) + "..." : value;
 }
 
 function renderHandoffPrompt(issue) {

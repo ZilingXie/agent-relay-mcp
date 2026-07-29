@@ -148,6 +148,37 @@ test("prepared action rejects missing and expired trusted local authorization", 
   assert.equal(mutated, false);
 });
 
+test("approving an action replaces an expired active authorization", async () => {
+  const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-reauthorization-"));
+  await persistTaskWorkspace({ stateRoot, task: task(), localAgentId: "zac-agent" });
+  await prepareLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    actionType: "request_revision",
+    payload: { text: "Guarded response" },
+    clientActionId: "reauthorize"
+  });
+  const expired = await approveLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "reauthorize",
+    ttlSeconds: 1,
+    at: "2026-07-19T00:00:00.000Z"
+  });
+
+  const renewed = await approveLocalAction({
+    stateRoot,
+    taskId: "task_guard",
+    clientActionId: "reauthorize",
+    at: "2026-07-19T00:00:02.000Z"
+  });
+
+  assert.notEqual(renewed.approvalId, expired.approvalId);
+  assert.equal(renewed.alreadyApproved, undefined);
+  assert.equal(renewed.action.authorization.status, "active");
+  assert.equal(renewed.action.authorization.issuedAt, "2026-07-19T00:00:02.000Z");
+});
+
 test("prepared action rejects an embedded approval without its Local Inbox record", async () => {
   const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-approval-record-"));
   const payload = { text: "record-bound" };

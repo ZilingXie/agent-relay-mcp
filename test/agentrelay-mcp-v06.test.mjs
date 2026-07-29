@@ -174,14 +174,40 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
     arguments: {
       taskId: legacyTask.task_id,
       actionType: "reply",
-      clientActionId: "v05-drain-reply",
+      clientActionId: "v05-drain-reply-expired",
       payloadJson: JSON.stringify({ parts: [{ kind: "text", text: "reply through v0.5" }] })
     }
   });
   await approveLocalAction({
     stateRoot,
     taskId: legacyTask.task_id,
-    clientActionId: "v05-drain-reply"
+    clientActionId: "v05-drain-reply-expired",
+    ttlSeconds: 1,
+    at: "2020-01-01T00:00:00.000Z"
+  });
+  await client.callTool({
+    name: "agentrelay_prepare_local_action",
+    arguments: {
+      taskId: legacyTask.task_id,
+      actionType: "reply",
+      clientActionId: "v05-drain-reply-current",
+      payloadJson: JSON.stringify({ parts: [{ kind: "text", text: "reply through v0.5" }] })
+    }
+  });
+  const unapprovedReplyResult = await client.callTool({
+    name: "agentrelay_reply",
+    arguments: {
+      taskId: legacyTask.task_id,
+      parts: [{ kind: "text", text: "reply through v0.5" }]
+    }
+  });
+  const unapprovedReply = JSON.parse(unapprovedReplyResult.content[0].text);
+  assert.equal(unapprovedReply.code, "LOCAL_AUTHORIZATION_REQUIRED");
+  assert.equal(unapprovedReply.clientActionId, "v05-drain-reply-current");
+  await approveLocalAction({
+    stateRoot,
+    taskId: legacyTask.task_id,
+    clientActionId: "v05-drain-reply-current"
   });
   const replyResult = await client.callTool({
     name: "agentrelay_reply",

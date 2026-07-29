@@ -10,7 +10,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
 import { resyncLocalTask, unwrapTask } from "../scripts/agentrelay-task-context-sync.mjs";
-import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
+import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, isLocalAuthorizationCurrent, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
 import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, negotiateProtocolVersion, readCachedVerifiedProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
 import {
@@ -1274,13 +1274,22 @@ async function resolvePreparedSemanticAction({ args, actionType, preparedPayload
     action.actionType === actionType
       && action.payloadHash === payloadHash
       && new Set(["awaiting_confirmation", "submission_unknown", "sent"]).has(action.status)
-  ));
-  if (matches.length !== 1) return args;
+  )).sort(compareNewestLocalAction);
+  const authorized = matches.filter((action) => isLocalAuthorizationCurrent(action.authorization, {
+    allowedStatuses: ["active", "submitting"]
+  }));
+  const match = authorized[0] || matches[0];
+  if (!match) return args;
   return {
     ...args,
-    clientActionId: matches[0].clientActionId,
-    confirmationRef: matches[0].confirmationRef || undefined
+    clientActionId: match.clientActionId,
+    confirmationRef: match.confirmationRef || undefined
   };
+}
+
+function compareNewestLocalAction(left, right) {
+  const createdOrder = String(right.createdAt || "").localeCompare(String(left.createdAt || ""));
+  return createdOrder || String(right.clientActionId || "").localeCompare(String(left.clientActionId || ""));
 }
 
 async function executeSemanticRelayRequest(buildRequest, rebuildRequest = buildRequest) {
