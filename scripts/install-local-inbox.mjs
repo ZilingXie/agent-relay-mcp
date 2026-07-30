@@ -193,7 +193,7 @@ async function installLocalInbox({
   console.log(`Env file: ${envPath}`);
   console.log(`Inbox UI: http://${host}:${port}/`);
   console.log("Default receive mode: personal_agent notify_only. Incoming tasks are saved and shown; no local agent is auto-run.");
-  console.log(`Protocol: ${protocolVersion}${compatProtocolVersions ? `; compatibility lanes: ${compatProtocolVersions}` : ""}`);
+  console.log(`Protocol: Relay current (negotiated at runtime)${compatProtocolVersions ? `; compatibility lanes: ${compatProtocolVersions}` : ""}`);
   console.log("Next steps:");
   console.log("1. Fill AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, and AGENTRELAY_TOKEN in .env without sharing the token.");
   console.log("2. Restart Codex App or open a new Codex session.");
