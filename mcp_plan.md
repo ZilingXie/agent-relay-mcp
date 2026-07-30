@@ -1089,7 +1089,8 @@ misclassified as failed.
 ## Protocol Upgrade Safety
 
 Status: v0.6 Task-pinned mutation safety is active; deterministic
-current-protocol create recovery is implemented for review.
+current-protocol create recovery merged in Client PR
+[`#82`](https://github.com/ZilingXie/agent-relay-mcp/pull/82) at `215b422`.
 
 - Stable semantic mutations route by the fetched Task's immutable protocol and
   cache v0.5/v0.6 bundles independently without replacing the global pointer.
