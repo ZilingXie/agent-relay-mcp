@@ -28,7 +28,7 @@ try {
   const { port } = fakeRelay.address();
   const relayBaseUrl = `http://127.0.0.1:${port}/agentrelay`;
   localStateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-smoke-"));
-  ({ client, transport } = await startMcpClient(relayBaseUrl, localStateRoot));
+  ({ client, transport } = await startMcpClient(relayBaseUrl, localStateRoot, "agent-collab-v0.3"));
 
   const tools = await client.listTools();
   assert(tools.tools.some((tool) => tool.name === "agentrelay_create_task"), "agentrelay_create_task not found");
@@ -204,7 +204,7 @@ try {
     await guardedCreateSession.client.close().catch(() => {});
   }
 
-  const v05Session = await startMcpClient(relayBaseUrl, localStateRoot, "agent-collab-v0.5");
+  const v05Session = await startMcpClient(relayBaseUrl, localStateRoot);
   try {
     const initialV05Tools = await v05Session.client.listTools();
     const initialCreateTool = initialV05Tools.tools.find((tool) => tool.name === "agentrelay_create_task");

@@ -91,7 +91,6 @@ AGENTRELAY_LISTENER_HOOK="'/path/to/node' '/absolute/path/to/agentRelay/scripts/
 AGENTRELAY_AGENT_ROLE="personal_agent"
 AGENTRELAY_EXECUTION_MODE="notify_only"
 AGENTRELAY_HUMAN_APPROVAL_MODE="conversation"
-AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0.6"
 AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0.5"
 AGENTRELAY_ACK_ON_INBOX_RECEIVED=1
 AGENTRELAY_READINESS_PUBLISH_MS=60000
@@ -122,10 +121,11 @@ Protocol v0.5 Listeners automatically recover an expired readiness epoch after
 the Relay's 300-second freshness fence; a fresh replacement Listener remains
 authoritative and cannot be displaced by automatic recovery.
 
-The active production client uses
-`AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.6`. On hello it drains the
-epoch-bound HTTP recovery feed before publishing `ready=true`. Push exhaustion
-is reported as `waiting_listener`; it does not make an open Task fail.
+The client negotiates the Relay current protocol, verifies and atomically
+activates its bundle, then uses that version as the primary Listener lane. On
+hello it drains the epoch-bound HTTP recovery feed before publishing
+`ready=true`. Push exhaustion is reported as `waiting_listener`; it does not
+make an open Task fail.
 
 The production installer currently writes
 `AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.5` so the Listener keeps a
@@ -266,6 +266,13 @@ identity, confirmation, authorization guardrails, idempotency, endpoint
 allowlists, and local side effects remain in non-hot-updatable MCP core. Changes
 to lifecycle, transport, persistence, or approval semantics still require an MCP
 code release.
+
+New Task callers retain stable semantic input. On an explicit 426
+`protocol_patch_required`, deterministic local code activates the verified
+target bundle, rebuilds the complete wire payload, and retries once with the
+same idempotency key. Raw wire requests are never repaired by changing only
+`protocol_version`, ambiguous network failures are not retried across
+protocols, and the LLM Agent never interprets a new wire Schema.
 
 Protocol activation, trusted MCP client or Local Inbox approval, and the
 bounded Hermes service policy are documented in

@@ -199,11 +199,11 @@ by reconciliation.
 
 ## Protocol Upgrade Compatibility Lane
 
-When Relay activates v0.6 while v0.5 Tasks are still open, keep v0.6 as the
-primary protocol and enable the temporary drain lane:
+When Relay activates v0.6 while v0.5 Tasks are still open, the Listener
+negotiates v0.6 as its primary protocol and enables only the temporary drain
+lane through local configuration:
 
 ```text
-AGENTRELAY_PROTOCOL_VERSION=agent-collab-v0.6
 AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.5
 ```
 

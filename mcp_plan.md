@@ -1088,7 +1088,8 @@ misclassified as failed.
 
 ## Protocol Upgrade Safety
 
-Status: implementation-under-review on `feat/protocol-upgrade-safety`.
+Status: v0.6 Task-pinned mutation safety is active; deterministic
+current-protocol create recovery is implemented for review.
 
 - Stable semantic mutations route by the fetched Task's immutable protocol and
   cache v0.5/v0.6 bundles independently without replacing the global pointer.
@@ -1102,6 +1103,13 @@ Status: implementation-under-review on `feat/protocol-upgrade-safety`.
   code changed after startup.
 - Listener compatibility lanes carry explicit protocol selection for readiness,
   recovery, and WebSocket delivery while a Server protocol drain remains open.
+- New Task creation has no `.env` primary-protocol pin. MCP and Inbox UI share
+  deterministic semantic create execution, advertise
+  `deterministic_semantic_retry_v1`, activate only verified bundles, and retry
+  an explicit Server-authorized patch once with the original idempotency key.
+- Raw wire recovery no longer changes only `protocol_version` or asks the LLM
+  Agent to understand a new Schema. Ambiguous network failures are never
+  treated as protocol-retry authority.
 - Focused coverage includes v0.6-configured MCP mutation of a v0.5 Task, global
   pointer isolation, legacy-tool opt-in/mismatch, generation change, hot-patch
   Task re-fetch, and dual-protocol Server delivery.

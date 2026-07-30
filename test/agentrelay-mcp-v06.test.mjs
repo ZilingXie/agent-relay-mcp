@@ -16,7 +16,9 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), "agentrelay-mcp-v06-"));
-  let createPayload;
+  const createPayloads = [];
+  const createHeaders = [];
+  let currentProtocolVersion = "agent-collab-v0.5";
   let legacyReplyPayload = null;
   let legacyReplyHeaders;
   const seenRequests = [];
@@ -42,7 +44,7 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
     seenRequests.push(`${request.method} ${url.pathname}`);
     const body = await readJson(request);
     if (request.method === "GET" && url.pathname === "/agentrelay/protocols/current") {
-      return sendJson(response, 200, bundle.manifest);
+      return sendJson(response, 200, currentProtocolVersion === "agent-collab-v0.6" ? bundle.manifest : legacyBundle.manifest);
     }
     if (request.method === "GET" && url.pathname === "/agentrelay/protocols/agent-collab/v0.6/manifest") {
       return sendJson(response, 200, bundle.manifest);
@@ -60,14 +62,22 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
       return sendJson(response, 200, legacyBundle);
     }
     if (request.method === "POST" && url.pathname === "/agentrelay/protocols/negotiate") {
+      const targetBundle = body.task_protocol_version === "agent-collab-v0.5"
+        ? legacyBundle
+        : (currentProtocolVersion === "agent-collab-v0.6" ? bundle : legacyBundle);
       return sendJson(
         response,
         200,
-        negotiation(body.task_protocol_version === "agent-collab-v0.5" ? legacyBundle : bundle, body)
+        negotiation(targetBundle, body)
       );
     }
     if (request.method === "POST" && url.pathname === "/agentrelay/tasks") {
-      createPayload = body;
+      createPayloads.push(body);
+      createHeaders.push(request.headers);
+      if (createPayloads.length === 1) {
+        currentProtocolVersion = "agent-collab-v0.6";
+        return sendJson(response, 426, protocolPatchRequired(bundle));
+      }
       return sendJson(response, 201, {
         task: {
           task_id: "task_mcp_v06",
@@ -140,7 +150,7 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
       AGENTRELAY_AGENT_ID: "zac-agent",
       AGENTRELAY_USERNAME: "zac",
       AGENTRELAY_TOKEN: "test-token",
-      AGENTRELAY_PROTOCOL_VERSION: "agent-collab-v0.6",
+      AGENTRELAY_PROTOCOL_VERSION: undefined,
       AGENTRELAY_COMPAT_PROTOCOL_VERSIONS: "agent-collab-v0.5",
       AGENTRELAY_ALLOW_DIRECT_CREATE: "1",
       AGENTRELAY_STATE_DIR: stateRoot,
@@ -158,7 +168,9 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
   const protocolStatusResult = await client.callTool({ name: "agentrelay_protocol_status", arguments: {} });
   const protocolStatus = JSON.parse(protocolStatusResult.content[0].text);
   assert.equal(protocolStatus.human_approval_mode, "conversation");
-  assert.equal(protocolStatus.configured_protocol_version, "agent-collab-v0.6");
+  assert.equal(protocolStatus.configured_protocol_version, null);
+  assert.equal(protocolStatus.active.version, "agent-collab-v0.5");
+  assert.ok(protocolStatus.runtime_capabilities.includes("deterministic_semantic_retry_v1"));
   assert.deepEqual(protocolStatus.compatibility_protocol_versions, ["agent-collab-v0.5"]);
   const tools = await client.listTools();
   const createTool = tools.tools.find((tool) => tool.name === "agentrelay_create_task");
@@ -172,10 +184,16 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
       message: { subject: "Offline task", parts: [{ kind: "text", text: "ping" }] }
     }
   });
-  assert.notEqual(result.isError, true);
-  assert.equal(createPayload.protocol_version, "agent-collab-v0.6");
-  assert.equal(createPayload.requester_agent_id, "zac-agent");
-  assert.equal(createPayload.target_agent_id, "vivi-agent");
+  assert.notEqual(result.isError, true, `${result.content?.[0]?.text}\n${seenRequests.join("\n")}\n${stderr}`);
+  assert.equal(createPayloads.length, 2);
+  assert.equal(createPayloads[0].protocol_version, "agent-collab-v0.5");
+  assert.equal(createPayloads[1].protocol_version, "agent-collab-v0.6");
+  assert.equal(createPayloads[1].requester_agent_id, "zac-agent");
+  assert.equal(createPayloads[1].target_agent_id, "vivi-agent");
+  assert.equal(createPayloads[1].done_criteria, createPayloads[0].done_criteria);
+  assert.deepEqual(createPayloads[1].message, createPayloads[0].message);
+  assert.equal(createPayloads[1].idempotency_key, createPayloads[0].idempotency_key);
+  assert.match(createHeaders[0]["x-agentrelay-runtime-capabilities"], /deterministic_semantic_retry_v1/);
 
   assert.ok(!tools.tools.some((tool) => tool.name === "agentrelay_send_message_v05"));
   await client.callTool({
@@ -321,6 +339,37 @@ function negotiation(bundle, request) {
       required_client_capabilities: bundle.manifest.required_client_capabilities
     },
     retry_policy: { max_automatic_retries: 1, preserve_idempotency_key: true }
+  };
+}
+
+function protocolPatchRequired(bundle) {
+  return {
+    error: {
+      type: "protocol_negotiation",
+      code: "protocol_patch_required",
+      message: "New Tasks must use the Relay current protocol",
+      detail: {
+        server_protocol: {
+          name: bundle.manifest.protocol,
+          version: bundle.manifest.version,
+          semver: bundle.manifest.semver,
+          schema_digest: bundle.manifest.schema_digest,
+          bundle_digest: bundle.manifest.bundle_digest,
+          bundle_revision: bundle.manifest.bundle_revision
+        },
+        upgrade: {
+          action: "fetch_protocol_and_redraft",
+          bundle_url: bundle.manifest.urls.bundle,
+          authority: bundle.manifest.authority,
+          required_client_capabilities: [
+            ...bundle.manifest.required_client_capabilities,
+            "deterministic_semantic_retry_v1"
+          ]
+        },
+        redraft_policy: { safe_to_auto_redraft: ["task_create"] },
+        retry_policy: { max_automatic_retries: 1, preserve_idempotency_key: true }
+      }
+    }
   };
 }
 

@@ -35,7 +35,6 @@ export function buildLocalInboxEnvBlock({
   agentRole = "personal_agent",
   executionMode = "notify_only",
   humanApprovalMode = "conversation",
-  protocolVersion = "agent-collab-v0.6",
   compatProtocolVersions = "agent-collab-v0.5",
   processOnReceive = false,
   executeOnReceive = false,
@@ -47,7 +46,6 @@ export function buildLocalInboxEnvBlock({
     `AGENTRELAY_AGENT_ROLE=${envValue(agentRole)}`,
     `AGENTRELAY_EXECUTION_MODE=${envValue(executionMode)}`,
     `AGENTRELAY_HUMAN_APPROVAL_MODE=${envValue(humanApprovalMode)}`,
-    `AGENTRELAY_PROTOCOL_VERSION=${envValue(protocolVersion)}`,
     ...(String(compatProtocolVersions || "").trim()
       ? [`AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=${envValue(compatProtocolVersions)}`]
       : []),
@@ -71,6 +69,7 @@ export function upsertLocalInboxEnvBlock(current, block) {
   const normalized = current.endsWith("\n") || current.length === 0 ? current : `${current}\n`;
   const managedKeys = new Set([
     ...block.split("\n").map(envAssignmentKey).filter(Boolean),
+    "AGENTRELAY_PROTOCOL_VERSION",
     "AGENTRELAY_COMPAT_PROTOCOL_VERSIONS"
   ]);
   const preserved = normalized
@@ -126,7 +125,6 @@ async function installLocalInbox({
   const port = Number.parseInt(args.port || process.env.AGENTRELAY_INBOX_UI_PORT || "8787", 10);
   const processOnReceive = Boolean(args["enable-auto-processor"]);
   const executeOnReceive = Boolean(args["enable-auto-executor"]);
-  const protocolVersion = args["protocol-version"] || "agent-collab-v0.6";
   const compatProtocolVersions = args["no-compat-protocols"]
     ? ""
     : (args["compat-protocol-versions"] || "agent-collab-v0.5");
@@ -135,7 +133,6 @@ async function installLocalInbox({
     inboxDir,
     stateDir,
     hookCommand: `${shellQuote(nodePath)} ${shellQuote(resolve(root, "scripts/agentrelay-inbox-intake.mjs"))}`,
-    protocolVersion,
     compatProtocolVersions,
     processOnReceive,
     executeOnReceive,

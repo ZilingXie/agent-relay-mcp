@@ -30,7 +30,7 @@ test("buildLocalInboxEnvBlock configures listener hook and local inbox state", (
   assert.match(block, /AGENTRELAY_STATE_DIR="\/Users\/zac\/project\/agentRelay\/state"/);
   assert.match(block, /AGENTRELAY_LISTENER_HOOK="\/usr\/local\/bin\/node \/Users\/zac\/project\/agentRelay\/scripts\/agentrelay-inbox-intake\.mjs"/);
   assert.match(block, /AGENTRELAY_ACK_ON_INBOX_RECEIVED=1/);
-  assert.match(block, /AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0\.6"/);
+  assert.doesNotMatch(block, /AGENTRELAY_PROTOCOL_VERSION/);
   assert.match(block, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0\.5"/);
   assert.match(block, /AGENTRELAY_READINESS_PUBLISH_MS=60000/);
   assert.match(block, /AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0/);
@@ -97,9 +97,9 @@ test("upsertLocalInboxEnvBlock preserves existing credentials", () => {
   assert.match(next, /AGENTRELAY_TOKEN=secret-token/);
   assert.match(next, /AGENTRELAY_CUSTOM_SETTING=preserved/);
   assert.match(next, /AGENTRELAY_LISTENER_HOOK="node \/repo\/scripts\/agentrelay-inbox-intake\.mjs"/);
-  assert.match(next, /AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0\.6"/);
+  assert.doesNotMatch(next, /AGENTRELAY_PROTOCOL_VERSION/);
   assert.match(next, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0\.5"/);
-  assert.equal((next.match(/^AGENTRELAY_PROTOCOL_VERSION=/gm) || []).length, 1);
+  assert.equal((next.match(/^AGENTRELAY_PROTOCOL_VERSION=/gm) || []).length, 0);
   assert.equal((next.match(/^AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=/gm) || []).length, 1);
   assert.equal((next.match(/^AGENTRELAY_INBOX_UI_PORT=/gm) || []).length, 1);
 });
@@ -123,7 +123,7 @@ test("buildInitialEnv writes placeholders plus local inbox defaults", () => {
   assert.match(env, /AGENTRELAY_AGENT_ID="replace-with-agent-id"/);
   assert.match(env, /AGENTRELAY_USERNAME="replace-with-username"/);
   assert.match(env, /AGENTRELAY_TOKEN="replace-with-cloud-token"/);
-  assert.match(env, /AGENTRELAY_PROTOCOL_VERSION="agent-collab-v0\.6"/);
+  assert.doesNotMatch(env, /AGENTRELAY_PROTOCOL_VERSION/);
   assert.match(env, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0\.5"/);
   assert.match(env, /BEGIN AgentRelay Local Inbox managed block/);
 });

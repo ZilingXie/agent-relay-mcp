@@ -6,8 +6,6 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  buildAutoRedraftedPayload,
-  inferProtocolOperation,
   maybeHandleProtocolNegotiation,
   negotiateCurrentProtocol,
   negotiateProtocolVersion,
@@ -305,7 +303,7 @@ test("local emergency disable prevents negotiation and bundle activation", async
   }
 });
 
-test("maybeHandleProtocolNegotiation auto-redrafts safe task create payloads and retries", async () => {
+test("raw protocol recovery never rewrites or retries a wire payload", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-protocol-cache-"));
   const retryPayloads = [];
   const result = await maybeHandleProtocolNegotiation({
@@ -336,12 +334,9 @@ test("maybeHandleProtocolNegotiation auto-redrafts safe task create payloads and
     log: null
   });
 
-  assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.data.task_id, "task-1");
-  assert.deepEqual(retryPayloads, [{
-    protocol_version: "agent-collab-v0.4",
-    idempotency_key: "same-key"
-  }]);
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.deepEqual(retryPayloads, []);
+  assert.match(result.protocol_recovery.next_action, /stable semantic MCP tool/);
 });
 
 test("maybeHandleProtocolNegotiation still returns guidance when no retry hook is provided", async () => {
@@ -366,18 +361,7 @@ test("maybeHandleProtocolNegotiation still returns guidance when no retry hook i
     protocol_version: "agent-collab-v0.3",
     idempotency_key: "same-key"
   });
-  assert.match(recovery.protocol_recovery.next_action, /automatic retry hook/);
-});
-
-test("buildAutoRedraftedPayload refuses task close payloads that need local review", () => {
-  assert.equal(inferProtocolOperation("POST", "/tasks/task-1/close"), "task_close");
-  const redrafted = buildAutoRedraftedPayload({
-    payload: { protocol_version: "agent-collab-v0.3", idempotency_key: "close-key" },
-    targetProtocolVersion: "agent-collab-v0.4",
-    operation: "task_close",
-    redraftPolicy: redraftPolicy()
-  });
-  assert.equal(redrafted, null);
+  assert.match(recovery.protocol_recovery.next_action, /stable semantic MCP tool/);
 });
 
 test("maybeHandleProtocolNegotiation reports client upgrade without pretending schema sync is enough", async () => {

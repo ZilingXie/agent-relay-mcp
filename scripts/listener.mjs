@@ -26,13 +26,26 @@ import { recoverPendingTaskSyncs } from "./agentrelay-task-context-sync.mjs";
 import { verifyWorkspaceV2Ready } from "./agentrelay-task-workspace.mjs";
 import { PROTOCOL_V05 } from "./agentrelay-v05.mjs";
 import { PROTOCOL_V06 } from "./agentrelay-v06.mjs";
+import { negotiateCurrentProtocol } from "./protocol-sync.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const envPath = resolveHome(getArg("--env") || process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 loadDotEnv(envPath);
 
-const configuredProtocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.3";
+const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || "https://server.stellarix.space/agentrelay/api");
+const wsBaseUrl = normalizeBaseUrl(process.env.AGENTRELAY_WS_URL || deriveWsUrl(baseUrl));
+const agentId = process.env.AGENTRELAY_AGENT_ID || "";
+const username = process.env.AGENTRELAY_USERNAME || "";
+const token = process.env.AGENTRELAY_TOKEN || "";
+if (!agentId || !username || !token) {
+  fail("Missing AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, or AGENTRELAY_TOKEN in .env");
+}
+
+const configuredProtocolVersion = process.env.AGENTRELAY_LISTENER_LANE_CHILD === "1"
+  ? process.env.AGENTRELAY_PROTOCOL_VERSION
+  : await resolveRelayCurrentProtocolVersion();
+if (!configuredProtocolVersion) fail("Listener lane child requires AGENTRELAY_PROTOCOL_VERSION");
 const compatibilityProtocolVersions = String(process.env.AGENTRELAY_COMPAT_PROTOCOL_VERSIONS || "")
   .split(",")
   .map((value) => value.trim())
@@ -43,11 +56,6 @@ if (process.env.AGENTRELAY_LISTENER_LANE_CHILD !== "1" && listenerProtocolLanes.
   process.exit(process.exitCode || 0);
 }
 
-const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || "https://server.stellarix.space/agentrelay/api");
-const wsBaseUrl = normalizeBaseUrl(process.env.AGENTRELAY_WS_URL || deriveWsUrl(baseUrl));
-const agentId = process.env.AGENTRELAY_AGENT_ID || "";
-const username = process.env.AGENTRELAY_USERNAME || "";
-const token = process.env.AGENTRELAY_TOKEN || "";
 const protocolVersion = configuredProtocolVersion;
 const isV05 = protocolVersion === PROTOCOL_V05;
 const isV06 = protocolVersion === PROTOCOL_V06;
@@ -75,10 +83,6 @@ const listenerStatus = {
   pendingRemoteMessages: null,
   startedAt: new Date().toISOString()
 };
-
-if (!agentId || !username || !token) {
-  fail("Missing AGENTRELAY_AGENT_ID, AGENTRELAY_USERNAME, or AGENTRELAY_TOKEN in .env");
-}
 
 await mkdir(inboxDir, { recursive: true });
 await mkdir(dirname(statusPath), { recursive: true });
@@ -535,6 +539,22 @@ function relayHeaders() {
     "X-AgentRelay-Agent-Id": agentId,
     "X-AgentRelay-Username": username
   };
+}
+
+async function resolveRelayCurrentProtocolVersion() {
+  const result = await negotiateCurrentProtocol({
+    baseUrl,
+    headers: relayHeaders(),
+    log: null
+  });
+  if (result.status === "client_release_required") {
+    throw new Error("Relay current protocol requires a newer AgentRelay client runtime");
+  }
+  const version = result.active?.version;
+  if (![PROTOCOL_V05, PROTOCOL_V06].includes(version)) {
+    throw new Error(`Relay current protocol ${version || "unknown"} is outside the Listener's compiled protocol range`);
+  }
+  return version;
 }
 
 function loadDotEnv(path) {
