@@ -186,7 +186,8 @@ test("negotiation request advertises only compiled runtime capabilities", () => 
     "dynamic_protocol_bundle_v0.1",
     "semantic_protocol_adapter_v2",
     "local_authorization_v1",
-    "dynamic_agent_tool_schema_v1"
+    "dynamic_agent_tool_schema_v1",
+    "deterministic_semantic_retry_v1"
   ]);
 });
 

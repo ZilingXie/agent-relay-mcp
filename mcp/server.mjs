@@ -12,11 +12,13 @@ import { authorizePreparedTaskActionFromConversation, authorizePreparedTaskActio
 import { resyncLocalTask, unwrapTask } from "../scripts/agentrelay-task-context-sync.mjs";
 import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, isLocalAuthorizationCurrent, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
+import { executeSemanticCreate } from "../scripts/agentrelay-semantic-client.mjs";
 import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, negotiateProtocolVersion, readCachedVerifiedProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
 import {
   buildSemanticRequest,
   PROTOCOL_RUNTIME_CAPABILITIES,
   PROTOCOL_RUNTIME_VERSION,
+  SUPPORTED_PROTOCOL_VERSIONS,
   validateProtocolBundle,
   validateSemanticTransition
 } from "../scripts/protocol-runtime.mjs";
@@ -45,9 +47,9 @@ loadDotEnv(process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const PROTOCOL_VERSION = "agent-collab-v0.3";
-const ACTIVE_PROTOCOL_VERSION = process.env.AGENTRELAY_PROTOCOL_VERSION || PROTOCOL_VERSION;
-const isNativeLifecycleProtocol = ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.5"
-  || ACTIVE_PROTOCOL_VERSION === "agent-collab-v0.6";
+const CONFIGURED_PROTOCOL_VERSION = String(process.env.AGENTRELAY_PROTOCOL_VERSION || "").trim();
+const isNativeLifecycleProtocol = !CONFIGURED_PROTOCOL_VERSION
+  || SUPPORTED_PROTOCOL_VERSIONS.includes(CONFIGURED_PROTOCOL_VERSION);
 const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL);
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
 const username = process.env.AGENTRELAY_USERNAME || "";
@@ -101,9 +103,9 @@ const LEGACY_AGENT_TOOL_CONFIGS = {
       requesterThreadId: z.string().min(1).optional().describe("Legacy Codex App thread id for pre-v0.5 protocols"),
       intent: z.string().optional().describe("Protocol v0.3 message intent, for example request_availability"),
       taskType: z.string().optional().describe("Protocol v0.3 task_type, for example meeting.schedule"),
-      subject: z.string().optional(),
+      subject: z.string().min(1),
       contextId: z.string().optional(),
-      doneCriteria: z.string().optional(),
+      doneCriteria: z.string().min(1),
       completionOwnerAgentId: z.string().optional(),
       pendingOnAgentId: z.string().optional(),
       nextAction: z.string().optional(),
@@ -198,7 +200,8 @@ function registerTools(mcpServer) {
         },
         legacy_protocol_tools_exposed: exposeLegacyProtocolTools,
         human_approval_mode: humanApprovalMode,
-        configured_protocol_version: ACTIVE_PROTOCOL_VERSION,
+        configured_protocol_version: CONFIGURED_PROTOCOL_VERSION || null,
+        primary_protocol_source: isNativeLifecycleProtocol ? "relay_negotiation" : "legacy_override",
         compatibility_protocol_versions: compatibilityProtocolVersions,
         ...protocolRuntimeStatus
       });
@@ -244,19 +247,25 @@ function registerTools(mcpServer) {
       const targetAgentId = args.target_agent_id || args.to || args.targetAgentId;
       if (isNativeLifecycleProtocol) {
         assertDirectCreateAuthorized();
+        const generationError = runtimeGenerationError();
+        if (generationError) throw protocolRuntimeError(generationError.code, generationError.message, generationError);
         const idempotencyKey = `mcp-v05-create-${randomUUID()}`;
-        return jsonResult(await executeSemanticRelayRequest(() => buildActiveSemanticRequest({
-          operation: "create_task",
+        return jsonResult(await executeSemanticCreate({
           input: {
             targetAgentId,
+            subject: args.subject,
             requestText: args.requestText,
             message: args.message,
             doneCriteria: args.doneCriteria,
             maxTurns: args.maxTurns,
             taskExpiresAt: args.taskExpiresAt
           },
-          idempotencyKey
-        })));
+          identity: { agent_id: agentId },
+          idempotencyKey,
+          baseUrl,
+          headers: relayHeaders(),
+          onProtocolActivated: applyNegotiatedCurrentProtocol
+        }));
       }
       if (!requesterAgentId || !targetAgentId) {
         throw new Error("agentrelay_create_task requires requester_agent_id/target_agent_id or legacy from/to");
@@ -1185,7 +1194,10 @@ async function refreshProtocolRuntime() {
   } catch (error) {
     const onlineError = String(error?.message || error);
     try {
-      const cached = await readCachedVerifiedProtocol({ baseUrl, version: ACTIVE_PROTOCOL_VERSION });
+      const cached = await readCachedVerifiedProtocol({
+        baseUrl,
+        version: isNativeLifecycleProtocol ? undefined : (CONFIGURED_PROTOCOL_VERSION || undefined)
+      });
       if (!cached) throw new Error("no verified active or last-known-good bundle is available");
       const agentTools = await applyAgentToolBundle(cached);
       protocolRuntimeStatus = {
@@ -1213,8 +1225,8 @@ async function applyAgentToolBundle(active) {
     return { status: "inactive", reason: "active_protocol_is_not_native_lifecycle" };
   }
   if (!active?.cache_dir) return { status: "unchanged", reason: "no_active_bundle" };
-  if (active.version !== ACTIVE_PROTOCOL_VERSION) {
-    throw new Error(`Active protocol ${active.version || "unknown"} does not match configured ${ACTIVE_PROTOCOL_VERSION}`);
+  if (!SUPPORTED_PROTOCOL_VERSIONS.includes(active.version)) {
+    throw new Error(`Active protocol ${active.version || "unknown"} is outside this MCP runtime's compiled protocol range`);
   }
   const bundle = JSON.parse(await readFile(active.bundle_path || resolve(active.cache_dir, "bundle.json"), "utf8"));
   validateProtocolBundle(bundle, { expectedTarget: active, authority: active.authority, baseUrl });
@@ -1344,7 +1356,7 @@ async function executeSemanticRelayRequest(buildRequest, rebuildRequest = buildR
     });
   } catch (error) {
     if (!new Set(["protocol_patch_required", "protocol_v05_required", "protocol_v06_required"]).has(error?.code)) throw error;
-    const refreshed = await refreshProtocolForMutation(request.protocolVersion || request.payload?.protocol_version || ACTIVE_PROTOCOL_VERSION);
+    const refreshed = await refreshProtocolForMutation(request.protocolVersion || request.payload?.protocol_version);
     if (!new Set(["hot_patch_applied", "hot_rollback_applied", "up_to_date"]).has(refreshed.status)) {
       throw new Error(`Protocol mutation cannot retry: ${refreshed.status}`);
     }
@@ -1377,7 +1389,8 @@ async function refreshProtocolForMutation(protocolVersion) {
   }
 }
 
-async function activeProtocolBundle(protocolVersion = ACTIVE_PROTOCOL_VERSION) {
+async function activeProtocolBundle(protocolVersion) {
+  if (!protocolVersion) throw new Error("Existing Task semantic mutations require task.protocol_version");
   const negotiated = await refreshProtocolForMutation(protocolVersion);
   if (negotiated.status === "client_release_required") {
     throw protocolRuntimeError("CLIENT_RELEASE_REQUIRED", "The Task protocol requires a newer AgentRelay MCP runtime", negotiated);
@@ -1399,7 +1412,7 @@ async function activeProtocolBundle(protocolVersion = ACTIVE_PROTOCOL_VERSION) {
 }
 
 async function buildActiveSemanticRequest({ operation, input, task = {}, idempotencyKey }) {
-  const protocolVersion = task.protocol_version || task.protocolVersion || ACTIVE_PROTOCOL_VERSION;
+  const protocolVersion = task.protocol_version || task.protocolVersion;
   const bundle = await activeProtocolBundle(protocolVersion);
   validateSemanticTransition(operation, task, agentId, input);
   return {
@@ -1415,6 +1428,16 @@ async function buildActiveSemanticRequest({ operation, input, task = {}, idempot
     bundleRevision: bundle.manifest.bundle_revision,
     bundleDigest: bundle.manifest.bundle_digest,
     adapterContractVersion: bundle.manifest.adapter_contract_version
+  };
+}
+
+async function applyNegotiatedCurrentProtocol(active, result) {
+  const agentTools = await applyAgentToolBundle(active);
+  protocolRuntimeStatus = {
+    ...result,
+    agent_tools: agentTools,
+    checked_at: new Date().toISOString(),
+    last_error: null
   };
 }
 
@@ -1461,6 +1484,7 @@ async function relayRequest(method, path, payload, options = {}) {
     headers["X-AgentRelay-Bundle-Digest"] = protocolMetadata.bundleDigest;
     headers["X-AgentRelay-Adapter-Contract"] = String(protocolMetadata.adapterContractVersion);
     headers["X-AgentRelay-Runtime-Version"] = PROTOCOL_RUNTIME_VERSION;
+    headers["X-AgentRelay-Runtime-Capabilities"] = PROTOCOL_RUNTIME_CAPABILITIES.join(",");
   }
 
   const response = await fetch(`${baseUrl}${path}`, {
@@ -1484,8 +1508,6 @@ async function relayRequest(method, path, payload, options = {}) {
         payload,
         baseUrl,
         headers: relayHeaders(),
-        retryRequest: (redraftedPayload) =>
-          relayRequest(method, path, redraftedPayload, { skipProtocolRepair: true })
       });
       if (protocolRecovery) return protocolRecovery;
     }

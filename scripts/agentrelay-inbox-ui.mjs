@@ -12,8 +12,9 @@ import { buildCodexCliJsonPrompt } from "./agentrelay-codex-json-prompt.mjs";
 import { listenerOperationalStatus } from "./agentrelay-listener-core.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
 import { resyncLocalTask, unwrapTask } from "./agentrelay-task-context-sync.mjs";
-import { buildCreatePayloadV05, PROTOCOL_V05 } from "./agentrelay-v05.mjs";
-import { buildCreatePayloadV06, PROTOCOL_V06 } from "./agentrelay-v06.mjs";
+import { executeSemanticCreate } from "./agentrelay-semantic-client.mjs";
+import { PROTOCOL_V05 } from "./agentrelay-v05.mjs";
+import { PROTOCOL_V06 } from "./agentrelay-v06.mjs";
 import {
   archiveTaskWorkspace,
   approveLocalAction,
@@ -32,7 +33,6 @@ const DEFAULT_PORT = Number.parseInt(process.env.AGENTRELAY_INBOX_UI_PORT || "87
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const DEFAULT_RESPONSES_BASE_URL = "https://sub2api.la3.agoralab.co";
 const DEFAULT_CODEX_CLI = "/Applications/Codex.app/Contents/Resources/codex";
-const LEGACY_PROTOCOL_VERSION = "agent-collab-v0.3";
 const TASK_DRAFT_SCHEMA_PATH = resolve(PROJECT_ROOT, "schemas/task-draft.schema.json");
 const LOCAL_INBOX_AGENTS_TEMPLATE_PATH = resolve(PROJECT_ROOT, "templates/local-inbox/AGENTS.md");
 const TASK_DRAFT_SUBJECT_MAX_LENGTH = 32;
@@ -1519,47 +1519,22 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
   const requesterThreadId = draft.requesterThreadId || `agentrelay-local-ui-${draftId}`;
   const requesterAgentId = draft.from || localAgentId;
   const targetAgentId = draft.to;
-  const protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || LEGACY_PROTOCOL_VERSION;
-  const nativeCreateArgs = {
-        requesterAgentId,
-        targetAgentId,
-        message: {
-          subject: draft.subject,
-          parts: [{ kind: "text", text: draft.requestText }]
-        },
-        doneCriteria: draft.doneCriteria,
-        maxTurns: draft.maxTurns,
-        taskExpiresAt: draft.taskExpiresAt
-      };
-  const payload = protocolVersion === PROTOCOL_V06
-    ? buildCreatePayloadV06(nativeCreateArgs, `local-ui-create-${draftId}`)
-    : protocolVersion === PROTOCOL_V05
-      ? buildCreatePayloadV05(nativeCreateArgs, `local-ui-create-${draftId}`)
-    : {
-    protocol_version: LEGACY_PROTOCOL_VERSION,
-    idempotency_key: `local-ui-create-${draftId}`,
-    task_type: "agent.task",
-    requester_agent_id: requesterAgentId,
-    target_agent_id: targetAgentId,
-    from: requesterAgentId,
-    to: targetAgentId,
-    requesterThreadId,
-    subject: draft.subject,
-    message: buildRelayMessage(draft.requestText, requesterAgentId),
-    requestText: draft.requestText,
-    done_criteria: draft.doneCriteria,
-    doneCriteria: draft.doneCriteria,
-    completion_owner_agent_id: requesterAgentId,
-    completionOwnerAgentId: requesterAgentId,
-    pending_on_agent_id: targetAgentId,
-    pendingOnAgentId: targetAgentId,
-    next_action: `${targetAgentId} should process the request and return an artifact.`,
-    humanBoundaryReason: draft.humanBoundaryReason,
-    humanBoundary: draft.humanBoundaryReason
-      ? { requiresHuman: true, reason: draft.humanBoundaryReason }
-      : undefined
-  };
-  const response = await relayClient.createTask(payload);
+  const response = await relayClient.createSemanticTask({
+    input: {
+      targetAgentId,
+      subject: draft.subject,
+      requestText: draft.requestText,
+      message: {
+        subject: draft.subject,
+        parts: [{ kind: "text", text: draft.requestText }]
+      },
+      doneCriteria: draft.doneCriteria,
+      maxTurns: draft.maxTurns,
+      taskExpiresAt: draft.taskExpiresAt
+    },
+    requesterAgentId,
+    idempotencyKey: `local-ui-create-${draftId}`
+  });
   const { task, taskId } = extractCreatedTask(response);
   if (!taskId) {
     throw new Error(`AgentRelay create task response is missing task id (${describeResponseShape(response)})`);
@@ -1584,12 +1559,13 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
     localAgentId,
     now: () => updatedAt
   });
-  const completeTask = [PROTOCOL_V05, PROTOCOL_V06].includes(protocolVersion)
+  const taskProtocolVersion = task.protocol_version || task.protocolVersion;
+  const completeTask = [PROTOCOL_V05, PROTOCOL_V06].includes(taskProtocolVersion)
     ? unwrapTask(response)
     : {
         ...task,
         task_id: task.task_id || task.taskId || task.id || taskId,
-        messages: Array.isArray(task.messages) ? task.messages : [payload.message],
+        messages: Array.isArray(task.messages) ? task.messages : [],
         artifacts: Array.isArray(task.artifacts) ? task.artifacts : []
       };
   await persistTaskWorkspace({
@@ -1601,14 +1577,6 @@ async function sendTaskDraft({ stateRoot, draftId, localAgentId, relayClient, no
     agentsMdPath: resolve(process.env.AGENTRELAY_AGENTS_MD_PATH || LOCAL_INBOX_AGENTS_TEMPLATE_PATH)
   });
   return { alreadySent: false, draft: sentDraft, taskId, task };
-}
-
-function buildRelayMessage(text, actorAgentId) {
-  return {
-    actor_agent_id: actorAgentId,
-    intent: "request",
-    parts: [{ kind: "text", text: String(text || "") }]
-  };
 }
 
 function extractCreatedTask(response) {
@@ -2043,8 +2011,23 @@ class AgentRelayUiHttpClient {
     return this.request("POST", "/task-visibility/batch", { task_ids: taskIds });
   }
 
-  async createTask(payload) {
-    return this.request("POST", "/tasks", payload);
+  async createSemanticTask({ input, requesterAgentId, idempotencyKey }) {
+    return executeSemanticCreate({
+      input,
+      identity: { agent_id: requesterAgentId },
+      idempotencyKey,
+      baseUrl: this.baseUrl,
+      headers: this.headers()
+    });
+  }
+
+  headers() {
+    return {
+      "X-AgentRelay-Envelope": "v0.3",
+      ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      ...(this.agentId ? { "X-AgentRelay-Agent-Id": this.agentId } : {}),
+      ...(this.username ? { "X-AgentRelay-Username": this.username } : {})
+    };
   }
 
   async request(method, path, payload) {
@@ -2053,10 +2036,7 @@ class AgentRelayUiHttpClient {
       method,
       headers: {
         ...(payload ? { "Content-Type": "application/json" } : {}),
-        "X-AgentRelay-Envelope": "v0.3",
-        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-        ...(this.agentId ? { "X-AgentRelay-Agent-Id": this.agentId } : {}),
-        ...(this.username ? { "X-AgentRelay-Username": this.username } : {})
+        ...this.headers()
       },
       body: payload ? JSON.stringify(compact(payload)) : undefined
     });

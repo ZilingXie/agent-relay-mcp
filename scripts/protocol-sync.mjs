@@ -199,7 +199,7 @@ export async function negotiateCurrentProtocol({
 export async function readCachedVerifiedProtocol({
   baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
   cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
-  version = "agent-collab-v0.5"
+  version
 } = {}) {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   const authoritiesRoot = resolve(resolveHome(cacheRoot), "authorities");
@@ -211,13 +211,14 @@ export async function readCachedVerifiedProtocol({
   for (const entry of authorityDirs) {
     if (!entry.isDirectory()) continue;
     const authorityDir = resolve(authoritiesRoot, entry.name);
-    for (const [source, fileName, priority] of [
+    const pointerFiles = [
       ["active", "active.json", 3],
-      ["version", versionPointerPath(version), 2],
+      ...(version ? [["version", versionPointerPath(version), 2]] : []),
       ["last_known_good", "last-known-good.json", 1]
-    ]) {
+    ];
+    for (const [source, fileName, priority] of pointerFiles) {
       const pointer = await readJsonIfExists(resolve(authorityDir, fileName));
-      if (!pointer || pointer.version !== version || !pointer.authority) continue;
+      if (!pointer || (version && pointer.version !== version) || !pointer.authority) continue;
       const expectedAuthorityDir = protocolAuthorityRoot(resolveHome(cacheRoot), pointer.authority);
       if (expectedAuthorityDir !== authorityDir) continue;
       const bundlePath = resolve(pointer.cache_dir || "", "bundle.json");
@@ -345,7 +346,6 @@ export async function maybeHandleProtocolNegotiation({
   method,
   path,
   payload,
-  retryRequest,
   baseUrl = process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL,
   fetchImpl = fetch,
   cacheRoot = process.env.AGENTRELAY_PROTOCOL_CACHE_DIR || DEFAULT_PROTOCOL_CACHE_ROOT,
@@ -364,38 +364,6 @@ export async function maybeHandleProtocolNegotiation({
     } catch (error_) {
       syncError = error_.message;
     }
-    const operation = inferProtocolOperation(method, path);
-    const repairedPayload = synced
-      ? buildAutoRedraftedPayload({
-          payload,
-          targetProtocolVersion: synced.version,
-          operation,
-          redraftPolicy: detail.redraft_policy
-        })
-      : null;
-    if (repairedPayload && typeof retryRequest === "function") {
-      try {
-        return await retryRequest(repairedPayload, {
-          operation,
-          originalPayload: payload,
-          synced
-        });
-      } catch (error_) {
-        return buildProtocolRecoveryResult({
-          error,
-          detail,
-          method,
-          path,
-          payload,
-          synced,
-          syncError,
-          status: "auto_protocol_retry_failed",
-          nextAction: `Synced the protocol bundle and auto-redrafted ${operation}, but the retry failed: ${error_.message}. Review the original request and retry manually.`,
-          retryError: error_.message,
-          redraftedPayload: repairedPayload
-        });
-      }
-    }
     return {
       ok: false,
       error,
@@ -411,7 +379,7 @@ export async function maybeHandleProtocolNegotiation({
           payload,
         },
         next_action: synced
-          ? nextProtocolRecoveryAction({ operation, repairedPayload, retryRequest })
+          ? "The bundle is verified, but this raw wire request cannot be rewritten safely. Re-run the operation through a stable semantic MCP tool so deterministic local code can rebuild the complete payload and preserve idempotency."
           : "Unable to fetch the protocol bundle. Retry later or upgrade AgentRelay MCP with: npx github:ZilingXie/agent-relay-mcp install",
       },
     };
@@ -429,76 +397,6 @@ export async function maybeHandleProtocolNegotiation({
     };
   }
   return null;
-}
-
-export function inferProtocolOperation(method, path) {
-  const normalizedMethod = String(method || "").toUpperCase();
-  const normalizedPath = String(path || "");
-  if (normalizedMethod === "POST" && normalizedPath === "/tasks") return "task_create";
-  if (normalizedMethod === "POST" && /^\/tasks\/[^/]+\/artifacts$/.test(normalizedPath)) return "artifact_submit";
-  if (normalizedMethod === "POST" && /^\/tasks\/[^/]+\/amend$/.test(normalizedPath)) return "task_amend";
-  if (normalizedMethod === "POST" && /^\/tasks\/[^/]+\/close$/.test(normalizedPath)) return "task_close";
-  return `${normalizedMethod} ${normalizedPath}`.trim();
-}
-
-export function buildAutoRedraftedPayload({
-  payload,
-  targetProtocolVersion,
-  operation,
-  redraftPolicy
-}) {
-  if (!isPlainObject(payload) || !targetProtocolVersion) return null;
-  const safeOperations = redraftPolicy?.safe_to_auto_redraft;
-  if (!Array.isArray(safeOperations) || !safeOperations.includes(operation)) return null;
-  if (payload.protocol_version === targetProtocolVersion) return null;
-  return {
-    ...payload,
-    protocol_version: targetProtocolVersion
-  };
-}
-
-function buildProtocolRecoveryResult({
-  error,
-  detail,
-  method,
-  path,
-  payload,
-  synced,
-  syncError,
-  status,
-  nextAction,
-  retryError,
-  redraftedPayload
-}) {
-  return {
-    ok: false,
-    error,
-    protocol_recovery: {
-      status,
-      local_protocol_version: LOCAL_PROTOCOL_VERSION,
-      server_protocol: detail.server_protocol || null,
-      synced,
-      sync_error: syncError,
-      retry_error: retryError,
-      redrafted_payload: redraftedPayload,
-      original_request: {
-        method,
-        path,
-        payload,
-      },
-      next_action: nextAction,
-    },
-  };
-}
-
-function nextProtocolRecoveryAction({ operation, repairedPayload, retryRequest }) {
-  if (repairedPayload && typeof retryRequest !== "function") {
-    return `Auto-redraft is available for ${operation}, but this caller did not provide an automatic retry hook. Retry with the redrafted protocol_version and preserve idempotency.`;
-  }
-  if (!repairedPayload) {
-    return "Ask the local agent to redraft the original payload using the synced protocol bundle without changing user intent, then retry with idempotency protection.";
-  }
-  return "Synced the protocol bundle. Retry with the redrafted payload and preserve idempotency.";
 }
 
 export function resolveProtocolDir(cacheRoot, protocol, version, authority, bundleDigest) {
@@ -667,6 +565,7 @@ function safeFileName(name) {
 
 function validateRevisionTransition(previous, verified, activationAction) {
   if (!previous) return;
+  if (previous.protocol !== verified.protocol || previous.version !== verified.version) return;
   const previousRevision = Number(previous.bundle_revision);
   const nextRevision = Number(verified.bundle_revision);
   if (nextRevision < previousRevision && activationAction !== "hot_rollback") {

@@ -247,12 +247,6 @@ test("v0.6 expired notice uses epoch-bound informational ACK", async () => {
 });
 
 test("local UI creates v0.6 Tasks and projects waiting_listener visibility", async (t) => {
-  const previousProtocol = process.env.AGENTRELAY_PROTOCOL_VERSION;
-  process.env.AGENTRELAY_PROTOCOL_VERSION = PROTOCOL_V06;
-  t.after(() => {
-    if (previousProtocol === undefined) delete process.env.AGENTRELAY_PROTOCOL_VERSION;
-    else process.env.AGENTRELAY_PROTOCOL_VERSION = previousProtocol;
-  });
   const root = await mkdtemp(join(tmpdir(), "agentrelay-v06-ui-create-"));
   const stateRoot = join(root, "state");
   await mkdir(stateRoot, { recursive: true });
@@ -278,8 +272,8 @@ test("local UI creates v0.6 Tasks and projects waiting_listener visibility", asy
     stateRoot,
     localAgentId: "zac-agent",
     relayClient: {
-      async createTask(payload) {
-        createPayload = payload;
+      async createSemanticTask(semanticRequest) {
+        createPayload = semanticRequest;
         return taskDetail;
       },
       async getTaskVisibilityBatch(taskIds) {
@@ -298,7 +292,9 @@ test("local UI creates v0.6 Tasks and projects waiting_listener visibility", asy
   const base = `http://127.0.0.1:${server.address().port}`;
   const createResponse = await fetch(`${base}/api/task-drafts/draft_v06/send`, { method: "POST" });
   assert.equal(createResponse.status, 201);
-  assert.equal(createPayload.protocol_version, PROTOCOL_V06);
+  assert.equal(createPayload.idempotencyKey, "local-ui-create-draft_v06");
+  assert.equal(createPayload.requesterAgentId, "zac-agent");
+  assert.equal(createPayload.input.targetAgentId, "vivi-agent");
   const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_v06" });
   assert.equal(workspace.paths.workspaceVersion, 2);
   const snapshot = await (await fetch(`${base}/api/issues`)).json();

@@ -1411,8 +1411,8 @@ test("inbox UI server sends a confirmed task draft once and records an outgoing 
     now: () => "2026-07-02T08:04:00.000Z",
     relayClient: {
       listAgents: async () => ({ agents: [] }),
-      createTask: async (payload) => {
-        createCalls.push(payload);
+      createSemanticTask: async (semanticRequest) => {
+        createCalls.push(semanticRequest);
         return {
           task: {
             task_id: "task_created",
@@ -1421,7 +1421,7 @@ test("inbox UI server sends a confirmed task draft once and records an outgoing 
             target_agent_id: "project-hermes",
             pending_on_agent_id: "project-hermes",
             completion_owner_agent_id: "zac-agent",
-            subject: payload.subject
+            subject: semanticRequest.input.message.subject
           }
         };
       }
@@ -1435,21 +1435,16 @@ test("inbox UI server sends a confirmed task draft once and records an outgoing 
     const firstBody = await first.json();
     assert.equal(firstBody.taskId, "task_created");
     assert.equal(createCalls.length, 1);
-    assert.equal(createCalls[0].protocol_version, "agent-collab-v0.3");
-    assert.equal(createCalls[0].idempotency_key, "local-ui-create-draft_send");
-    assert.equal(createCalls[0].task_type, "agent.task");
-    assert.equal(createCalls[0].requester_agent_id, "zac-agent");
-    assert.equal(createCalls[0].target_agent_id, "project-hermes");
-    assert.equal(createCalls[0].pending_on_agent_id, "project-hermes");
-    assert.equal(createCalls[0].completion_owner_agent_id, "zac-agent");
-    assert.equal(createCalls[0].next_action, "project-hermes should process the request and return an artifact.");
-    assert.equal(createCalls[0].requesterThreadId, "agentrelay-local-ui-draft_send");
-    assert.deepEqual(createCalls[0].message, {
-      actor_agent_id: "zac-agent",
-      intent: "request",
+    assert.equal(createCalls[0].idempotencyKey, "local-ui-create-draft_send");
+    assert.equal(createCalls[0].requesterAgentId, "zac-agent");
+    assert.equal(createCalls[0].input.targetAgentId, "project-hermes");
+    assert.equal(createCalls[0].input.subject, "Update dashboard title");
+    assert.equal(createCalls[0].input.requestText, "Please update the dashboard title.");
+    assert.equal(createCalls[0].input.doneCriteria, "The title is updated and verified.");
+    assert.deepEqual(createCalls[0].input.message, {
+      subject: "Update dashboard title",
       parts: [{ kind: "text", text: "Please update the dashboard title." }]
     });
-    assert.equal(createCalls[0].requestText, "Please update the dashboard title.");
 
     const second = await fetch(`http://127.0.0.1:${port}/api/task-drafts/draft_send/send`, { method: "POST" });
     assert.equal(second.status, 200);
@@ -1495,7 +1490,7 @@ test("inbox UI server accepts nested task ids in create task responses", async (
     now: () => "2026-07-02T08:04:00.000Z",
     relayClient: {
       listAgents: async () => ({ agents: [] }),
-      createTask: async (payload) => ({
+      createSemanticTask: async (semanticRequest) => ({
         data: {
           task: {
             id: "task_nested_id",
@@ -1504,7 +1499,7 @@ test("inbox UI server accepts nested task ids in create task responses", async (
             target_agent_id: "project-hermes",
             pending_on_agent_id: "project-hermes",
             completion_owner_agent_id: "zac-agent",
-            subject: payload.subject
+            subject: semanticRequest.input.message.subject
           }
         }
       })
@@ -1525,9 +1520,7 @@ test("inbox UI server accepts nested task ids in create task responses", async (
   }
 });
 
-test("inbox UI sends a strict v0.5 create and persists the returned Messages in workspace v2", async () => {
-  const previousProtocol = process.env.AGENTRELAY_PROTOCOL_VERSION;
-  process.env.AGENTRELAY_PROTOCOL_VERSION = "agent-collab-v0.5";
+test("inbox UI sends stable create semantics and persists returned v0.5 Messages in workspace v2", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-create-v05-"));
   const stateRoot = join(root, "state");
   await import("node:fs/promises").then(({ mkdir }) => mkdir(stateRoot, { recursive: true }));
@@ -1545,8 +1538,8 @@ test("inbox UI sends a strict v0.5 create and persists the returned Messages in 
   const server = createInboxUiServer({
     stateRoot,
     relayClient: {
-      async createTask(payload) {
-        createPayload = payload;
+      async createSemanticTask(semanticRequest) {
+        createPayload = semanticRequest;
         return {
           task: {
             task_id: "task_created_v05", root_task_id: "task_created_v05",
@@ -1569,18 +1562,17 @@ test("inbox UI sends a strict v0.5 create and persists the returned Messages in 
     const { port } = server.address();
     const response = await fetch(`http://127.0.0.1:${port}/api/task-drafts/draft_v05/send`, { method: "POST" });
     assert.equal(response.status, 201);
-    assert.deepEqual(Object.keys(createPayload).sort(), [
-      "done_criteria", "idempotency_key", "message", "protocol_version",
-      "requester_agent_id", "target_agent_id"
-    ]);
-    assert.equal(createPayload.protocol_version, "agent-collab-v0.5");
+    assert.equal(createPayload.idempotencyKey, "local-ui-create-draft_v05");
+    assert.equal(createPayload.requesterAgentId, "zac-agent");
+    assert.equal(createPayload.input.targetAgentId, "frank-agent");
+    assert.equal(createPayload.input.subject, "Ping");
+    assert.equal(createPayload.input.requestText, "ping");
+    assert.equal(createPayload.input.doneCriteria, "pong");
     const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_created_v05" });
     assert.equal(workspace.paths.workspaceVersion, 2);
     assert.equal(workspace.task.messages[0].message_id, "msg_created_v05");
   } finally {
     await new Promise((resolveClose) => server.close(resolveClose));
-    if (previousProtocol === undefined) delete process.env.AGENTRELAY_PROTOCOL_VERSION;
-    else process.env.AGENTRELAY_PROTOCOL_VERSION = previousProtocol;
   }
 });
 
@@ -1611,7 +1603,7 @@ test("inbox UI server reports create task response shape when task id is missing
     now: () => "2026-07-02T08:04:00.000Z",
     relayClient: {
       listAgents: async () => ({ agents: [] }),
-      createTask: async () => ({
+      createSemanticTask: async () => ({
         ok: true,
         data: { context_id: "ctx_missing_id" }
       })
@@ -1654,8 +1646,8 @@ test("inbox UI server turns a local task request into a sent AgentRelay task", a
     },
     relayClient: {
       listAgents: async () => ({ agents: [] }),
-      createTask: async (payload) => {
-        createCalls.push(payload);
+      createSemanticTask: async (semanticRequest) => {
+        createCalls.push(semanticRequest);
         return {
           task: {
             task_id: "task_from_local_request",
@@ -1664,7 +1656,7 @@ test("inbox UI server turns a local task request into a sent AgentRelay task", a
             target_agent_id: "project-hermes",
             pending_on_agent_id: "project-hermes",
             completion_owner_agent_id: "zac-agent",
-            subject: payload.subject
+            subject: semanticRequest.input.message.subject
           }
         };
       }
@@ -1686,13 +1678,12 @@ test("inbox UI server turns a local task request into a sent AgentRelay task", a
     assert.equal(body.localRequest.status, "sent_to_relay");
     assert.equal(draftCalls[0].to, "");
     assert.equal(createCalls.length, 1);
-    assert.equal(createCalls[0].to, "project-hermes");
-    assert.equal(createCalls[0].requester_agent_id, "zac-agent");
-    assert.equal(createCalls[0].target_agent_id, "project-hermes");
-    assert.equal(createCalls[0].completionOwnerAgentId, "zac-agent");
-    assert.deepEqual(createCalls[0].message, {
-      actor_agent_id: "zac-agent",
-      intent: "request",
+    assert.equal(createCalls[0].requesterAgentId, "zac-agent");
+    assert.equal(createCalls[0].input.targetAgentId, "project-hermes");
+    assert.equal(createCalls[0].input.subject, "Update dashboard title");
+    assert.equal(createCalls[0].input.requestText, "Please update the dashboard title and verify the public page.");
+    assert.deepEqual(createCalls[0].input.message, {
+      subject: "Update dashboard title",
       parts: [{ kind: "text", text: "Please update the dashboard title and verify the public page." }]
     });
 
@@ -1724,7 +1715,7 @@ test("inbox UI server records a failed local task request as a visible local thr
     }),
     relayClient: {
       listAgents: async () => ({ agents: [] }),
-      createTask: async () => {
+      createSemanticTask: async () => {
         throw new Error('AgentRelay POST /tasks failed (400): {"error":"message must be an object"}');
       }
     }

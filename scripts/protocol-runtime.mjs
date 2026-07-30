@@ -8,7 +8,8 @@ export const PROTOCOL_RUNTIME_CAPABILITIES = [
   "dynamic_protocol_bundle_v0.1",
   "semantic_protocol_adapter_v2",
   "local_authorization_v1",
-  "dynamic_agent_tool_schema_v1"
+  "dynamic_agent_tool_schema_v1",
+  "deterministic_semantic_retry_v1"
 ];
 export const SUPPORTED_PROTOCOL_VERSIONS = ["agent-collab-v0.6", "agent-collab-v0.5"];
 export const ADAPTER_ENGINE = "semantic_protocol_adapter_v2";
@@ -198,14 +199,14 @@ export async function readActiveProtocol({ cacheRoot, authority }) {
 export function buildNegotiationRequest({
   active = null,
   lastKnownGood = null,
-  protocolVersion = process.env.AGENTRELAY_PROTOCOL_VERSION || "agent-collab-v0.5",
+  protocolVersion = "",
   taskProtocolVersion = ""
 } = {}) {
   return compact({
     runtime_version: PROTOCOL_RUNTIME_VERSION,
     runtime_capabilities: PROTOCOL_RUNTIME_CAPABILITIES,
     supported_protocol_versions: SUPPORTED_PROTOCOL_VERSIONS,
-    preferred_protocol_version: protocolVersion,
+    preferred_protocol_version: protocolVersion || undefined,
     task_protocol_version: taskProtocolVersion || undefined,
     active: active ? protocolPointer(active) : undefined,
     last_known_good: lastKnownGood ? protocolPointer(lastKnownGood) : undefined
