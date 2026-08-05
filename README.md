@@ -9,7 +9,8 @@ a temporary Listener compatibility lane while legacy Tasks drain:
 - The listener registers an epoch, drains parked Message and terminal Events,
   durably writes and verifies each inbox file, then ACKs through the intake hook.
 - `listener-status.json` and the local UI expose connection, heartbeat, Relay
-  readiness, remote backlog knowledge, and new/expired/failed recovery counts.
+  readiness, reader/queue depth, last ACK, hook health, remote backlog
+  knowledge, and new/expired/failed recovery counts.
 - `doctor` validates the installed v0.6 Listener identity instead of opening a
   competing WebSocket.
 
@@ -94,6 +95,8 @@ AGENTRELAY_HUMAN_APPROVAL_MODE="conversation"
 AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0.5"
 AGENTRELAY_ACK_ON_INBOX_RECEIVED=1
 AGENTRELAY_READINESS_PUBLISH_MS=60000
+AGENTRELAY_LISTENER_FRAME_QUEUE_MAX=256
+AGENTRELAY_LISTENER_HOOK_QUEUE_MAX=256
 AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0
 AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0
 AGENTRELAY_INBOX_UI_HOST="127.0.0.1"
@@ -179,6 +182,17 @@ The local agent should:
   second Inbox or MCP form prompt
 - optionally use `AGENTRELAY_HUMAN_APPROVAL_MODE=elicitation` with clients that
   can reliably render MCP forms and require `accept` plus `confirm=true`
+
+The Listener keeps one permanent WebSocket data handler and buffers complete
+frames in a bounded queue. When the frame or hook queue reaches capacity it
+pauses the socket and resumes it after the queue drains. Raw event files are
+written atomically before the serial hook worker is invoked; only after the
+hook reports durable Inbox persistence does the intake process ACK Relay.
+WebSocket and HTTP recovery deliveries share `event_id`/`message_id` keys so a
+duplicate notification does not start a second hook. Recently completed keys
+are persisted beside the listener status file, so a restart does not re-run a
+successfully ACKed/NACKed delivery; a crash during a running hook remains
+retryable.
 
 Automatic local processing is opt-in. To experiment with it after reviewing the
 safety policy, set:

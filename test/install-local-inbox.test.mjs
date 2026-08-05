@@ -33,6 +33,8 @@ test("buildLocalInboxEnvBlock configures listener hook and local inbox state", (
   assert.doesNotMatch(block, /AGENTRELAY_PROTOCOL_VERSION/);
   assert.match(block, /AGENTRELAY_COMPAT_PROTOCOL_VERSIONS="agent-collab-v0\.5"/);
   assert.match(block, /AGENTRELAY_READINESS_PUBLISH_MS=60000/);
+  assert.match(block, /AGENTRELAY_LISTENER_FRAME_QUEUE_MAX=256/);
+  assert.match(block, /AGENTRELAY_LISTENER_HOOK_QUEUE_MAX=256/);
   assert.match(block, /AGENTRELAY_PROCESS_INBOX_ON_RECEIVE=0/);
   assert.match(block, /AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE=0/);
   assert.match(block, /AGENTRELAY_LOCAL_AGENT_RUNNER="codex"/);

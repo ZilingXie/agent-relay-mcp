@@ -69,6 +69,8 @@ AGENTRELAY_INBOX_DIR=/absolute/path/to/agentRelay/events
 AGENTRELAY_ISSUES_PATH=/absolute/path/to/agentRelay/state/issues.json
 AGENTRELAY_LISTENER_HOOK=/absolute/path/to/agentRelay/scripts/agentrelay-inbox-intake.mjs
 AGENTRELAY_INBOX_UI_PORT=8787
+AGENTRELAY_LISTENER_FRAME_QUEUE_MAX=256
+AGENTRELAY_LISTENER_HOOK_QUEUE_MAX=256
 AGENTRELAY_COMPAT_PROTOCOL_VERSIONS=agent-collab-v0.5
 ```
 

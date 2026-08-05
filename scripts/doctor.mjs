@@ -9,7 +9,7 @@ import net from "node:net";
 import tls from "node:tls";
 import crypto from "node:crypto";
 import { negotiateCurrentProtocol, syncCurrentProtocol } from "./protocol-sync.mjs";
-import { durableReadinessHealth, listenerStatusHealth, readJsonFrame } from "./agentrelay-listener-core.mjs";
+import { durableReadinessHealth, listenerOperationalStatus, listenerStatusHealth, readJsonFrame } from "./agentrelay-listener-core.mjs";
 
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +45,9 @@ try {
   localListenerStatus = JSON.parse(await readFile(listenerStatusPath, "utf8"));
   const health = listenerStatusHealth(localListenerStatus, { staleAfterMs: Math.max(listenerInactivityMs * 2, 180000) });
   check("Local listener connection is fresh", health.healthy, health.healthy ? `${health.ageMs}ms since activity` : health.reason);
+  const operational = listenerOperationalStatus(localListenerStatus, { staleAfterMs: Math.max(listenerInactivityMs * 2, 180000) });
+  check("Local listener hook is healthy", operational.hook.state !== "failed", operational.hook.lastError || operational.hook.state);
+  check("Local listener queue is not saturated", operational.queue.capacity === 0 || operational.queue.depth < operational.queue.capacity, `${operational.queue.depth}/${operational.queue.capacity}`);
 } catch (error) {
   check("Local listener status exists", false, `${error.message} at ${listenerStatusPath}`);
 }

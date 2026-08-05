@@ -96,18 +96,28 @@ while the listener was offline. Recovery events are local and are never ACKed
 to Relay as server event ids. Override the interval with
 `AGENTRELAY_LISTENER_RECONCILE_MS`.
 
+The Listener installs one permanent WebSocket data handler. Complete frames are
+buffered in a bounded FIFO (`AGENTRELAY_LISTENER_FRAME_QUEUE_MAX`, default
+`256`) while a separate serial hook worker drains the hook queue
+(`AGENTRELAY_LISTENER_HOOK_QUEUE_MAX`, default `256`). A full queue pauses the
+socket and resumes it after the low-water mark is reached; frames are not
+dropped when the hook is slow.
+
 Connection health is written atomically to
 `.agentrelay/listener-status.json`. `npm run doctor` checks this file and fails
 when the listener reports a disconnected or stale connection. Use
 `AGENTRELAY_LISTENER_STATUS_PATH` to choose another location.
+The local UI also shows reader depth, queue depth, last ACK, hook health, and
+the last hook failure.
 
-When it receives a Relay event, it writes JSON to:
+When it receives a Relay event, it first writes one stable JSON file atomically
+to:
 
 ```text
 events/
 ```
 
-Then it calls:
+Then the serial hook worker calls:
 
 ```text
 scripts/agentrelay-inbox-intake.mjs
@@ -119,7 +129,12 @@ The intake hook writes or updates:
 state/issues.json
 ```
 
-After the event is durably written into local inbox state, intake may ACK the event as received.
+After the event is durably written into local inbox state, intake may ACK the
+event as received. The same worker and delivery keys are used by WebSocket and
+HTTP recovery; duplicate `event_id` or `message_id` values reuse the existing
+job and do not invoke the hook twice. Recently completed delivery keys are
+persisted beside `listener-status.json`, so a restart does not re-run a
+successfully ACKed/NACKed job; a crash during a running hook remains retryable.
 Each issue also records a `localWorkflowBinding` for the local inbox. Custom
 adapters can use that binding to attach the task to Codex App, Codex CLI, chat
 apps, or another user-owned workflow without changing Relay server state.

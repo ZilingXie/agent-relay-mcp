@@ -203,6 +203,7 @@ export async function processInboxEvent({
     status: intakeStatus,
     eventId,
     taskId,
+    ackRequired: shouldAck,
     acked: ackResult.acked,
     nacked: Boolean(ackResult.nacked),
     ackError: ackResult.error,
@@ -576,6 +577,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   processInboxEvent({ eventPath })
     .then((result) => {
       console.log(JSON.stringify(result));
+      if (result.ackRequired && !result.acked && !result.nacked) process.exitCode = 1;
     })
     .catch((error) => {
       console.error(error.stack || error.message);

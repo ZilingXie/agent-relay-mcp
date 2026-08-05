@@ -141,6 +141,15 @@ test("listener operational status gives state-specific recovery guidance", () =>
     lastError: "ENOSPC: no space left on device"
   });
   assert.equal(disk.suggestedAction, "free_local_storage");
+
+  const hookFailure = listenerOperationalStatus({
+    state: "connected",
+    connectedAt: "2026-07-28T01:34:00.000Z",
+    hook: { state: "failed", lastError: "hook exited with 1" },
+    queue: { depth: 1, capacity: 256 }
+  }, { now: Date.parse("2026-07-28T01:35:00.000Z") });
+  assert.equal(hookFailure.healthy, false);
+  assert.equal(hookFailure.suggestedAction, "inspect_hook");
 });
 
 test("inbox snapshot includes local Listener health and recovery summary", async () => {
@@ -159,6 +168,10 @@ test("inbox snapshot includes local Listener health and recovery summary", async
     lastHeartbeatAt: "2026-07-28T01:34:00.000Z",
     relayReadiness: "fresh",
     pendingRemoteMessages: 0,
+    reader: { state: "reading", depth: 3, capacity: 256, paused: false, bufferedBytes: 0 },
+    queue: { depth: 2, capacity: 256, active: 1 },
+    hook: { state: "running", total: 8, succeeded: 7, failed: 1, consecutiveFailures: 0 },
+    lastAck: { eventId: "evt_last_ack", status: "received", at: "2026-07-28T01:34:30.000Z" },
     lastRecovery: {
       at: "2026-07-28T01:33:00.000Z",
       total: 2,
@@ -177,6 +190,10 @@ test("inbox snapshot includes local Listener health and recovery summary", async
   assert.equal(snapshot.listener.state, "connected");
   assert.equal(snapshot.listener.healthy, true);
   assert.equal(snapshot.listener.relayReadiness, "fresh");
+  assert.equal(snapshot.listener.reader.depth, 3);
+  assert.equal(snapshot.listener.queue.depth, 2);
+  assert.equal(snapshot.listener.hook.state, "running");
+  assert.equal(snapshot.listener.lastAck.eventId, "evt_last_ack");
   assert.equal(snapshot.listener.lastRecovery.expiredWhileOffline, 1);
 });
 
@@ -300,6 +317,20 @@ test("local UI creates v0.6 Tasks and projects waiting_listener visibility", asy
   const snapshot = await (await fetch(`${base}/api/issues`)).json();
   assert.equal(snapshot.issues[0].diagnosis, "waiting_listener");
   assert.equal(snapshot.issues[0].outboxStatus, "parked");
+});
+
+test("local UI includes Listener reader, queue, ACK, and hook health panels", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-v06-ui-health-"));
+  const stateRoot = join(root, "state");
+  await mkdir(stateRoot, { recursive: true });
+  const server = createInboxUiServer({ stateRoot, localAgentId: "zac-agent" });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  t.after(() => new Promise((resolveClose) => server.close(resolveClose)));
+  const app = await (await fetch(`http://127.0.0.1:${server.address().port}/app.js`)).text();
+  assert.match(app, /Queue depth/);
+  assert.match(app, /Last ACK/);
+  assert.match(app, /Hook health/);
+  assert.match(app, />Reader</);
 });
 
 function v06Task(deliveryStatus, status, taskVersion) {

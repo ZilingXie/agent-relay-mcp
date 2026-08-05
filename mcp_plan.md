@@ -1,12 +1,16 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-07-29
+Last updated: 2026-08-05
 
-Latest update: the production installer migrates its managed primary protocol
-from v0.5 to v0.6, keeps a temporary v0.5 Listener compatibility lane, and
-deduplicates managed `.env` keys without touching credentials. Doctor now fails
-when the configured primary protocol differs from Relay, matching the MCP tool
-activation guard instead of reporting a false-green installation.
+Latest update: Listener burst delivery hardening is implemented on the client.
+The permanent WebSocket frame reader and bounded hook queue apply backpressure,
+the serial hook worker writes the raw inbox event before the intake ACK, and
+event/message delivery keys are deduplicated in memory and across restart after
+successful ACK/NACK completion. The local status file and Inbox UI expose reader
+depth, queue depth, last ACK, and hook health. The production installer still
+migrates its managed primary protocol from v0.5 to v0.6, keeps a temporary v0.5
+Listener compatibility lane, and preserves credentials while deduplicating
+managed `.env` keys.
 
 ## Audience And Sources
 
@@ -336,8 +340,12 @@ Implementation dependency order:
 Goal: replace the heavy local demo path with a small notifier/inbox flow for
 personal agents.
 
-Status: implemented in the Phase 4 notifier branch. After merge, the next
-planning focus is cloud Relay guardrails for mutation authority.
+Status: implemented in the Phase 4 notifier branch. Listener burst delivery
+hardening was added on 2026-08-05: one permanent WebSocket data handler feeds a
+bounded frame queue, raw event files are atomically persisted before the serial
+hook worker, ACK failures remain visible, and recent event/message completion
+keys survive Listener restart. After merge, the next planning focus is cloud
+Relay guardrails for mutation authority.
 
 Conversational approval correction: the initial copied-prompt turn is
 explanation-and-draft only and must stop without preparing or calling a Relay
@@ -405,6 +413,10 @@ of the exact draft in a later user message unlocks preparation. Default
 ### Phase 4 Verification
 
 - `npm run check` for UI/script/template changes.
+- Listener burst acceptance: with the first hook blocked for five seconds, 20
+  WebSocket frames are all persisted, ACKed, and hook-executed once; frame
+  pause/resume and post-restart delivery-key deduplication are verified by the
+  focused Listener integration test.
 - Focused UI tests for:
   - default UI server does not schedule processor/executor;
   - UI reply endpoint is disabled;

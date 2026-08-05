@@ -11,16 +11,17 @@ import tls from "node:tls";
 import crypto from "node:crypto";
 import {
   buildPendingEventPayload,
+  BoundedAsyncQueue,
   isStaleReadinessEpochError,
   parseHttpResponseHead,
   parseJsonResponseBody,
   probeV05DeliveryEndpoints,
-  readJsonFrame,
   reconcileAgentEvents,
   reconcileAgentEventsV05,
   reconcileAgentEventsV06,
   reconcilePendingTasks,
-  relayResponseError
+  relayResponseError,
+  WebSocketFrameReader
 } from "./agentrelay-listener-core.mjs";
 import { recoverPendingTaskSyncs } from "./agentrelay-task-context-sync.mjs";
 import { verifyWorkspaceV2Ready } from "./agentrelay-task-workspace.mjs";
@@ -65,8 +66,11 @@ const stateRoot = resolveHome(process.env.AGENTRELAY_STATE_DIR || resolve(repoRo
 const hookCommand = process.env.AGENTRELAY_LISTENER_HOOK || "";
 const reconnectMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_RECONNECT_MS || "5000", 10);
 const inactivityMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_INACTIVITY_MS || "90000", 10);
+const frameQueueMax = positiveInt(process.env.AGENTRELAY_LISTENER_FRAME_QUEUE_MAX, 256);
+const hookQueueMax = positiveInt(process.env.AGENTRELAY_LISTENER_HOOK_QUEUE_MAX, 256);
 const reconcileIntervalMs = Number.parseInt(process.env.AGENTRELAY_LISTENER_RECONCILE_MS || "300000", 10);
 const statusPath = resolveHome(process.env.AGENTRELAY_LISTENER_STATUS_PATH || resolve(inboxDir, "..", "listener-status.json"));
+const deliveryIndexPath = `${statusPath}.delivery-index.json`;
 const once = process.argv.includes("--once");
 const readinessPublishMs = Number.parseInt(process.env.AGENTRELAY_READINESS_PUBLISH_MS || "60000", 10);
 const listenerInstanceId = isDurableProtocol ? `listener-${agentId}-${crypto.randomUUID()}` : "";
@@ -75,18 +79,70 @@ let lastReconciledAt = 0;
 let lastReadinessPublishedAt = 0;
 let listenerIdentity = null;
 let listenerRecoveryRequired = false;
+let activeHookJob = null;
+let hookWorkerStarted = false;
+let statusWriteChain = Promise.resolve();
+let deliveryIndexWriteChain = Promise.resolve();
+const deliveryJobs = new Map();
+const completedDeliveries = new Map();
 const listenerStatus = {
   version: 1,
   agentId,
   state: "starting",
   relayReadiness: "unknown",
   pendingRemoteMessages: null,
+  reader: {
+    state: "starting",
+    depth: 0,
+    capacity: frameQueueMax,
+    paused: false,
+    pauseCount: 0,
+    resumeCount: 0,
+    bufferedBytes: 0,
+    framesReceived: 0,
+    lastFrameAt: null
+  },
+  queue: {
+    depth: 0,
+    capacity: hookQueueMax,
+    pendingProducers: 0,
+    active: 0
+  },
+  hook: {
+    state: "idle",
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+    consecutiveFailures: 0,
+    lastError: null,
+    lastSuccessAt: null,
+    lastFailureAt: null
+  },
+  lastAck: null,
   startedAt: new Date().toISOString()
 };
 
+const hookQueue = new BoundedAsyncQueue({
+  maxSize: hookQueueMax,
+  name: "listener hook queue",
+  onChange: (stats) => {
+    void updateListenerStatus({
+      queue: {
+        ...listenerStatus.queue,
+        depth: stats.depth,
+        capacity: stats.capacity,
+        pendingProducers: stats.pendingProducers,
+        active: activeHookJob ? 1 : 0
+      }
+    });
+  }
+});
+
 await mkdir(inboxDir, { recursive: true });
 await mkdir(dirname(statusPath), { recursive: true });
+if (hookCommand) await loadCompletedDeliveries();
 if (isDurableProtocol) await initializeDurableListener();
+startHookWorker();
 await updateListenerStatus({ state: "connecting" });
 console.error(`[agentrelay-listener] inbox: ${inboxDir}`);
 console.error(`[agentrelay-listener] connecting as ${agentId} to ${wsBaseUrl}`);
@@ -143,9 +199,15 @@ async function listenOnce() {
     })}`
     : "";
   const socket = await connectWebSocket(`${wsBaseUrl}/workers/${encodeURIComponent(agentId)}/events/ws${wsQuery}`, relayHeaders());
+  const reader = new WebSocketFrameReader(socket, {
+    inactivityMs,
+    maxQueue: frameQueueMax
+  });
+  socket.agentRelayFrameReader = reader;
   try {
     while (true) {
-      const frame = await readJsonFrame(socket, { inactivityMs });
+      const frame = await reader.nextJson();
+      await updateListenerStatus({ reader: reader.stats });
       if (frame.type === "hello") {
         if (isDurableProtocol && (frame.protocolVersion !== protocolVersion
           || frame.listenerInstanceId !== listenerIdentity.instanceId
@@ -166,18 +228,25 @@ async function listenOnce() {
         continue;
       }
       if (frame.type === "task.pending") {
-        const eventPath = await writeInboxEvent(buildPendingEventPayload(frame));
-        console.log(JSON.stringify({ ok: true, received: "task.pending", taskId: frame.taskId, eventId: frame.eventId, path: eventPath }));
-        if (hookCommand) await runHook(eventPath);
-        if (once) return;
+        const delivery = await enqueueDelivery(buildPendingEventPayload(frame), { source: "websocket" });
+        console.log(JSON.stringify({ ok: true, received: "task.pending", taskId: frame.taskId, eventId: frame.eventId, path: delivery.eventPath, queued: true }));
+        if (once) {
+          const outcome = await delivery.completion;
+          if (!outcome.ok) throw new Error(outcome.error || "Listener hook failed");
+          return;
+        }
         continue;
       }
-      const eventPath = await writeInboxEvent({ event: frame });
-      console.log(JSON.stringify({ ok: true, received: frame.type || "event", eventId: frame.eventId, path: eventPath }));
-      if (hookCommand) await runHook(eventPath);
-      if (once) return;
+      const delivery = await enqueueDelivery({ event: frame }, { source: "websocket" });
+      console.log(JSON.stringify({ ok: true, received: frame.type || "event", eventId: frame.eventId, path: delivery.eventPath, queued: true }));
+      if (once) {
+        const outcome = await delivery.completion;
+        if (!outcome.ok) throw new Error(outcome.error || "Listener hook failed");
+        return;
+      }
     }
   } finally {
+    reader.close();
     socket.destroy();
   }
 }
@@ -188,24 +257,30 @@ async function tryReconcilePending({ required = false } = {}) {
       agentId,
       relayGet: (path) => relayRequest("GET", path),
       persist: async (payload) => {
-        const eventPath = await writeInboxEvent(payload, { stableName: true });
+        const delivery = await enqueueDelivery(payload, {
+          source: "http_recovery",
+          awaitCompletion: required
+        });
         console.log(JSON.stringify({
           ok: true,
           received: "task.pending",
           recovered: true,
           taskId: payload.event.taskId,
           eventId: payload.event.eventId,
-          path: eventPath
+          path: delivery.eventPath,
+          queued: true
         }));
-        if (hookCommand) await runHook(eventPath);
       }
     });
     const persistRecoveredEvent = async (payload) => {
-      const eventPath = await writeInboxEvent({
+      const delivery = await enqueueDelivery({
         ...payload,
         event: { ...payload.event, protocolVersion }
-      }, { stableName: true });
-      if (hookCommand) await runHook(eventPath);
+      }, {
+        source: "http_recovery",
+        awaitCompletion: required
+      });
+      return delivery;
     };
     const eventRecovery = isV06
       ? await reconcileAgentEventsV06({
@@ -270,14 +345,20 @@ async function tryReconcilePending({ required = false } = {}) {
 }
 
 async function updateListenerStatus(patch) {
-  Object.assign(listenerStatus, patch, { updatedAt: new Date().toISOString() });
-  const temporaryPath = `${statusPath}.${process.pid}.tmp`;
-  try {
-    await writeFile(temporaryPath, `${JSON.stringify(listenerStatus, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporaryPath, statusPath);
-  } catch (error) {
-    console.error(`[agentrelay-listener] status write failed: ${error.message}`);
-  }
+  const nextStatus = { ...listenerStatus, ...patch, updatedAt: new Date().toISOString() };
+  Object.assign(listenerStatus, nextStatus);
+  statusWriteChain = statusWriteChain
+    .catch(() => {})
+    .then(async () => {
+      const temporaryPath = `${statusPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      try {
+        await writeFile(temporaryPath, `${JSON.stringify(nextStatus, null, 2)}\n`, { mode: 0o600 });
+        await rename(temporaryPath, statusPath);
+      } catch (error) {
+        console.error(`[agentrelay-listener] status write failed: ${error.message}`);
+      }
+    });
+  return statusWriteChain;
 }
 
 async function superviseProtocolLanes(protocolVersions) {
@@ -335,7 +416,9 @@ async function superviseProtocolLanes(protocolVersions) {
 }
 
 async function writeInboxEvent(payload, { stableName = false } = {}) {
-  const safeEventId = String(payload.event?.eventId || payload.event?.event_id || crypto.randomUUID()).replace(/[^a-zA-Z0-9_.-]/g, "_");
+  const eventId = payload.event?.eventId || payload.event?.event_id;
+  const messageId = payload.event?.messageId || payload.event?.message_id;
+  const safeEventId = String(eventId || messageId || crypto.randomUUID()).replace(/[^a-zA-Z0-9_.-]/g, "_");
   const fileName = stableName
     ? `${safeEventId}.json`
     : `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeEventId}.json`;
@@ -347,11 +430,204 @@ async function writeInboxEvent(payload, { stableName = false } = {}) {
   return eventPath;
 }
 
+function startHookWorker() {
+  if (hookWorkerStarted || !hookCommand) return;
+  hookWorkerStarted = true;
+  void (async () => {
+    while (true) {
+      let job;
+      try {
+        job = await hookQueue.pop();
+      } catch {
+        return;
+      }
+      activeHookJob = job;
+      await updateListenerStatus({
+        queue: { ...listenerStatus.queue, depth: hookQueue.depth, pendingProducers: hookQueue.pendingProducers, active: 1 },
+        hook: {
+          ...listenerStatus.hook,
+          state: "running",
+          currentKey: job.identity.keys[0] || null,
+          lastError: null
+        }
+      });
+      let outcome;
+      try {
+        const hookResult = await runHook(job.eventPath);
+        outcome = hookResult.ackRequired && !hookResult.acked && !hookResult.nacked
+          ? { ...hookResult, ok: false, error: hookResult.ackError?.message || hookResult.ackError || "Listener hook did not ACK the event" }
+          : { ok: true, ...hookResult };
+      } catch (error) {
+        outcome = { ok: false, error: error.message };
+      }
+      await finalizeDelivery(job, outcome);
+      activeHookJob = null;
+      await updateListenerStatus({
+        queue: { ...listenerStatus.queue, depth: hookQueue.depth, pendingProducers: hookQueue.pendingProducers, active: 0 }
+      });
+    }
+  })().catch((error) => {
+    console.error(`[agentrelay-listener] hook worker stopped: ${error.message}`);
+    void updateListenerStatus({
+      hook: { ...listenerStatus.hook, state: "failed", lastError: error.message, lastFailureAt: new Date().toISOString() }
+    });
+  });
+}
+
+async function enqueueDelivery(payload, { source = "websocket", awaitCompletion = false } = {}) {
+  const identity = deliveryIdentity(payload);
+  const existing = findDelivery(identity.keys);
+  if (existing) {
+    if (awaitCompletion) await assertDeliveryOutcome(existing.completion);
+    return { eventPath: existing.eventPath, completion: existing.completion, deduped: true, source };
+  }
+  const eventPath = await writeInboxEvent(payload, { stableName: true });
+  if (!hookCommand) {
+    const completion = Promise.resolve({ ok: true, hookSkipped: true });
+    return { eventPath, completion, deduped: false, source };
+  }
+  let resolveCompletion;
+  const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+  const job = { payload, eventPath, identity, source, completion, resolveCompletion };
+  for (const key of identity.keys) deliveryJobs.set(key, job);
+  try {
+    await hookQueue.push(job);
+  } catch (error) {
+    await finalizeDelivery(job, { ok: false, error: error.message });
+  }
+  if (awaitCompletion) await assertDeliveryOutcome(completion);
+  return { eventPath, completion, deduped: false, source };
+}
+
+async function assertDeliveryOutcome(completion) {
+  const outcome = await completion;
+  if (!outcome.ok) throw new Error(outcome.error || "Listener hook failed");
+  return outcome;
+}
+
+function deliveryIdentity(payload) {
+  const event = payload?.event || {};
+  const eventId = event.eventId || event.event_id || event.payload?.eventId || event.payload?.event_id || "";
+  const messageId = event.messageId || event.message_id
+    || event.payload?.messageId || event.payload?.message_id
+    || payload?.task?.current_message_id || payload?.task?.currentMessageId || "";
+  const keys = deliveryKeys(eventId, messageId);
+  if (!keys.length) keys.push(`anonymous:${crypto.randomUUID()}`);
+  return { eventId, messageId, keys };
+}
+
+function deliveryKeys(eventId, messageId) {
+  const keys = [];
+  if (eventId) keys.push(`event:${eventId}`);
+  if (messageId) keys.push(`message:${messageId}`);
+  return keys;
+}
+
+function findDelivery(keys) {
+  for (const key of keys) {
+    const job = deliveryJobs.get(key);
+    if (job) return job;
+    const completed = completedDeliveries.get(key);
+    if (completed) return completed;
+  }
+  return null;
+}
+
+async function finalizeDelivery(job, outcome) {
+  for (const key of job.identity.keys) {
+    if (deliveryJobs.get(key) === job) deliveryJobs.delete(key);
+  }
+  const now = new Date().toISOString();
+  if (outcome.ok) {
+    job.completedAt = now;
+    for (const key of job.identity.keys) {
+      completedDeliveries.delete(key);
+      completedDeliveries.set(key, job);
+    }
+    while (completedDeliveries.size > 4096) completedDeliveries.delete(completedDeliveries.keys().next().value);
+    try {
+      await persistCompletedDeliveries();
+    } catch (error) {
+      console.error(`[agentrelay-listener] delivery index write failed: ${error.message}`);
+    }
+  }
+  const hook = listenerStatus.hook;
+  void updateListenerStatus({
+    hook: outcome.ok
+      ? { ...hook, state: "idle", total: hook.total + 1, succeeded: hook.succeeded + 1, consecutiveFailures: 0, lastSuccessAt: now, lastError: null, currentKey: null }
+      : { ...hook, state: "failed", total: hook.total + 1, failed: hook.failed + 1, consecutiveFailures: hook.consecutiveFailures + 1, lastFailureAt: now, lastError: outcome.error || "unknown hook failure", currentKey: null }
+  });
+  if (outcome.acked || outcome.nacked) {
+    void updateListenerStatus({
+      lastAck: {
+        eventId: job.identity.eventId || null,
+        messageId: job.identity.messageId || null,
+        status: outcome.nacked ? "delivery_failed" : "received",
+        at: now
+      }
+    });
+  }
+  job.resolveCompletion(outcome);
+}
+
+async function loadCompletedDeliveries() {
+  let snapshot;
+  try {
+    snapshot = JSON.parse(await readFile(deliveryIndexPath, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") console.error(`[agentrelay-listener] delivery index read failed: ${error.message}`);
+    return;
+  }
+  const records = Array.isArray(snapshot?.deliveries) ? snapshot.deliveries : [];
+  for (const record of records.slice(-2048)) {
+    const eventId = record?.eventId || record?.event_id || "";
+    const messageId = record?.messageId || record?.message_id || "";
+    const keys = deliveryKeys(eventId, messageId);
+    if (!keys.length || typeof record?.eventPath !== "string" || !record.eventPath) continue;
+    const job = {
+      eventPath: record.eventPath,
+      identity: { eventId, messageId, keys },
+      completion: Promise.resolve({ ok: true, deduped: true, persisted: true }),
+      completedAt: record.completedAt || null
+    };
+    for (const key of keys) {
+      completedDeliveries.delete(key);
+      completedDeliveries.set(key, job);
+    }
+  }
+  while (completedDeliveries.size > 4096) completedDeliveries.delete(completedDeliveries.keys().next().value);
+}
+
+async function persistCompletedDeliveries() {
+  const jobs = [];
+  const seen = new Set();
+  for (const job of completedDeliveries.values()) {
+    if (seen.has(job) || (!job.identity.eventId && !job.identity.messageId)) continue;
+    seen.add(job);
+    jobs.push({
+      eventId: job.identity.eventId || null,
+      messageId: job.identity.messageId || null,
+      eventPath: job.eventPath,
+      completedAt: job.completedAt || null
+    });
+  }
+  const snapshot = `${JSON.stringify({ version: 1, deliveries: jobs.slice(-4096) }, null, 2)}\n`;
+  deliveryIndexWriteChain = deliveryIndexWriteChain
+    .catch(() => {})
+    .then(async () => {
+      const temporaryPath = `${deliveryIndexPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      await writeFile(temporaryPath, snapshot, { mode: 0o600 });
+      await rename(temporaryPath, deliveryIndexPath);
+    });
+  return deliveryIndexWriteChain;
+}
+
 async function runHook(eventPath) {
-  await new Promise((resolveHook, rejectHook) => {
+  return new Promise((resolveHook, rejectHook) => {
+    let stdout = "";
     const child = spawn(hookCommand, [eventPath], {
       shell: true,
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "inherit"],
       env: {
         ...process.env,
         ...(listenerIdentity ? {
@@ -360,14 +636,34 @@ async function runHook(eventPath) {
         } : {})
       }
     });
+    child.stdout?.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      stdout = `${stdout}${chunk.toString("utf8")}`.slice(-65536);
+    });
     child.on("close", (code) => {
-      if (code === 0) resolveHook();
-      else rejectHook(new Error(`Listener hook exited with ${code}`));
+      if (code !== 0) {
+        rejectHook(new Error(`Listener hook exited with ${code}`));
+        return;
+      }
+      resolveHook(parseHookResult(stdout));
     });
     child.on("error", (error) => {
       rejectHook(new Error(`Listener hook failed: ${error.message}`));
     });
   });
+}
+
+function parseHookResult(stdout) {
+  const lines = String(stdout || "").trim().split(/\r?\n/).reverse();
+  for (const line of lines) {
+    try {
+      const result = JSON.parse(line);
+      if (result && typeof result === "object") return result;
+    } catch {
+      // Custom hooks may emit human-readable output.
+    }
+  }
+  return {};
 }
 
 async function initializeDurableListener() {
@@ -515,6 +811,7 @@ function connectWebSocket(url, headers) {
       }
       const responseEnd = headerEnd + 4 + (parsedHead.status === 101 ? 0 : parsedHead.contentLength);
       if (response.length < responseEnd) return;
+      socket.pause();
       socket.off("data", onData);
       socket.off("error", rejectConnect);
       socket.setTimeout(0);
@@ -602,6 +899,11 @@ function getArg(name) {
 
 function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function positiveInt(value, fallback) {
+  const parsed = Number.parseInt(value || "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function fail(message) {

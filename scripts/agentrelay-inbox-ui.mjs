@@ -3444,14 +3444,24 @@ function renderListenerHealth() {
     restart_listener: "Restart listener",
     inspect_active_listener: "Inspect active listener",
     free_local_storage: "Free local storage",
-    check_credentials: "Check credentials"
+    check_credentials: "Check credentials",
+    inspect_hook: "Inspect hook failures",
+    inspect_hook_queue: "Inspect hook queue"
   };
+  const reader = listener.reader || {};
+  const queue = listener.queue || {};
+  const hook = listener.hook || {};
+  const lastAck = listener.lastAck;
   el.listenerHealth.dataset.healthy = String(listener.healthy === true);
   el.listenerHealth.innerHTML =
     '<div><span>Listener</span><strong>' + escapeHtml(listener.state || "missing") + '</strong></div>' +
+    '<div><span>Reader</span><strong>' + escapeHtml((reader.state || "unknown") + " · " + (reader.depth || 0) + "/" + (reader.capacity || 0)) + '</strong></div>' +
+    '<div><span>Queue depth</span><strong>' + escapeHtml((queue.depth || 0) + "/" + (queue.capacity || 0) + (queue.active ? " · active" : "")) + '</strong></div>' +
     '<div><span>Last heartbeat</span><strong>' + escapeHtml(formatTime(listener.lastHeartbeatAt)) + '</strong></div>' +
     '<div><span>Relay readiness</span><strong>' + escapeHtml(listener.relayReadiness || "unknown") + '</strong></div>' +
     '<div><span>Remote messages</span><strong>' + escapeHtml(pending) + '</strong></div>' +
+    '<div><span>Last ACK</span><strong>' + escapeHtml(lastAck ? (lastAck.status + " · " + formatTime(lastAck.at)) : "None") + '</strong></div>' +
+    '<div><span>Hook health</span><strong>' + escapeHtml(hook.state || "unknown") + (hook.consecutiveFailures ? " · " + hook.consecutiveFailures + " failed" : "") + '</strong></div>' +
     '<div><span>Suggested action</span><strong>' + escapeHtml(actionLabels[listener.suggestedAction] || listener.suggestedAction || "None") + '</strong></div>' +
     '<div class="listener-recovery"><span>Last recovery</span><strong>' +
       escapeHtml(recovery

@@ -3,6 +3,7 @@ import { Duplex } from "node:stream";
 import test from "node:test";
 
 import {
+  BoundedAsyncQueue,
   buildPendingEventPayload,
   buildRecoveryEvent,
   listenerStatusHealth,
@@ -17,7 +18,8 @@ import {
   unwrapPendingTasks,
   unwrapTask,
   v05ReadinessHealth,
-  relayResponseError
+  relayResponseError,
+  WebSocketFrameReader
 } from "../scripts/agentrelay-listener-core.mjs";
 
 test("Listener transport errors preserve structured HTTP and WebSocket conflicts", () => {
@@ -189,6 +191,12 @@ test("buildRecoveryEvent derives a stable identity from the full task snapshot",
   assert.equal(first.type, "task.pending");
   assert.equal(first.taskId, "task_recovery");
   assert.match(first.eventId, /^recovery_[a-f0-9]{32}$/);
+
+  const withMessage = buildRecoveryEvent({
+    task: { ...task, current_message_id: "msg_recovery" },
+    agentId: "zac-agent"
+  });
+  assert.equal(withMessage.messageId, "msg_recovery");
 });
 
 test("reconcilePendingTasks fetches full snapshots and reports per-task failures", async () => {
@@ -245,6 +253,40 @@ test("readJsonFrame responds to ping and continues to the next text frame", asyn
   assert.equal(socket.writes.length, 1);
   assert.equal(socket.writes[0][0] & 0x0f, 10);
   socket.destroy();
+});
+
+test("BoundedAsyncQueue applies producer backpressure without dropping items", async () => {
+  const queue = new BoundedAsyncQueue({ maxSize: 2 });
+  await queue.push("one");
+  await queue.push("two");
+  let accepted = false;
+  const pending = queue.push("three").then(() => { accepted = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(accepted, false);
+  assert.equal(queue.stats.depth, 2);
+  assert.equal(await queue.pop(), "one");
+  await pending;
+  assert.equal(await queue.pop(), "two");
+  assert.equal(await queue.pop(), "three");
+});
+
+test("WebSocketFrameReader keeps one data handler and drains a burst after pausing", async () => {
+  const socket = new MemorySocket();
+  const reader = new WebSocketFrameReader(socket, { inactivityMs: 1000, maxQueue: 2, lowWatermark: 1 });
+  assert.equal(socket.listenerCount("data"), 1);
+  for (let index = 0; index < 5; index += 1) {
+    const payload = Buffer.from(JSON.stringify({ type: "event", eventId: `evt_${index}` }));
+    socket.push(frame(1, payload));
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(socket.listenerCount("data"), 1);
+  assert.equal(reader.stats.paused, true);
+  const received = [];
+  for (let index = 0; index < 5; index += 1) received.push((await reader.nextJson()).eventId);
+  assert.deepEqual(received, ["evt_0", "evt_1", "evt_2", "evt_3", "evt_4"]);
+  assert.equal(socket.listenerCount("data"), 1);
+  reader.close();
+  assert.equal(socket.listenerCount("data"), 0);
 });
 
 class MemorySocket extends Duplex {

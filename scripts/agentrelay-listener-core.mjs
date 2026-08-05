@@ -1,5 +1,297 @@
 import crypto from "node:crypto";
 
+export class BoundedAsyncQueue {
+  constructor({ maxSize = 256, name = "queue", onChange = () => {} } = {}) {
+    if (!Number.isInteger(maxSize) || maxSize <= 0) {
+      throw new Error(`${name} maxSize must be a positive integer`);
+    }
+    this.name = name;
+    this.maxSize = maxSize;
+    this.items = [];
+    this.waitingConsumers = [];
+    this.waitingProducers = [];
+    this.closed = false;
+    this.closeError = null;
+    this.onChange = onChange;
+  }
+
+  get depth() {
+    return this.items.length;
+  }
+
+  get pendingProducers() {
+    return this.waitingProducers.length;
+  }
+
+  get isFull() {
+    return this.items.length >= this.maxSize;
+  }
+
+  get stats() {
+    return {
+      name: this.name,
+      depth: this.items.length,
+      capacity: this.maxSize,
+      pendingProducers: this.waitingProducers.length,
+      closed: this.closed
+    };
+  }
+
+  push(value) {
+    if (this.closed) return Promise.reject(this.closeError || new Error(`${this.name} is closed`));
+    if (this.waitingConsumers.length) {
+      this.waitingConsumers.shift().resolve(value);
+      this.notify();
+      return Promise.resolve();
+    }
+    if (!this.isFull) {
+      this.items.push(value);
+      this.notify();
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      this.waitingProducers.push({ value, resolve, reject });
+      this.notify();
+    });
+  }
+
+  pop() {
+    if (this.items.length) {
+      const value = this.items.shift();
+      this.acceptWaitingProducer();
+      this.notify();
+      return Promise.resolve(value);
+    }
+    if (this.closed) return Promise.reject(this.closeError || new Error(`${this.name} is closed`));
+    return new Promise((resolve, reject) => {
+      this.waitingConsumers.push({ resolve, reject });
+    });
+  }
+
+  close(error = new Error(`${this.name} is closed`)) {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeError = error;
+    for (const consumer of this.waitingConsumers.splice(0)) consumer.reject(error);
+    for (const producer of this.waitingProducers.splice(0)) producer.reject(error);
+    this.notify();
+  }
+
+  acceptWaitingProducer() {
+    if (this.closed || this.isFull || !this.waitingProducers.length) return;
+    const producer = this.waitingProducers.shift();
+    this.items.push(producer.value);
+    producer.resolve();
+  }
+
+  notify() {
+    try {
+      this.onChange(this.stats);
+    } catch {
+      // Metrics must never affect delivery.
+    }
+  }
+}
+
+export class WebSocketFrameReader {
+  constructor(socket, {
+    inactivityMs = 90000,
+    maxQueue = 256,
+    lowWatermark = Math.max(0, Math.floor(maxQueue / 2)),
+    initialData = null
+  } = {}) {
+    if (!socket || typeof socket.on !== "function") throw new Error("WebSocket frame reader requires a socket");
+    if (!Number.isInteger(maxQueue) || maxQueue <= 0) throw new Error("WebSocket frame queue max must be a positive integer");
+    this.socket = socket;
+    this.inactivityMs = Number.isFinite(inactivityMs) && inactivityMs > 0 ? inactivityMs : 0;
+    this.maxQueue = maxQueue;
+    this.lowWatermark = Math.min(maxQueue - 1, Math.max(0, lowWatermark));
+    this.queue = [];
+    this.waiters = [];
+    this.buffer = Buffer.concat([
+      socket.agentRelayReadBuffer || Buffer.alloc(0),
+      initialData || Buffer.alloc(0)
+    ]);
+    socket.agentRelayReadBuffer = Buffer.alloc(0);
+    this.closed = false;
+    this.closeError = null;
+    this.pausedByBackpressure = false;
+    this.pauseCount = 0;
+    this.resumeCount = 0;
+    this.timer = null;
+    this.lastDataAt = Date.now();
+    this.lastFrameAt = null;
+    this.framesReceived = 0;
+    this.onData = (chunk) => {
+      if (this.closed) return;
+      this.lastDataAt = Date.now();
+      this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : Buffer.from(chunk);
+      this.parseAvailableFrames();
+      this.armInactivityTimer();
+    };
+    this.onEnd = () => this.fail(new Error("socket ended"));
+    this.onClose = () => this.fail(new Error("socket closed"));
+    this.onError = (error) => this.fail(error);
+    socket.on("data", this.onData);
+    socket.once("end", this.onEnd);
+    socket.once("close", this.onClose);
+    socket.once("error", this.onError);
+    this.parseAvailableFrames();
+    if (!this.pausedByBackpressure && typeof socket.resume === "function") socket.resume();
+    this.armInactivityTimer();
+  }
+
+  get stats() {
+    return {
+      state: this.closed ? "closed" : this.pausedByBackpressure ? "paused" : "reading",
+      depth: this.queue.length,
+      capacity: this.maxQueue,
+      bufferedBytes: this.buffer.length,
+      paused: this.pausedByBackpressure,
+      pauseCount: this.pauseCount,
+      resumeCount: this.resumeCount,
+      framesReceived: this.framesReceived,
+      lastFrameAt: this.lastFrameAt ? new Date(this.lastFrameAt).toISOString() : null
+    };
+  }
+
+  async nextJson() {
+    const frame = await this.nextFrame();
+    try {
+      return JSON.parse(frame.payload.toString("utf8"));
+    } catch (error) {
+      throw new Error(`Invalid WebSocket JSON frame: ${error.message}`);
+    }
+  }
+
+  nextFrame() {
+    if (this.queue.length) {
+      const frame = this.queue.shift();
+      this.maybeResume();
+      return Promise.resolve(frame);
+    }
+    if (this.closed) return Promise.reject(this.closeError || new Error("WebSocket frame reader is closed"));
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ resolve, reject });
+    });
+  }
+
+  parseAvailableFrames() {
+    while (!this.closed) {
+      if (this.queue.length >= this.maxQueue && !this.waiters.length) {
+        this.pauseForBackpressure();
+        return;
+      }
+      const frame = this.takeFrame();
+      if (!frame) return;
+      this.lastFrameAt = Date.now();
+      if (frame.opcode === 8) {
+        this.fail(new Error("received close frame"));
+        return;
+      }
+      if (frame.opcode === 9) {
+        this.socket.write(encodeClientFrame(10, frame.payload));
+        continue;
+      }
+      if (frame.opcode === 10) continue;
+      if (frame.opcode !== 1) {
+        this.fail(new Error(`expected text frame, got opcode ${frame.opcode}`));
+        return;
+      }
+      this.framesReceived += 1;
+      if (this.waiters.length) {
+        this.waiters.shift().resolve(frame);
+      } else {
+        this.queue.push(frame);
+      }
+    }
+  }
+
+  takeFrame() {
+    if (this.buffer.length < 2) return null;
+    const first = this.buffer[0];
+    const second = this.buffer[1];
+    const opcode = first & 0x0f;
+    const masked = Boolean(second & 0x80);
+    let payloadLength = second & 0x7f;
+    let headerLength = 2;
+    if (payloadLength === 126) headerLength += 2;
+    if (payloadLength === 127) headerLength += 8;
+    if (this.buffer.length < headerLength) return null;
+    if (payloadLength === 126) payloadLength = this.buffer.readUInt16BE(2);
+    if (payloadLength === 127) {
+      const length = this.buffer.readBigUInt64BE(2);
+      if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
+        this.fail(new Error("WebSocket frame is too large"));
+        return null;
+      }
+      payloadLength = Number(length);
+    }
+    const maskLength = masked ? 4 : 0;
+    const frameLength = headerLength + maskLength + payloadLength;
+    if (this.buffer.length < frameLength) return null;
+    let offset = headerLength;
+    const mask = masked ? this.buffer.subarray(offset, offset + 4) : null;
+    offset += maskLength;
+    const payload = Buffer.from(this.buffer.subarray(offset, offset + payloadLength));
+    this.buffer = this.buffer.subarray(frameLength);
+    if (mask) {
+      for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
+    }
+    return { opcode, payload };
+  }
+
+  pauseForBackpressure() {
+    if (this.pausedByBackpressure || this.closed) return;
+    this.pausedByBackpressure = true;
+    this.pauseCount += 1;
+    this.socket.pause();
+  }
+
+  maybeResume() {
+    if (!this.pausedByBackpressure || this.closed || this.queue.length > this.lowWatermark) return;
+    this.pausedByBackpressure = false;
+    this.resumeCount += 1;
+    this.parseAvailableFrames();
+    if (!this.pausedByBackpressure) this.socket.resume();
+  }
+
+  armInactivityTimer() {
+    if (!this.inactivityMs || this.closed) return;
+    clearTimeout(this.timer);
+    const remaining = Math.max(1, this.inactivityMs - (Date.now() - this.lastDataAt));
+    this.timer = setTimeout(() => {
+      if (Date.now() - this.lastDataAt < this.inactivityMs) {
+        this.armInactivityTimer();
+        return;
+      }
+      if (this.queue.length || this.buffer.length || this.pausedByBackpressure) {
+        this.lastDataAt = Date.now();
+        this.armInactivityTimer();
+        return;
+      }
+      this.fail(new Error(`WebSocket inactive for ${this.inactivityMs}ms`));
+      this.socket.destroy();
+    }, remaining);
+  }
+
+  fail(error) {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeError = error;
+    clearTimeout(this.timer);
+    this.socket.off("data", this.onData);
+    this.socket.off("end", this.onEnd);
+    this.socket.off("close", this.onClose);
+    this.socket.off("error", this.onError);
+    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
+  }
+
+  close() {
+    this.fail(new Error("WebSocket frame reader closed"));
+  }
+}
+
 export class RelayResponseError extends Error {
   constructor(message, { status, body = {} } = {}) {
     super(message);
@@ -76,6 +368,7 @@ export function buildRecoveryEvent({ task, agentId }) {
   const goalVersion = task.goal_version ?? task.goalVersion ?? 0;
   const updatedAt = task.updated_at ?? task.updatedAt ?? 0;
   const pendingOnAgentId = task.pending_on_agent_id || task.pendingOnAgentId || agentId;
+  const messageId = task.current_message_id || task.currentMessageId || "";
   const identity = `${taskId}:${goalVersion}:${updatedAt}:${pendingOnAgentId}`;
   const digest = crypto.createHash("sha256").update(identity).digest("hex").slice(0, 32);
   return {
@@ -86,7 +379,8 @@ export function buildRecoveryEvent({ task, agentId }) {
     taskId,
     pendingOnAgentId,
     reason: "listener.recovery",
-    recovery: true
+    recovery: true,
+    ...(messageId ? { messageId } : {})
   };
 }
 
@@ -104,9 +398,16 @@ export function listenerOperationalStatus(status = {}, options = {}) {
   const state = String(status.state || "missing");
   const health = listenerStatusHealth(status, options);
   const lastError = String(status.lastError || "");
+  const hook = normalizeHookStatus(status.hook);
+  const reader = normalizeReaderStatus(status.reader);
+  const queue = normalizeQueueStatus(status.queue);
   let suggestedAction = "none";
   if (/ENOSPC|no space left|disk full/i.test(lastError)) {
     suggestedAction = "free_local_storage";
+  } else if (hook.state === "failed") {
+    suggestedAction = "inspect_hook";
+  } else if (queue.capacity > 0 && queue.depth >= queue.capacity) {
+    suggestedAction = "inspect_hook_queue";
   } else if (state === "superseded" || /listener_recovery_not_allowed|stale_readiness_epoch/i.test(lastError)) {
     suggestedAction = "inspect_active_listener";
   } else if (/unauthorized|forbidden|authentication|\b401\b|\b403\b/i.test(lastError)) {
@@ -116,15 +417,69 @@ export function listenerOperationalStatus(status = {}, options = {}) {
   }
   return {
     state,
-    healthy: health.healthy,
+    healthy: health.healthy && hook.state !== "failed",
     lastHeartbeatAt: status.lastHeartbeatAt || status.connectedAt || null,
     relayReadiness: status.relayReadiness || "unknown",
     pendingRemoteMessages: Number.isInteger(status.pendingRemoteMessages)
       ? status.pendingRemoteMessages
       : null,
+    reader,
+    queue,
+    hook,
+    lastAck: normalizeLastAck(status.lastAck),
     lastRecovery: normalizeRecovery(status.lastRecovery),
     suggestedAction,
     lastError: lastError || null
+  };
+}
+
+function normalizeReaderStatus(value) {
+  const reader = value && typeof value === "object" ? value : {};
+  return {
+    state: reader.state || "unknown",
+    depth: nonNegativeInt(reader.depth),
+    capacity: positiveOrZeroInt(reader.capacity),
+    paused: reader.paused === true,
+    pauseCount: nonNegativeInt(reader.pauseCount),
+    resumeCount: nonNegativeInt(reader.resumeCount),
+    bufferedBytes: nonNegativeInt(reader.bufferedBytes),
+    framesReceived: nonNegativeInt(reader.framesReceived),
+    lastFrameAt: reader.lastFrameAt || null
+  };
+}
+
+function normalizeQueueStatus(value) {
+  const queue = value && typeof value === "object" ? value : {};
+  return {
+    depth: nonNegativeInt(queue.depth),
+    capacity: positiveOrZeroInt(queue.capacity),
+    pendingProducers: nonNegativeInt(queue.pendingProducers),
+    active: nonNegativeInt(queue.active)
+  };
+}
+
+function normalizeHookStatus(value) {
+  const hook = value && typeof value === "object" ? value : {};
+  return {
+    state: hook.state || "unknown",
+    total: nonNegativeInt(hook.total),
+    succeeded: nonNegativeInt(hook.succeeded),
+    failed: nonNegativeInt(hook.failed),
+    consecutiveFailures: nonNegativeInt(hook.consecutiveFailures),
+    currentKey: hook.currentKey || null,
+    lastError: hook.lastError || null,
+    lastSuccessAt: hook.lastSuccessAt || null,
+    lastFailureAt: hook.lastFailureAt || null
+  };
+}
+
+function normalizeLastAck(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    eventId: value.eventId || null,
+    messageId: value.messageId || null,
+    status: value.status || "unknown",
+    at: value.at || null
   };
 }
 
@@ -280,6 +635,10 @@ function nonNegativeInt(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
+function positiveOrZeroInt(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
 export async function probeV05DeliveryEndpoints({
   agentId,
   listenerInstanceId,
@@ -321,50 +680,10 @@ export async function probeV05DeliveryEndpoints({
 }
 
 export async function readJsonFrame(socket, { inactivityMs }) {
-  while (true) {
-    const frame = await readFrameWithTimeout(socket, inactivityMs);
-    if (frame.opcode === 8) throw new Error("received close frame");
-    if (frame.opcode === 9) {
-      socket.write(encodeClientFrame(10, frame.payload));
-      continue;
-    }
-    if (frame.opcode === 10) continue;
-    if (frame.opcode !== 1) throw new Error(`expected text frame, got opcode ${frame.opcode}`);
-    return JSON.parse(frame.payload.toString("utf8"));
-  }
-}
-
-async function readFrameWithTimeout(socket, inactivityMs) {
-  if (!Number.isFinite(inactivityMs) || inactivityMs <= 0) return readFrame(socket);
-  let timer;
-  try {
-    return await Promise.race([
-      readFrame(socket),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          socket.destroy();
-          reject(new Error(`WebSocket inactive for ${inactivityMs}ms`));
-        }, inactivityMs);
-      })
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function readFrame(socket) {
-  const header = await readExact(socket, 2);
-  const opcode = header[0] & 0x0f;
-  const masked = Boolean(header[1] & 0x80);
-  let length = header[1] & 0x7f;
-  if (length === 126) length = (await readExact(socket, 2)).readUInt16BE(0);
-  if (length === 127) length = Number((await readExact(socket, 8)).readBigUInt64BE(0));
-  const mask = masked ? await readExact(socket, 4) : null;
-  const payload = Buffer.from(await readExact(socket, length));
-  if (mask) {
-    for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
-  }
-  return { opcode, payload };
+  const reader = socket.agentRelayFrameReader instanceof WebSocketFrameReader
+    ? socket.agentRelayFrameReader
+    : (socket.agentRelayFrameReader = new WebSocketFrameReader(socket, { inactivityMs }));
+  return reader.nextJson();
 }
 
 function encodeClientFrame(opcode, payload) {
@@ -384,48 +703,4 @@ function encodeClientFrame(opcode, payload) {
   const maskedPayload = Buffer.from(payload);
   for (let index = 0; index < maskedPayload.length; index += 1) maskedPayload[index] ^= mask[index % 4];
   return Buffer.concat([lengthBytes, mask, maskedPayload]);
-}
-
-function readExact(socket, size) {
-  const buffered = socket.agentRelayReadBuffer || Buffer.alloc(0);
-  if (buffered.length >= size) {
-    const needed = buffered.subarray(0, size);
-    socket.agentRelayReadBuffer = buffered.subarray(size);
-    return Promise.resolve(needed);
-  }
-  const initial = buffered.length ? [buffered] : [];
-  socket.agentRelayReadBuffer = Buffer.alloc(0);
-  return new Promise((resolveRead, rejectRead) => {
-    const chunks = [...initial];
-    let total = buffered.length;
-    const cleanup = () => {
-      socket.off("data", onData);
-      socket.off("end", onEnd);
-      socket.off("close", onClose);
-      socket.off("error", onError);
-    };
-    const onData = (chunk) => {
-      chunks.push(chunk);
-      total += chunk.length;
-      if (total < size) return;
-      cleanup();
-      const data = Buffer.concat(chunks, total);
-      socket.agentRelayReadBuffer = data.subarray(size);
-      resolveRead(data.subarray(0, size));
-    };
-    const onEnd = () => rejectClosed("socket ended");
-    const onClose = () => rejectClosed("socket closed");
-    const onError = (error) => {
-      cleanup();
-      rejectRead(error);
-    };
-    const rejectClosed = (message) => {
-      cleanup();
-      rejectRead(new Error(message));
-    };
-    socket.on("data", onData);
-    socket.once("end", onEnd);
-    socket.once("close", onClose);
-    socket.once("error", onError);
-  });
 }

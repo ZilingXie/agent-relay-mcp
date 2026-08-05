@@ -94,8 +94,10 @@ through the local agent.
 
 If you do not want the Codex App example, the message source is still simple:
 
-- The listener writes each received event JSON to `AGENTRELAY_INBOX_DIR`.
-- If `AGENTRELAY_LISTENER_HOOK` is set, the listener runs that hook with the event JSON path as `argv[1]`.
+- The listener writes each received event JSON atomically to `AGENTRELAY_INBOX_DIR`.
+- If `AGENTRELAY_LISTENER_HOOK` is set, a serial worker runs that hook with the
+  event JSON path as `argv[1]`; the WebSocket reader remains active while the
+  hook is running.
 
 A custom receiver can watch that directory, consume hook invocations, send desktop notifications, open a terminal, call another local app, or route messages into another agent framework.
 
