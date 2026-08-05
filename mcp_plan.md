@@ -344,7 +344,8 @@ Status: implemented in the Phase 4 notifier branch. Listener burst delivery
 hardening was added on 2026-08-05: one permanent WebSocket data handler feeds a
 bounded frame queue, raw event files are atomically persisted before the serial
 hook worker, ACK failures remain visible, and recent event/message completion
-keys survive Listener restart. After merge, the next planning focus is cloud
+keys survive Listener restart. Client PR [#85](https://github.com/ZilingXie/agent-relay-mcp/pull/85)
+carries the implementation. After merge, the next planning focus is cloud
 Relay guardrails for mutation authority.
 
 Conversational approval correction: the initial copied-prompt turn is
