@@ -735,6 +735,12 @@ test("inbox UI recomputes expired Relay visibility without mutating the local is
     requiresHumanConfirmation: true,
     relayStatus: "open"
   };
+  localState.issues.archived_task = {
+    taskId: "archived_task",
+    localStatus: "archived",
+    relayStatus: "completed",
+    updatedAt: "2026-07-09T00:00:00.000Z"
+  };
   await writeFile(issuesPath, JSON.stringify(localState, null, 2));
   const before = await readFile(issuesPath, "utf8");
   const relayClient = {
@@ -757,12 +763,13 @@ test("inbox UI recomputes expired Relay visibility without mutating the local is
     const { port } = server.address();
     const response = await fetch(`http://127.0.0.1:${port}/api/issues`);
     const snapshot = await response.json();
-    const issue = snapshot.issues[0];
+    const issue = snapshot.issues.find((candidate) => candidate.taskId === "task_ui_expired");
     assert.equal(issue.relayStatus, "expired");
     assert.equal(issue.taskVersion, 3);
     assert.equal(issue.messageDeliveryStatus, "failed");
     assert.equal(issue.needsHuman, false);
     assert.equal(snapshot.counts.needsHuman, 0);
+    assert.equal(snapshot.counts.total, 2);
     assert.equal(snapshot.counts.closed, 1);
     assert.equal(issueWorkflowStatus(issue), "complete");
     assert.equal(await readFile(issuesPath, "utf8"), before);

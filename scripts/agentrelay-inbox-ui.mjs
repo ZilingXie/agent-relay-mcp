@@ -869,7 +869,7 @@ function countIssues(issues) {
     incoming: issues.filter((issue) => issue.direction === "incoming").length,
     outgoing: issues.filter((issue) => issue.direction === "outgoing").length,
     needsHuman: issues.filter((issue) => issue.needsHuman).length,
-    closed: issues.filter((issue) => isNonActionableTerminalIssue(issue)).length
+    closed: issues.filter((issue) => issueWorkflowStatus(issue) === "complete").length
   };
 }
 
