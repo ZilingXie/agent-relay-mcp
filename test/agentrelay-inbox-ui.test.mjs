@@ -711,6 +711,105 @@ test("inbox UI projects v0.5 Task and Message delivery from Server visibility", 
   }
 });
 
+test("inbox UI recomputes expired Relay visibility without mutating the local issue", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-expired-"));
+  const stateRoot = join(root, "state");
+  const task = {
+    task_id: "task_ui_expired", root_task_id: "task_ui_expired", protocol_version: "agent-collab-v0.5",
+    requester_agent_id: "zac-agent", target_agent_id: "frank-agent", done_criteria: "pong",
+    status: "open", current_message_id: "msg_ui_expired", turn_sequence: 1, task_version: 2,
+    from_agent_id: "zac-agent", to_agent_id: "frank-agent", max_turns: 3, updated_at: 1,
+    messages: [{
+      message_id: "msg_ui_expired", delivery_status: "pending", max_delivery_attempts: 4,
+      parts: [{ kind: "text", text: "ping" }]
+    }],
+    artifacts: []
+  };
+  await persistTaskWorkspace({ stateRoot, task, localAgentId: "zac-agent" });
+  const issuesPath = join(stateRoot, "issues.json");
+  const localState = JSON.parse(await readFile(issuesPath, "utf8"));
+  localState.issues.task_ui_expired = {
+    ...localState.issues.task_ui_expired,
+    pendingOnAgentId: "zac-agent",
+    processorStatus: "needs_human",
+    requiresHumanConfirmation: true,
+    relayStatus: "open"
+  };
+  await writeFile(issuesPath, JSON.stringify(localState, null, 2));
+  const before = await readFile(issuesPath, "utf8");
+  const relayClient = {
+    async getTaskVisibilityBatch(taskIds) {
+      assert.deepEqual(taskIds, ["task_ui_expired"]);
+      return {
+        items: [{
+          task: { ...task, status: "expired", task_version: 3, messages: undefined, artifacts: undefined },
+          current_message: { ...task.messages[0], delivery_status: "failed" },
+          outbox: { outbox_status: "exhausted", outbox_attempts: 4, next_retry_at: null, last_error: "task expired" },
+          diagnosis: "task_expired"
+        }],
+        errors: []
+      };
+    }
+  };
+  const server = createInboxUiServer({ stateRoot, localAgentId: "zac-agent", relayClient });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/api/issues`);
+    const snapshot = await response.json();
+    const issue = snapshot.issues[0];
+    assert.equal(issue.relayStatus, "expired");
+    assert.equal(issue.taskVersion, 3);
+    assert.equal(issue.messageDeliveryStatus, "failed");
+    assert.equal(issue.needsHuman, false);
+    assert.equal(snapshot.counts.needsHuman, 0);
+    assert.equal(snapshot.counts.closed, 1);
+    assert.equal(issueWorkflowStatus(issue), "complete");
+    assert.equal(await readFile(issuesPath, "utf8"), before);
+  } finally {
+    await new Promise((resolveClose) => server.close(resolveClose));
+  }
+});
+
+test("inbox UI keeps local attention when Relay visibility is unavailable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-visibility-error-"));
+  const stateRoot = join(root, "state");
+  await writeIssues(stateRoot, {
+    version: 1,
+    issues: {
+      task_visibility_error: {
+        taskId: "task_visibility_error",
+        protocolVersion: "agent-collab-v0.5",
+        relayStatus: "open",
+        pendingOnAgentId: "zac-agent",
+        requiresHumanConfirmation: true,
+        updatedAt: "2026-07-08T00:00:00.000Z"
+      }
+    },
+    events: {}
+  });
+  const server = createInboxUiServer({
+    stateRoot,
+    localAgentId: "zac-agent",
+    relayClient: {
+      async getTaskVisibilityBatch() {
+        throw new Error("relay unavailable");
+      }
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const snapshot = await (await fetch(`http://127.0.0.1:${port}/api/issues`)).json();
+    assert.equal(snapshot.visibilityError, "relay unavailable");
+    assert.equal(snapshot.issues[0].relayStatus, "open");
+    assert.equal(snapshot.issues[0].needsHuman, true);
+    assert.equal(snapshot.counts.needsHuman, 1);
+  } finally {
+    await new Promise((resolveClose) => server.close(resolveClose));
+  }
+});
+
 test("inbox UI explicit resync updates completed task ownership from Relay", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-inbox-ui-"));
   const stateRoot = join(root, "state");
@@ -1151,6 +1250,8 @@ test("issueWorkflowStatus assigns each task to one sidebar folder by precedence"
   const cases = [
     [{ taskId: "archived", localStatus: "archived", relayStatus: "failed", executorStatus: "failed" }, "archived"],
     [{ taskId: "complete", localStatus: "closed", messageDeliveryStatus: "failed" }, "complete"],
+    [{ taskId: "expired", relayStatus: "expired", messageDeliveryStatus: "failed", needsHuman: true }, "complete"],
+    [{ taskId: "cancelled", relayStatus: "cancelled", pendingOnHumanId: "zac", needsHuman: true }, "complete"],
     [{ taskId: "task-failed", relayStatus: "failed" }, "failed"],
     [{ taskId: "delivery-failed", messageDeliveryStatus: "failed" }, "failed"],
     [{ taskId: "create-failed", localStatus: "create_failed" }, "failed"],
@@ -1170,13 +1271,15 @@ test("issueWorkflowStatus assigns each task to one sidebar folder by precedence"
       status,
       cases.filter(([issue]) => issueWorkflowStatus(issue) === status).length
     ])),
-    { pending: 2, replied: 2, failed: 5, archived: 1, complete: 1 }
+    { pending: 2, replied: 2, failed: 5, archived: 1, complete: 3 }
   );
-  assert.equal(classifyIssueFilter(cases[7][0], "pending_tasks"), true);
-  assert.equal(classifyIssueFilter(cases[9][0], "replied"), true);
-  assert.equal(classifyIssueFilter(cases[2][0], "failed"), true);
+  assert.equal(classifyIssueFilter(cases[9][0], "pending_tasks"), true);
+  assert.equal(classifyIssueFilter(cases[11][0], "replied"), true);
+  assert.equal(classifyIssueFilter(cases[4][0], "failed"), true);
   assert.equal(classifyIssueFilter(cases[0][0], "all"), true);
   assert.equal(classifyIssueFilter(cases[1][0], "complete"), true);
+  assert.equal(classifyIssueFilter(cases[2][0], "pending_tasks"), false);
+  assert.equal(classifyIssueFilter(cases[2][0], "complete"), true);
 });
 
 test("inbox UI server disables local reply submission for personal-agent notifier mode", async () => {
@@ -2008,7 +2111,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(html, /class="theme-toggle"/);
     assert.match(html, /id="search"/);
     assert.match(html, /id="show-completed"/);
-    assert.match(html, /Show Completed/);
+    assert.match(html, /Show Closed/);
     assert.match(html, /class="list-tools"/);
     assert.match(html, /id="sidebar-resizer"/);
     assert.match(html, /role="separator"/);
@@ -2067,6 +2170,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /method: "DELETE"/);
     assert.match(js, /trashIcon/);
     assert.match(js, /function issueFolders/);
+    assert.match(js, /function isNonActionableTerminalIssue/);
     assert.match(js, /function issueFolder/);
     assert.match(js, /FOLDER_COLLAPSE_KEY/);
     assert.match(js, /FOLDER_COLLAPSE_MIGRATION_KEY/);
@@ -2085,6 +2189,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /title="Delivered"/);
     assert.match(js, /Failed/);
     assert.match(js, /Archive/);
+    assert.match(js, /title: "Closed"/);
     assert.ok(js.indexOf('title: "Pending Tasks"') < js.indexOf('title: "Replied"'));
     assert.ok(js.indexOf('title: "Replied"') < js.indexOf('title: "Failed"'));
     assert.ok(js.indexOf('title: "Failed"') < js.indexOf('title: "Archive"'));

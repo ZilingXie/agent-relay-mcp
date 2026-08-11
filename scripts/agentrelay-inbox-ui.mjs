@@ -317,7 +317,7 @@ export function createInboxUiServer({
 
       if (url.pathname === "/api/issues") {
         const snapshot = await loadInboxSnapshot({ stateRoot, localAgentId, now });
-        sendJson(res, 200, await enrichSnapshotVisibility(snapshot, relayClient));
+        sendJson(res, 200, await enrichSnapshotVisibility(snapshot, relayClient, { localAgentId }));
         return;
       }
 
@@ -325,7 +325,8 @@ export function createInboxUiServer({
       if (detailMatch) {
         const snapshot = await enrichSnapshotVisibility(
           await loadInboxSnapshot({ stateRoot, localAgentId, now }),
-          relayClient
+          relayClient,
+          { localAgentId }
         );
         const taskId = decodeURIComponent(detailMatch[1]);
         const issue = snapshot.issues.find((candidate) => candidate.taskId === taskId);
@@ -617,7 +618,11 @@ function doneCriteriaTitle(value, maxLength = 120) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
-async function enrichSnapshotVisibility(snapshot, relayClient) {
+async function enrichSnapshotVisibility(
+  snapshot,
+  relayClient,
+  { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}
+) {
   const taskIds = snapshot.issues
     .filter((issue) => [PROTOCOL_V05, PROTOCOL_V06].includes(issue.protocolVersion))
     .map((issue) => issue.taskId);
@@ -628,17 +633,26 @@ async function enrichSnapshotVisibility(snapshot, relayClient) {
     const issues = snapshot.issues.map((issue) => {
       const visibility = byTaskId.get(issue.taskId);
       if (!visibility) return issue;
-      return {
+      const task = visibility.task || {};
+      const currentMessage = visibility.current_message || {};
+      const outbox = visibility.outbox || {};
+      const enrichedIssue = {
         ...issue,
-        relayStatus: visibility.task.status,
-        taskVersion: visibility.task.task_version,
-        messageDeliveryStatus: visibility.current_message.delivery_status,
-        diagnosis: visibility.diagnosis,
-        outboxStatus: visibility.outbox.outbox_status,
-        deliveryAttempts: visibility.outbox.outbox_attempts,
-        maxDeliveryAttempts: visibility.current_message.max_delivery_attempts,
-        nextRetryAt: visibility.outbox.next_retry_at,
-        deliveryLastError: visibility.outbox.last_error || ""
+        relayStatus: task.status ?? issue.relayStatus,
+        taskVersion: task.task_version ?? issue.taskVersion,
+        messageDeliveryStatus: currentMessage.delivery_status ?? issue.messageDeliveryStatus,
+        diagnosis: visibility.diagnosis ?? issue.diagnosis,
+        outboxStatus: outbox.outbox_status ?? issue.outboxStatus,
+        deliveryAttempts: outbox.outbox_attempts ?? issue.deliveryAttempts,
+        maxDeliveryAttempts: currentMessage.max_delivery_attempts ?? issue.maxDeliveryAttempts,
+        nextRetryAt: Object.hasOwn(outbox, "next_retry_at") ? outbox.next_retry_at : issue.nextRetryAt,
+        deliveryLastError: Object.hasOwn(outbox, "last_error")
+          ? outbox.last_error || ""
+          : issue.deliveryLastError || ""
+      };
+      return {
+        ...enrichedIssue,
+        needsHuman: needsHumanAttention(enrichedIssue, { localAgentId })
       };
     });
     return { ...snapshot, counts: countIssues(issues), issues, visibilityErrors: response.errors || [] };
@@ -774,9 +788,13 @@ function normalizeFileAccessGrants(grants) {
     : [];
 }
 
+function isNonActionableTerminalIssue(issue) {
+  return issue.localStatus === "closed" ||
+    ["completed", "expired", "cancelled"].includes(issue.relayStatus);
+}
+
 function needsHumanAttention(issue, { localAgentId = process.env.AGENTRELAY_AGENT_ID || "zac-agent" } = {}) {
-  if (issue.localStatus === "archived") return false;
-  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
+  if (issue.localStatus === "archived" || isNonActionableTerminalIssue(issue)) return false;
   if (issue.contextSyncStatus === "context_sync_failed") return true;
   if (issue.contextSyncStatus === "context_sync_pending") return false;
   if (issue.attentionReason === "context_changed" || issue.attentionReason === "awaiting_confirmation") return true;
@@ -808,7 +826,7 @@ function isWaitingForRemoteCompletionOwner(issue, { localAgentId = process.env.A
   const owner = issue.completionOwnerAgentId || "";
   if (!owner || owner === localAgentId) return false;
   if (issue.localStatus === "archived") return false;
-  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
+  if (isNonActionableTerminalIssue(issue)) return false;
   if (issue.pendingOnHumanId) return false;
   if (issue.executorStatus !== "completed") return false;
   if (!new Set(["submit_artifact", "request_revision"]).has(issue.executorActionIntent || "")) return false;
@@ -851,7 +869,7 @@ function countIssues(issues) {
     incoming: issues.filter((issue) => issue.direction === "incoming").length,
     outgoing: issues.filter((issue) => issue.direction === "outgoing").length,
     needsHuman: issues.filter((issue) => issue.needsHuman).length,
-    closed: issues.filter((issue) => issue.relayStatus === "completed" || issue.localStatus === "closed").length
+    closed: issues.filter((issue) => isNonActionableTerminalIssue(issue)).length
   };
 }
 
@@ -867,7 +885,7 @@ export function classifyIssueFilter(issue, filter, { localAgentId = process.env.
 
 export function issueWorkflowStatus(issue) {
   if (issue.localStatus === "archived") return "archived";
-  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "complete";
+  if (isNonActionableTerminalIssue(issue)) return "complete";
   if (
     issue.relayStatus === "failed" ||
     issue.messageDeliveryStatus === "failed" ||
@@ -2102,7 +2120,7 @@ const INDEX_HTML = String.raw`<!doctype html>
       <section id="listener-health" class="listener-health" aria-live="polite"></section>
       <div class="list-tools">
         <input id="search" type="search" placeholder="Search tasks or agents" autocomplete="off" />
-        <button id="show-completed" class="toggle-button" type="button" aria-pressed="false">Show Completed</button>
+        <button id="show-completed" class="toggle-button" type="button" aria-pressed="false">Show Closed</button>
       </div>
       <div id="issues" class="issues"></div>
     </aside>
@@ -3309,6 +3327,7 @@ const FOLDER_COLLAPSE_KEY = "agentrelay-collapsed-folders";
 const FOLDER_COLLAPSE_MIGRATION_KEY = "agentrelay-collapsed-folders-migration";
 const ARCHIVE_FOLDER_KEY = "archive";
 const AGENTS_MD_PATH = __AGENTRELAY_AGENTS_MD_PATH__;
+__NON_ACTIONABLE_TERMINAL_ISSUE__
 __ISSUE_WORKFLOW_STATUS__
 const SIDEBAR_MIN_WIDTH = 280;
 const SIDEBAR_MAX_WIDTH = 720;
@@ -3533,7 +3552,7 @@ function renderMetrics() {
     metric("Total", snapshot.counts.total),
     metric("Pending Tasks", pendingTasks),
     metric("Replied", replied),
-    metric("Complete", complete)
+    metric("Closed", complete)
   ].join("");
 }
 
@@ -3606,7 +3625,7 @@ function issueFolders(issues) {
     },
     {
       key: "complete",
-      title: "Complete",
+      title: "Closed",
       issues: issues.filter((issue) => issueWorkflowStatus(issue) === "complete")
     }
   ];
@@ -3901,7 +3920,11 @@ function renderPendingMarker(issue) {
 }
 
 function pendingOwnerLabel(issue) {
-  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return "Complete";
+  if (isNonActionableTerminalIssue(issue)) {
+    if (issue.relayStatus === "expired") return "Expired";
+    if (issue.relayStatus === "cancelled") return "Cancelled";
+    return "Complete";
+  }
   if (issue.pendingOnHumanId) return "Pending Tasks";
   if (issue.localStatus === "create_failed" || issue.relayStatus === "failed") return "Pending Tasks";
   if (issue.contextSyncStatus === "context_sync_pending") return "Syncing context";
@@ -3917,7 +3940,7 @@ function isWaitingForRemoteCompletionOwnerClient(issue) {
   const owner = issue.completionOwnerAgentId || "";
   if (!owner || owner === "zac-agent") return false;
   if (issue.localStatus === "archived") return false;
-  if (issue.relayStatus === "completed" || issue.localStatus === "closed") return false;
+  if (isNonActionableTerminalIssue(issue)) return false;
   if (issue.pendingOnHumanId) return false;
   if (issue.executorStatus !== "completed") return false;
   return issue.executorActionIntent === "submit_artifact" || issue.executorActionIntent === "request_revision";
@@ -4273,6 +4296,7 @@ function escapeAttr(value) {
 function buildAppJs({ agentsMdPath }) {
   return APP_JS
     .replace("__AGENTRELAY_AGENTS_MD_PATH__", JSON.stringify(agentsMdPath))
+    .replace("__NON_ACTIONABLE_TERMINAL_ISSUE__", () => isNonActionableTerminalIssue.toString())
     .replace("__ISSUE_WORKFLOW_STATUS__", () => issueWorkflowStatus.toString());
 }
 
