@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import test from "node:test";
 
 import {
@@ -2160,6 +2161,12 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
 
     const jsResponse = await fetch(`http://127.0.0.1:${port}/app.js`);
     const js = await jsResponse.text();
+    const countdownSource = js.match(/function formatExpiryCountdown\(expiresAt, now = Date\.now\(\)\) \{[\s\S]*?\n\}/)?.[0];
+    assert.ok(countdownSource, "expiry countdown helper is present in the browser bundle");
+    const formatExpiryCountdown = vm.runInNewContext(`(${countdownSource})`);
+    assert.equal(formatExpiryCountdown(1001, 1000 * 1000), "Expire in 00:01");
+    assert.equal(formatExpiryCountdown(1000, 1000 * 1000), "Expired");
+    assert.equal(formatExpiryCountdown(1000 + 25 * 3600 + 1, 1000 * 1000), "Expire in 25:01");
     assert.match(js, new RegExp(`const AGENTS_MD_PATH = ${JSON.stringify(join(root, "templates/local-inbox/AGENTS.md"))}`));
     assert.match(js, /localStorage\.setItem\("agentrelay-theme"/);
     assert.match(js, /const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width"/);
@@ -2175,6 +2182,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /function expiryTag/);
     assert.match(js, /Expire at /);
     assert.match(js, /Expire in /);
+    assert.match(js, /const remainingSeconds = expiresAt - now \/ 1000;/);
+    assert.match(js, /if \(remainingSeconds <= 0\) return "Expired";/);
+    assert.match(js, /const totalMinutes = Math\.ceil\(remainingSeconds \/ 60\);/);
+    assert.doesNotMatch(js, /const totalMinutes = Math\.floor\(remainingSeconds \/ 60\);/);
     assert.match(js, /data-task-expires-at/);
     assert.match(js, /function initStatusToggle/);
     assert.match(js, /\/api\/task-requests/);

@@ -4433,9 +4433,9 @@ function formatExpiryDate(date) {
 }
 
 function formatExpiryCountdown(expiresAt, now = Date.now()) {
-  const remainingSeconds = Math.max(0, Math.floor(expiresAt - now / 1000));
+  const remainingSeconds = expiresAt - now / 1000;
   if (remainingSeconds <= 0) return "Expired";
-  const totalMinutes = Math.floor(remainingSeconds / 60);
+  const totalMinutes = Math.ceil(remainingSeconds / 60);
   return "Expire in " + String(Math.floor(totalMinutes / 60)).padStart(2, "0") + ":" + String(totalMinutes % 60).padStart(2, "0");
 }
 
