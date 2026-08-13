@@ -2275,6 +2275,10 @@ const STYLES_CSS = String.raw`:root {
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   height: 100dvh;
