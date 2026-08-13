@@ -82,6 +82,7 @@ test("loadInboxSnapshot normalizes and sorts issues from issues.json", async () 
         processorSuggestedReply: "建议回复内容",
         processorNeedsHumanReason: "需要 Zac 确认后发送。",
         requiresHumanConfirmation: true,
+        taskExpiresAt: 1786792247,
         processorLastRunAt: "2026-07-02T08:00:30.000Z",
         eventIds: ["evt_new"],
         updatedAt: "2026-07-02T08:00:00.000Z"
@@ -119,6 +120,7 @@ test("loadInboxSnapshot normalizes and sorts issues from issues.json", async () 
     closed: 0
   });
   assert.equal(snapshot.issues[0].taskId, "task_new");
+  assert.equal(snapshot.issues[0].taskExpiresAt, 1786792247);
   assert.equal(snapshot.issues[0].eventCount, 1);
   assert.equal(snapshot.issues[0].latestEvent.eventId, "evt_new");
   assert.equal(snapshot.issues[0].needsHuman, true);
@@ -2119,6 +2121,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(html, /id="search"/);
     assert.match(html, /id="show-completed"/);
     assert.match(html, /Show Closed/);
+    assert.match(html, /id="status-toggle"/);
+    assert.match(html, /aria-controls="listener-health"/);
+    assert.match(html, /id="listener-health"[^>]*hidden/);
+    assert.match(html, /id="status-dot"/);
     assert.match(html, /class="list-tools"/);
     assert.match(html, /id="sidebar-resizer"/);
     assert.match(html, /role="separator"/);
@@ -2163,6 +2169,14 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /ArrowLeft/);
     assert.match(js, /ArrowRight/);
     assert.match(js, /setInterval\(\(\) => refresh\(\{ passive: true \}\), 10000\)/);
+    assert.match(js, /setInterval\(\(\) => updateExpiryCountdowns\(\), 30000\)/);
+    assert.match(js, /function renderDefaultPage/);
+    assert.match(js, /function reconcileSelectedIssue/);
+    assert.match(js, /function expiryTag/);
+    assert.match(js, /Expire at /);
+    assert.match(js, /Expire in /);
+    assert.match(js, /data-task-expires-at/);
+    assert.match(js, /function initStatusToggle/);
     assert.match(js, /\/api\/task-requests/);
     assert.doesNotMatch(js, /document\.querySelector\("#new-task"\)/);
     assert.doesNotMatch(js, /newTask\.addEventListener\("click", openNewTask\)/);

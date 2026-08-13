@@ -303,6 +303,9 @@ async function recordIssueInboxEvent({ stateDir, payload, eventPath, taskId, eve
     toAgentId: task.to_agent_id || event.toAgentId || event.to_agent_id || previousIssue.toAgentId || "",
     pendingOnAgentId,
     pendingOnHumanId: task.pending_on_human_id || previousIssue.pendingOnHumanId || null,
+    taskExpiresAt: task && Object.hasOwn(task, "task_expires_at")
+      ? task.task_expires_at
+      : (previousIssue.taskExpiresAt ?? null),
     relayStatus: task.status || previousIssue.relayStatus || "",
     relaySnapshotKey: relaySnapshotKey || previousIssue.relaySnapshotKey || "",
     localStatus: mergeRelayLocalStatus(previousIssue.localStatus),

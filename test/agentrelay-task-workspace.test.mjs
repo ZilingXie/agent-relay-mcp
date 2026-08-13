@@ -68,6 +68,7 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   assert.equal((await stat(workspace.paths.taskDir)).mode & 0o777, 0o700);
   const index = await readTaskIndex({ stateRoot });
   assert.equal(index.tasks.task_complete.contextSyncStatus, "context_ready");
+  assert.equal(index.tasks.task_complete.taskExpiresAt, 1783070400);
   const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
   assert.equal(inbox.issues.task_complete.subject, "Complete local task");
   assert.equal(result.issue.direction, "incoming");
@@ -371,6 +372,7 @@ function sampleTask(taskId) {
     pending_on_agent_id: "zac-agent",
     pending_on_human_id: null,
     status: "delivery_pending",
+    task_expires_at: 1783070400,
     goal_version: 1,
     exchange_epoch: 1,
     done_criteria: "Return a verified result.",

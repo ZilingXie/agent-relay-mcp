@@ -355,6 +355,8 @@ test("processInboxEvent records a durable issue before ACK and does not create C
   assert.equal(result.status, "received");
   assert.equal(result.eventId, "evt_inbox_only");
   assert.equal(result.taskId, "task_inbox_only");
+  const recordedInbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  assert.equal(recordedInbox.issues.task_inbox_only.taskExpiresAt, 1783070400);
   assert.deepEqual(calls.map((call) => call.method), ["ackEvent", "processor", "executor"]);
   assert.equal(existsSync(join(stateRoot, "bindings.json")), false);
   assert.deepEqual(await readdir(join(stateRoot, "queue")).catch(() => []), []);
@@ -591,6 +593,7 @@ function sampleEvent(eventId, taskId) {
       status: "delivery_pending",
       goal_version: 1,
       updated_at: 1783066800,
+      task_expires_at: 1783070400,
       messages: [{
         from_agent_id: "frank-agent",
         to_agent_id: "zac-agent",

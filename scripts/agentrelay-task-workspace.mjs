@@ -818,6 +818,9 @@ function buildIssueProjection({ task, sync, workflow, handoffPrompt, paths, loca
     completionOwnerAgentId: String(task?.completion_owner_agent_id || existingIssue.completionOwnerAgentId || ""),
     pendingOnAgentId,
     pendingOnHumanId: task && Object.hasOwn(task, "pending_on_human_id") ? task.pending_on_human_id : (existingIssue.pendingOnHumanId || null),
+    taskExpiresAt: task && Object.hasOwn(task, "task_expires_at")
+      ? task.task_expires_at
+      : (task && Object.hasOwn(task, "taskExpiresAt") ? task.taskExpiresAt : (existingIssue.taskExpiresAt ?? null)),
     relayStatus: String(task?.status || existingIssue.relayStatus || ""),
     relaySnapshotKey: task ? `${taskId}:${hashStableJson(task)}` : (existingIssue.relaySnapshotKey || ""),
     goalVersion: task?.goal_version ?? task?.goalVersion ?? existingIssue.goalVersion ?? null,
