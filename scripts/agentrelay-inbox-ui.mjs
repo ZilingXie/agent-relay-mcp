@@ -4414,6 +4414,8 @@ function deliveryStateChip(issue) {
 function expiryTag(issue, mode) {
   const expiresAt = Number(issue?.taskExpiresAt);
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) return "";
+  const status = issueWorkflowStatus(issue);
+  if (mode === "detail" && ["failed", "archived", "complete"].includes(status) && issue.relayStatus !== "expired") return "";
   const date = new Date(expiresAt * 1000);
   if (Number.isNaN(date.getTime())) return "";
   const label = mode === "compact" ? formatExpiryDate(date) : formatExpiryCountdown(expiresAt);
