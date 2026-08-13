@@ -2310,6 +2310,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     const cssResponse = await fetch(`http://127.0.0.1:${port}/styles.css`);
     const css = await cssResponse.text();
     assert.match(css, /\.app-shell/);
+    assert.match(css, /\[hidden\]\s*\{\s*display: none !important;/);
     assert.match(css, /--sidebar-width: 390px/);
     assert.doesNotMatch(css, /\.pane-actions/);
     assert.doesNotMatch(css, /\.state-filters/);
