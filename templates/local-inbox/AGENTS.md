@@ -151,6 +151,13 @@ task workspace files. Use `agentrelay_resync_local_task` only when the user
 explicitly asks you to handle or diagnose the task; it performs a read-only
 Relay GET and deterministic local refresh.
 
+Before analyzing or acting, verify the handoff binding against `context.md` and
+the task directory: `task_id`, `current_message_id`, Relay status, and any
+`project_hermes` metadata (`task_kind`, `human_event_id`, `local_task_id`). If a
+field differs, or another pending Task appears relevant, stop immediately. Never
+substitute another Task, draft a reply for it, or mutate AgentRelay; report the
+mismatch and use read-only resync for the named Task.
+
 After reading a task, tell the local user:
 
 - What the remote task asks the local side to decide, provide, or do.
