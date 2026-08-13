@@ -57,6 +57,13 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   assert.equal(workspace.handoffPrompt, [
     `Handle AgentRelay task task_complete at ${workspace.paths.contextPath}. Follow ${agentsMdPath}.`,
     "",
+    "Before analyzing the task, verify this exact binding against context.md and the task directory:",
+    "- task_id=task_complete",
+    "- current_message_id=none",
+    "- relay_status=delivery_pending",
+    "- project_hermes={}",
+    "If any binding differs, or another pending Task appears relevant, stop immediately; do not substitute Tasks, draft a reply, or mutate AgentRelay. Explain the mismatch and use read-only resync for this Task.",
+    "",
     "In this turn, only explain what this task asks, what I need to decide or provide, and the exact draft external action or reply.",
     "Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this turn. Stop after the draft and wait for my next message so I can approve it, revise it, or continue discussing the task.",
     "Only after I explicitly approve the exact draft in a later message should you prepare that action and call the matching AgentRelay MCP mutation.",
@@ -64,6 +71,7 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   ].join("\n"));
   assert.doesNotMatch(workspace.handoffPrompt, /remote\.json/);
   assert.doesNotMatch(workspace.handoffPrompt, /Local task directory/);
+  assert.match(workspace.handoffPrompt, /another pending Task appears relevant/);
   assert.equal((await stat(workspace.paths.remotePath)).mode & 0o777, 0o600);
   assert.equal((await stat(workspace.paths.taskDir)).mode & 0o777, 0o700);
   const index = await readTaskIndex({ stateRoot });
@@ -359,6 +367,38 @@ test("context envelopes compare stable ids and reject unsafe task paths", () => 
   assert.throws(() => sanitizeTaskId(".."), /Unsafe task id/);
   const paths = taskWorkspacePaths("/tmp/state", "task/unsafe");
   assert.match(paths.taskDir, /task_unsafe-/);
+});
+
+test("handoff binding includes current Message and Project Hermes metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-binding-"));
+  const stateRoot = join(root, "state");
+  const task = {
+    ...v05Task("task_binding", { status: "open", taskVersion: 2, turnSequence: 1, fromAgentId: "project-hermes", toAgentId: "zac-agent" }),
+    protocol_version: "agent-collab-v0.6",
+    current_message_id: "message_2",
+    messages: [{
+      message_id: "message_2",
+      metadata: {
+        project_hermes: {
+          task_kind: "card_submission",
+          human_event_id: "he-card",
+          local_task_id: "task-local"
+        }
+      },
+      delivery_status: "delivered",
+      parts: [{ kind: "text", text: "Submit the card." }]
+    }]
+  };
+  try {
+    const result = await persistTaskWorkspace({ stateRoot, task, localAgentId: "zac-agent" });
+    assert.match(result.handoffPrompt, /task_id=task_binding/);
+    assert.match(result.handoffPrompt, /current_message_id=message_2/);
+    assert.match(result.handoffPrompt, /card_submission/);
+    assert.match(result.handoffPrompt, /he-card/);
+    assert.match(result.handoffPrompt, /task-local/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 function sampleTask(taskId) {

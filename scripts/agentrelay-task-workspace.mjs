@@ -161,11 +161,30 @@ export function buildTaskContextMarkdown(task, { syncedAt = "" } = {}) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
+export function deriveTaskHandoffBinding(task) {
+  if (!task || typeof task !== "object") return null;
+  const current = currentMessage(task);
+  const metadata = current?.metadata?.project_hermes;
+  return {
+    taskId: String(task.task_id || task.taskId || ""),
+    currentMessageId: String(task.current_message_id || task.currentMessageId || ""),
+    status: String(task.status || ""),
+    projectHermes: metadata && typeof metadata === "object"
+      ? {
+          taskKind: String(metadata.task_kind || ""),
+          humanEventId: String(metadata.human_event_id || ""),
+          localTaskId: String(metadata.local_task_id || "")
+        }
+      : null
+  };
+}
+
 export function buildTaskHandoffPrompt({
   taskId,
   taskDir,
   contextPath,
   agentsMdPath,
+  task = null,
   type = "normal",
   sync = null
 }) {
@@ -192,8 +211,23 @@ export function buildTaskHandoffPrompt({
   const instruction = type === "changed_context"
     ? `AgentRelay task context changed. Re-handle task ${taskId} at ${contextPath}. Follow ${agentsMdPath}.`
     : `Handle AgentRelay task ${taskId} at ${contextPath}. Follow ${agentsMdPath}.`;
+  const binding = deriveTaskHandoffBinding(task);
+  const bindingLines = binding
+    ? [
+        "Before analyzing the task, verify this exact binding against context.md and the task directory:",
+        `- task_id=${binding.taskId || "unknown"}`,
+        `- current_message_id=${binding.currentMessageId || "none"}`,
+        `- relay_status=${binding.status || "unknown"}`,
+        `- project_hermes=${JSON.stringify(binding.projectHermes || {})}`,
+        "If any binding differs, or another pending Task appears relevant, stop immediately; do not substitute Tasks, draft a reply, or mutate AgentRelay. Explain the mismatch and use read-only resync for this Task."
+      ]
+    : [
+        "The complete Task binding is unavailable because local context sync failed. Do not select another Task or mutate AgentRelay; restore this Task with read-only resync first."
+      ];
   const lines = [
     instruction,
+    "",
+    ...bindingLines,
     "",
     "In this turn, only explain what this task asks, what I need to decide or provide, and the exact draft external action or reply.",
     "Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this turn. Stop after the draft and wait for my next message so I can approve it, revise it, or continue discussing the task.",
@@ -335,6 +369,7 @@ async function persistTaskWorkspaceUnlocked({ stateRoot, task, taskId, localAgen
     taskDir: paths.taskDir,
     contextPath: paths.contextPath,
     agentsMdPath,
+    task,
     type: nextWorkflow.handoffType,
     sync: nextSync
   });
@@ -700,6 +735,7 @@ export async function rebuildTaskIndex({
         taskDir: paths.taskDir,
         contextPath: paths.contextPath,
         agentsMdPath,
+        task,
         type: workflow?.handoffType || "normal",
         sync: sync || defaultSync(taskId)
       });
