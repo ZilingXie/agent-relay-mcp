@@ -544,6 +544,7 @@ function normalizeIssue(issue, eventsById, { localAgentId = process.env.AGENTREL
     completionOwnerAgentId: issue.completionOwnerAgentId || "",
     pendingOnAgentId: issue.pendingOnAgentId || "",
     pendingOnHumanId: issue.pendingOnHumanId || null,
+    taskExpiresAt: normalizeTaskExpiresAtValue(issue.taskExpiresAt),
     relayStatus: issue.relayStatus || "",
     protocolVersion: issue.protocolVersion || "",
     taskVersion: issue.taskVersion ?? null,
@@ -618,6 +619,11 @@ function doneCriteriaTitle(value, maxLength = 120) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
 }
 
+function normalizeTaskExpiresAtValue(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : null;
+}
+
 async function enrichSnapshotVisibility(
   snapshot,
   relayClient,
@@ -639,6 +645,7 @@ async function enrichSnapshotVisibility(
       const enrichedIssue = {
         ...issue,
         relayStatus: task.status ?? issue.relayStatus,
+        taskExpiresAt: normalizeTaskExpiresAtValue(task.task_expires_at ?? issue.taskExpiresAt),
         taskVersion: task.task_version ?? issue.taskVersion,
         messageDeliveryStatus: currentMessage.delivery_status ?? issue.messageDeliveryStatus,
         diagnosis: visibility.diagnosis ?? issue.diagnosis,
@@ -1658,6 +1665,7 @@ async function recordOutgoingTaskIssue({ stateRoot, draft, task, taskId, localAg
     requesterAgentId: task.requester_agent_id || draft.from || localAgentId,
     targetAgentId: task.target_agent_id || draft.to,
     doneCriteria: task.done_criteria || draft.doneCriteria || "",
+    taskExpiresAt: normalizeTaskExpiresAtValue(task.task_expires_at ?? draft.taskExpiresAt),
     completionOwnerAgentId: task.completion_owner_agent_id || draft.completionOwnerAgentId || localAgentId,
     pendingOnAgentId: task.pending_on_agent_id || draft.to,
     pendingOnHumanId: task.pending_on_human_id || null,
@@ -2117,12 +2125,18 @@ const INDEX_HTML = String.raw`<!doctype html>
           <p id="freshness">Loading local inbox...</p>
         </div>
       </div>
-      <section id="listener-health" class="listener-health" aria-live="polite"></section>
       <div class="list-tools">
         <input id="search" type="search" placeholder="Search tasks or agents" autocomplete="off" />
         <button id="show-completed" class="toggle-button" type="button" aria-pressed="false">Show Closed</button>
       </div>
       <div id="issues" class="issues"></div>
+      <div id="status-dock" class="status-dock">
+        <button id="status-toggle" class="status-toggle" type="button" aria-expanded="false" aria-controls="listener-health">
+          <span class="status-toggle-label"><span id="status-dot" class="status-dot" aria-hidden="true"></span>Status</span>
+          <span id="status-summary" class="status-summary">Unknown</span>
+        </button>
+        <section id="listener-health" class="listener-health" aria-live="polite" hidden></section>
+      </div>
     </aside>
 
     <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="Resize conversation list" aria-orientation="vertical" tabindex="0"></div>
@@ -2131,8 +2145,8 @@ const INDEX_HTML = String.raw`<!doctype html>
       <button class="theme-toggle" id="theme-toggle" type="button" title="Toggle theme" aria-label="Toggle theme">◐</button>
       <section id="inbox-view" class="view active" aria-label="Task chat">
         <div id="detail-empty" class="empty-state">
-          <h2>Select a task</h2>
-          <p>Incoming requests, outgoing work, Zac replies, and agent messages appear here as one readable conversation.</p>
+          <h2>All caught up</h2>
+          <p>No pending tasks. Incoming requests, outgoing work, Zac replies, and agent messages appear here as one readable conversation.</p>
         </div>
         <div id="detail-body" class="chat-view" hidden></div>
       </section>
@@ -2261,6 +2275,10 @@ const STYLES_CSS = String.raw`:root {
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   height: 100dvh;
@@ -2348,6 +2366,10 @@ p {
 }
 
 .listener-health {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px 12px;
@@ -2357,6 +2379,8 @@ p {
   background: var(--surface);
   color: var(--muted);
   font-size: 11px;
+  box-shadow: var(--shadow);
+  z-index: 5;
 }
 
 .listener-health strong {
@@ -2372,8 +2396,60 @@ p {
 }
 
 .listener-health[data-healthy="false"] {
-  border-left: 3px solid var(--danger);
+  border-left: 3px solid var(--bad);
   padding-left: 13px;
+}
+
+.status-dock {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--pane);
+}
+
+.status-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+
+.status-toggle:hover,
+.status-toggle:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.status-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--subtle);
+}
+
+.status-dot[data-state="healthy"] { background: var(--accent); }
+.status-dot[data-state="unhealthy"] { background: var(--bad); }
+
+.status-summary {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .list-tools {
@@ -2569,12 +2645,34 @@ button.list-header:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+.row-footer {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
   margin-top: 7px;
 }
 
 .row-state-tags .tag {
   min-height: 20px;
   font-size: 11px;
+}
+
+.task-expiry {
+  flex: 0 0 auto;
+  min-height: 20px;
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-expiry.detail {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 .row-actions {
@@ -3321,6 +3419,8 @@ let showCompleted = false;
 let latestDraft = null;
 let refreshInFlight = false;
 let selectedIssueRequestId = 0;
+let selectedWorkflowStatus = null;
+let statusExpanded = false;
 const pageMode = document.body.dataset.page || "inbox";
 const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width";
 const FOLDER_COLLAPSE_KEY = "agentrelay-collapsed-folders";
@@ -3336,6 +3436,9 @@ let collapsedFolders = loadCollapsedFolders();
 const el = {
   freshness: document.querySelector("#freshness"),
   listenerHealth: document.querySelector("#listener-health"),
+  statusToggle: document.querySelector("#status-toggle"),
+  statusDot: document.querySelector("#status-dot"),
+  statusSummary: document.querySelector("#status-summary"),
   metrics: document.querySelector("#metrics"),
   fileAccessRoots: document.querySelector("#file-access-roots"),
   fileAccessForm: document.querySelector("#file-access-form"),
@@ -3357,6 +3460,7 @@ const el = {
 
 applyTheme(localStorage.getItem("agentrelay-theme") || "dark");
 initSidebarResize();
+initStatusToggle();
 
 if (el.search) el.search.addEventListener("input", renderList);
 if (el.showCompleted) {
@@ -3387,6 +3491,28 @@ if (el.fileAccessForm) el.fileAccessForm.addEventListener("submit", addFileAcces
 await refresh();
 if (pageMode === "dashboard") await renderFileAccessWhitelist();
 setInterval(() => refresh({ passive: true }), 10000);
+setInterval(() => updateExpiryCountdowns(), 30000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) updateExpiryCountdowns();
+});
+
+function initStatusToggle() {
+  if (!el.statusToggle || !el.listenerHealth) return;
+  el.statusToggle.addEventListener("click", () => setStatusExpanded(!statusExpanded));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && statusExpanded) setStatusExpanded(false);
+  });
+  document.addEventListener("click", (event) => {
+    if (!statusExpanded || el.statusToggle.contains(event.target) || el.listenerHealth.contains(event.target)) return;
+    setStatusExpanded(false);
+  });
+}
+
+function setStatusExpanded(expanded) {
+  statusExpanded = Boolean(expanded);
+  if (el.listenerHealth) el.listenerHealth.hidden = !statusExpanded;
+  if (el.statusToggle) el.statusToggle.setAttribute("aria-expanded", String(statusExpanded));
+}
 
 function initSidebarResize() {
   const storedWidth = Number.parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) || "", 10);
@@ -3443,6 +3569,8 @@ async function refresh({ passive = false } = {}) {
     renderListenerHealth();
     renderMetrics();
     renderList();
+    reconcileSelectedIssue();
+    if (!selectedTaskId && activeView === "inbox" && !selectedDetail) renderDefaultPage();
     if (el.freshness) el.freshness.textContent = "Updated " + formatTime(snapshot.generatedAt);
     if (shouldRefreshSelectedDetail({ passive })) {
       await selectIssue(selectedTaskId, { keepView: true });
@@ -3471,7 +3599,10 @@ function renderListenerHealth() {
   const queue = listener.queue || {};
   const hook = listener.hook || {};
   const lastAck = listener.lastAck;
+  const healthState = listener.healthy === true ? "healthy" : (listener.healthy === false ? "unhealthy" : "unknown");
   el.listenerHealth.dataset.healthy = String(listener.healthy === true);
+  if (el.statusDot) el.statusDot.dataset.state = healthState;
+  if (el.statusSummary) el.statusSummary.textContent = listener.state || "Unknown";
   el.listenerHealth.innerHTML =
     '<div><span>Listener</span><strong>' + escapeHtml(listener.state || "missing") + '</strong></div>' +
     '<div><span>Reader</span><strong>' + escapeHtml((reader.state || "unknown") + " · " + (reader.depth || 0) + "/" + (reader.capacity || 0)) + '</strong></div>' +
@@ -3487,6 +3618,43 @@ function renderListenerHealth() {
         ? "New " + recovery.newTasks + " · Expired " + recovery.expiredWhileOffline + " · Failed " + recovery.failedWhileOffline
         : "None") +
     '</strong></div>';
+}
+
+function pendingIssueCount() {
+  return (snapshot?.issues || []).filter((issue) => issueWorkflowStatus(issue) === "pending").length;
+}
+
+function renderDefaultPage() {
+  selectedIssueRequestId += 1;
+  selectedTaskId = null;
+  selectedDetail = null;
+  selectedWorkflowStatus = null;
+  for (const row of el.issues?.querySelectorAll(".issue-row") || []) row.classList.remove("selected");
+  if (el.detailEmpty) {
+    el.detailEmpty.hidden = false;
+    const heading = el.detailEmpty.querySelector("h2");
+    const description = el.detailEmpty.querySelector("p");
+    if (heading) heading.textContent = pendingIssueCount() ? "Select a task" : "All caught up";
+    if (description) description.textContent = pendingIssueCount()
+      ? "Choose a pending task to inspect its conversation."
+      : "No pending tasks. Incoming requests, outgoing work, Zac replies, and agent messages appear here as one readable conversation.";
+  }
+  if (el.detailBody) {
+    el.detailBody.hidden = true;
+    el.detailBody.innerHTML = "";
+  }
+  if (activeView === "inbox") setView("inbox");
+}
+
+function reconcileSelectedIssue() {
+  if (!selectedTaskId || !snapshot) return;
+  const issue = snapshot.issues.find((candidate) => candidate.taskId === selectedTaskId);
+  const nextStatus = issue ? issueWorkflowStatus(issue) : null;
+  if (selectedWorkflowStatus === "pending" && nextStatus !== "pending") {
+    renderDefaultPage();
+    return;
+  }
+  if (issue) selectedWorkflowStatus = nextStatus;
 }
 
 function shouldRefreshSelectedDetail() {
@@ -3517,6 +3685,7 @@ function setView(view) {
 
 function openNewTask() {
   selectedTaskId = null;
+  selectedWorkflowStatus = null;
   latestDraft = null;
   resetNewTaskView();
   setView("new");
@@ -3695,6 +3864,8 @@ async function selectIssue(taskId, { keepView = false } = {}) {
   const requestId = ++selectedIssueRequestId;
   const scrollState = keepView ? captureMessageScrollState() : null;
   selectedTaskId = taskId;
+  const listIssue = snapshot?.issues?.find((issue) => issue.taskId === taskId);
+  selectedWorkflowStatus = listIssue ? issueWorkflowStatus(listIssue) : null;
   for (const row of el.issues.querySelectorAll(".issue-row")) {
     row.classList.toggle("selected", row.dataset.taskId === taskId);
   }
@@ -3755,16 +3926,7 @@ async function deleteIssueFromList(taskId) {
     return;
   }
   if (selectedTaskId === taskId) {
-    selectedTaskId = null;
-    selectedDetail = null;
-    if (el.detailEmpty) {
-      el.detailEmpty.hidden = false;
-      el.detailEmpty.querySelector("h2").textContent = "Select a task";
-    }
-    if (el.detailBody) {
-      el.detailBody.hidden = true;
-      el.detailBody.innerHTML = "";
-    }
+    renderDefaultPage();
   }
   await refresh();
 }
@@ -3778,7 +3940,7 @@ function issueRow(issue) {
   const current = issue.taskId === selectedTaskId ? ' aria-current="true"' : "";
   return '<article class="' + classes + '" role="button" tabindex="0" data-task-id="' + escapeAttr(issue.taskId) + '"' + current + '>' +
     '<div class="row-main"><span class="subject">' + escapeHtml(issue.subject || "(untitled)") + '</span><div class="row-actions"><span class="time">' + formatTime(issue.updatedAt) + '</span><button class="delete-issue" type="button" data-task-id="' + escapeAttr(issue.taskId) + '" title="Archive thread" aria-label="Archive thread">' + trashIcon() + '</button></div></div>' +
-    (["agent-collab-v0.5", "agent-collab-v0.6"].includes(issue.protocolVersion) ? '<div class="row-state-tags">' + taskStateChip(issue) + deliveryStateChip(issue) + '</div>' : "") +
+    '<div class="row-footer"><div class="row-state-tags">' + (["agent-collab-v0.5", "agent-collab-v0.6"].includes(issue.protocolVersion) ? taskStateChip(issue) + deliveryStateChip(issue) : "") + '</div>' + expiryTag(issue, "compact") + '</div>' +
   '</article>';
 }
 
@@ -3786,7 +3948,7 @@ function renderChat({ issue, timeline, actions = [] }) {
   return '<header class="chat-head">' +
     '<div class="chat-title-row">' +
       '<div><h2>' + escapeHtml(issue.subject || "(untitled)") + '</h2><div class="chat-meta">' + escapeHtml(issue.counterpartAgentId || "no counterpart") + ' · ' + escapeHtml(issue.taskId) + '</div></div>' +
-      '<div class="tags">' + tags(issue).join("") + '</div>' +
+      '<div class="tags">' + tags(issue).join("") + expiryTag(issue, "detail") + '</div>' +
     '</div>' +
     (issue.needsHuman ? '<div class="attention-strip">' + escapeHtml(humanAttentionText(issue)) + '</div>' : "") +
   '</header>' +
@@ -4251,6 +4413,36 @@ function taskStateChip(issue) {
 
 function deliveryStateChip(issue) {
   return chip("Delivery: " + (issue.messageDeliveryStatus || "unknown"), "delivery-" + (issue.messageDeliveryStatus || "unknown"));
+}
+
+function expiryTag(issue, mode) {
+  const expiresAt = Number(issue?.taskExpiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return "";
+  const status = issueWorkflowStatus(issue);
+  if (mode === "detail" && ["failed", "archived", "complete"].includes(status) && issue.relayStatus !== "expired") return "";
+  const date = new Date(expiresAt * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  const label = mode === "compact" ? formatExpiryDate(date) : formatExpiryCountdown(expiresAt);
+  const title = "Expires " + date.toLocaleString();
+  return '<span class="tag task-expiry ' + escapeAttr(mode) + '" data-expiry-mode="' + escapeAttr(mode) + '" data-task-expires-at="' + escapeAttr(expiresAt) + '" title="' + escapeAttr(title) + '">' + escapeHtml(label) + '</span>';
+}
+
+function formatExpiryDate(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return "Expire at " + pad(date.getMonth() + 1) + "/" + pad(date.getDate());
+}
+
+function formatExpiryCountdown(expiresAt, now = Date.now()) {
+  const remainingSeconds = expiresAt - now / 1000;
+  if (remainingSeconds <= 0) return "Expired";
+  const totalMinutes = Math.ceil(remainingSeconds / 60);
+  return "Expire in " + String(Math.floor(totalMinutes / 60)).padStart(2, "0") + ":" + String(totalMinutes % 60).padStart(2, "0");
+}
+
+function updateExpiryCountdowns() {
+  for (const node of document.querySelectorAll('[data-expiry-mode="detail"][data-task-expires-at]')) {
+    node.textContent = formatExpiryCountdown(Number(node.dataset.taskExpiresAt));
+  }
 }
 
 function trashIcon() {

@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import test from "node:test";
 
 import {
@@ -82,6 +83,7 @@ test("loadInboxSnapshot normalizes and sorts issues from issues.json", async () 
         processorSuggestedReply: "建议回复内容",
         processorNeedsHumanReason: "需要 Zac 确认后发送。",
         requiresHumanConfirmation: true,
+        taskExpiresAt: 1786792247,
         processorLastRunAt: "2026-07-02T08:00:30.000Z",
         eventIds: ["evt_new"],
         updatedAt: "2026-07-02T08:00:00.000Z"
@@ -119,6 +121,7 @@ test("loadInboxSnapshot normalizes and sorts issues from issues.json", async () 
     closed: 0
   });
   assert.equal(snapshot.issues[0].taskId, "task_new");
+  assert.equal(snapshot.issues[0].taskExpiresAt, 1786792247);
   assert.equal(snapshot.issues[0].eventCount, 1);
   assert.equal(snapshot.issues[0].latestEvent.eventId, "evt_new");
   assert.equal(snapshot.issues[0].needsHuman, true);
@@ -2119,6 +2122,10 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(html, /id="search"/);
     assert.match(html, /id="show-completed"/);
     assert.match(html, /Show Closed/);
+    assert.match(html, /id="status-toggle"/);
+    assert.match(html, /aria-controls="listener-health"/);
+    assert.match(html, /id="listener-health"[^>]*hidden/);
+    assert.match(html, /id="status-dot"/);
     assert.match(html, /class="list-tools"/);
     assert.match(html, /id="sidebar-resizer"/);
     assert.match(html, /role="separator"/);
@@ -2154,6 +2161,12 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
 
     const jsResponse = await fetch(`http://127.0.0.1:${port}/app.js`);
     const js = await jsResponse.text();
+    const countdownSource = js.match(/function formatExpiryCountdown\(expiresAt, now = Date\.now\(\)\) \{[\s\S]*?\n\}/)?.[0];
+    assert.ok(countdownSource, "expiry countdown helper is present in the browser bundle");
+    const formatExpiryCountdown = vm.runInNewContext(`(${countdownSource})`);
+    assert.equal(formatExpiryCountdown(1001, 1000 * 1000), "Expire in 00:01");
+    assert.equal(formatExpiryCountdown(1000, 1000 * 1000), "Expired");
+    assert.equal(formatExpiryCountdown(1000 + 25 * 3600 + 1, 1000 * 1000), "Expire in 25:01");
     assert.match(js, new RegExp(`const AGENTS_MD_PATH = ${JSON.stringify(join(root, "templates/local-inbox/AGENTS.md"))}`));
     assert.match(js, /localStorage\.setItem\("agentrelay-theme"/);
     assert.match(js, /const SIDEBAR_WIDTH_KEY = "agentrelay-sidebar-width"/);
@@ -2163,6 +2176,18 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /ArrowLeft/);
     assert.match(js, /ArrowRight/);
     assert.match(js, /setInterval\(\(\) => refresh\(\{ passive: true \}\), 10000\)/);
+    assert.match(js, /setInterval\(\(\) => updateExpiryCountdowns\(\), 30000\)/);
+    assert.match(js, /function renderDefaultPage/);
+    assert.match(js, /function reconcileSelectedIssue/);
+    assert.match(js, /function expiryTag/);
+    assert.match(js, /Expire at /);
+    assert.match(js, /Expire in /);
+    assert.match(js, /const remainingSeconds = expiresAt - now \/ 1000;/);
+    assert.match(js, /if \(remainingSeconds <= 0\) return "Expired";/);
+    assert.match(js, /const totalMinutes = Math\.ceil\(remainingSeconds \/ 60\);/);
+    assert.doesNotMatch(js, /const totalMinutes = Math\.floor\(remainingSeconds \/ 60\);/);
+    assert.match(js, /data-task-expires-at/);
+    assert.match(js, /function initStatusToggle/);
     assert.match(js, /\/api\/task-requests/);
     assert.doesNotMatch(js, /document\.querySelector\("#new-task"\)/);
     assert.doesNotMatch(js, /newTask\.addEventListener\("click", openNewTask\)/);
@@ -2296,6 +2321,7 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     const cssResponse = await fetch(`http://127.0.0.1:${port}/styles.css`);
     const css = await cssResponse.text();
     assert.match(css, /\.app-shell/);
+    assert.match(css, /\[hidden\]\s*\{\s*display: none !important;/);
     assert.match(css, /--sidebar-width: 390px/);
     assert.doesNotMatch(css, /\.pane-actions/);
     assert.doesNotMatch(css, /\.state-filters/);
