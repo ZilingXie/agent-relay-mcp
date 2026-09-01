@@ -98,6 +98,41 @@ The adapter is restricted data mapping, not remote code. It cannot register
 arbitrary tools, execute scripts, read files, choose arbitrary endpoints, replace local
 identity, bypass confirmation, or control local side effects.
 
+#### File attachments in replies
+
+`agentrelay_reply` parts may include file parts. Pass the local absolute path and
+let the guard do the rest:
+
+```json
+{ "kind": "file", "localPath": "/abs/path/report.log", "name": "report.log", "mimeType": "text/plain" }
+```
+
+- **One approval for the whole send.** Preparing the reply hashes each local file
+  and stores `local_path`, `size_bytes`, and `sha256` in the prepared action, so
+  the human approves the exact file content, not just a path. If the file changes
+  before execution, the existing `ACTION_PAYLOAD_CHANGED` / `FILE_CHANGED` guards
+  abort and nothing is uploaded.
+- **Nothing leaves the machine before approval.** The upload to
+  `POST /tasks/{task_id}/files` (v0.6 lane, participant-gated, ≤64 MiB by default)
+  happens only inside the post-approval mutation step, which then replaces the
+  part with `{kind:"file", file_id, name, size_bytes, sha256}` on the wire.
+- **Initial messages cannot carry files.** Task create and follow-up first
+  messages reject file parts (uploads are Task-scoped); create the Task first,
+  then reply with the file part.
+- **Receiving.** Incoming file parts keep full metadata in `messages.json` and
+  `context.md` (Attachments section). Use `agentrelay_download_file` to fetch and
+  verify bytes.
+
+### `agentrelay_download_file`
+
+Downloads one file attachment of a Task by `taskId + fileId`: fetches the
+authoritative metadata list, streams the bytes, verifies the end-to-end `sha256`,
+and writes them atomically (0600) to the Task workspace
+`state/collaboration-v2/tasks/<task>/files/<fileId>__<safeName>`. It is
+read-only for the relay and never writes outside the state directory, so no
+whitelist or extra approval is required. Returns
+`{ok, taskId, fileId, name, sizeBytes, sha256, localPath}`.
+
 All Task mutations except Local Inbox reviewed-draft create require a prepared
 action plus a matching one-time approval record issued by the configured human
 approval mode, or a Core-validated service-policy grant. In `conversation` mode,

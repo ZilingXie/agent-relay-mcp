@@ -13,6 +13,7 @@ import { listenerOperationalStatus } from "./agentrelay-listener-core.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
 import { resyncLocalTask, unwrapTask } from "./agentrelay-task-context-sync.mjs";
 import { executeSemanticCreate } from "./agentrelay-semantic-client.mjs";
+import { formatFileSize, safeFileName, writeDownloadedFile } from "./agentrelay-files-client.mjs";
 import { PROTOCOL_V05 } from "./agentrelay-v05.mjs";
 import { PROTOCOL_V06 } from "./agentrelay-v06.mjs";
 import {
@@ -23,7 +24,8 @@ import {
   listLocalActions,
   persistTaskWorkspace,
   readTaskIndex,
-  readTaskWorkspace
+  readTaskWorkspace,
+  taskWorkspacePathsV2
 } from "./agentrelay-task-workspace.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -196,6 +198,22 @@ export function createInboxUiServer({
           now
         });
         sendJson(res, result.alreadySent ? 200 : 201, result);
+        return;
+      }
+
+      const fileSaveMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/files\/([^/]+)\/save$/);
+      if (req.method === "POST" && fileSaveMatch) {
+        try {
+          const result = await downloadTaskFileToLocalWorkspace({
+            stateRoot,
+            taskId: decodeURIComponent(fileSaveMatch[1]),
+            fileId: decodeURIComponent(fileSaveMatch[2]),
+            relayClient
+          });
+          sendJson(res, 200, result);
+        } catch (error) {
+          sendJson(res, error.statusCode || 502, { error: error.code || "file_save_failed", message: error.message });
+        }
         return;
       }
 
@@ -942,7 +960,9 @@ export function buildChatTimeline({ issue, events, localAgentId = process.env.AG
         to,
         side: from === localAgentId ? "local" : "remote",
         text,
-        role: message.role || ""
+        role: message.role || "",
+        taskId: String(task.task_id || issue.taskId || ""),
+        files: relayMessageFileParts(message.parts)
       });
     }
     for (const artifact of Array.isArray(task.artifacts) ? task.artifacts : []) {
@@ -1142,10 +1162,27 @@ function speakerForRelayAgent(agentId, localAgentId) {
 function extractPartsText(parts) {
   return Array.isArray(parts)
     ? parts
-      .filter((part) => part && typeof part.text === "string")
-      .map((part) => part.text)
+      .map((part) => {
+        if (part && typeof part.text === "string") return part.text;
+        if (part && typeof part === "object" && part.kind === "file") {
+          return `[文件: ${part.name || "attachment"} (${formatFileSize(part.size_bytes)})]`;
+        }
+        return "";
+      })
+      .filter(Boolean)
       .join("\n")
     : "";
+}
+
+function relayMessageFileParts(parts) {
+  if (!Array.isArray(parts)) return [];
+  return parts
+    .filter((part) => part && typeof part === "object" && part.kind === "file" && part.file_id)
+    .map((part) => ({
+      fileId: String(part.file_id),
+      name: String(part.name || "attachment"),
+      sizeBytes: Number(part.size_bytes || 0)
+    }));
 }
 
 function humanizeArtifactText(rawText) {
@@ -2037,6 +2074,23 @@ class AgentRelayUiHttpClient {
     return this.request("POST", "/task-visibility/batch", { task_ids: taskIds });
   }
 
+  async listTaskFiles(taskId) {
+    return this.request("GET", `/tasks/${encodeURIComponent(taskId)}/files`);
+  }
+
+  async downloadTaskFileBytes(taskId, fileId) {
+    const response = await fetch(
+      `${this.baseUrl}/tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}`,
+      { headers: this.headers() }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`AgentRelay file download failed (${response.status}): ${text.slice(0, 200)}`);
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+  }
+
   async createSemanticTask({ input, requesterAgentId, idempotencyKey }) {
     return executeSemanticCreate({
       input,
@@ -2075,6 +2129,36 @@ class AgentRelayUiHttpClient {
 
 function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== null && entry !== ""));
+}
+
+async function downloadTaskFileToLocalWorkspace({ stateRoot, taskId, fileId, relayClient }) {
+  const listed = await relayClient.listTaskFiles(taskId);
+  const metadata = (listed?.files || []).find((item) => item.file_id === fileId);
+  if (!metadata) {
+    const error = new Error(`file ${fileId} is not available for task ${taskId}`);
+    error.statusCode = 404;
+    error.code = "file_not_found";
+    throw error;
+  }
+  const { bytes, sha256 } = await relayClient.downloadTaskFileBytes(taskId, fileId);
+  if (metadata.sha256 && metadata.sha256 !== sha256) {
+    const error = new Error(`downloaded file sha256 mismatch for ${fileId}: expected ${metadata.sha256}, got ${sha256}`);
+    error.statusCode = 502;
+    error.code = "file_sha256_mismatch";
+    throw error;
+  }
+  const paths = taskWorkspacePathsV2(stateRoot, taskId);
+  const localPath = join(paths.taskDir, "files", `${fileId}__${safeFileName(metadata.name)}`);
+  await writeDownloadedFile({ targetPath: localPath, bytes });
+  return {
+    ok: true,
+    taskId: String(taskId),
+    fileId,
+    name: metadata.name,
+    sizeBytes: bytes.length,
+    sha256,
+    localPath
+  };
 }
 
 function normalizeBaseUrl(value) {
@@ -2952,6 +3036,43 @@ button.list-header:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+.file-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 6px 4px 12px;
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.file-chip button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.file-chip button:hover {
+  border-color: var(--accent);
+}
+
+.file-chip button:disabled {
+  opacity: 0.7;
+  cursor: default;
 }
 
 .file-access-actions button {
@@ -3884,8 +4005,9 @@ async function selectIssue(taskId, { keepView = false } = {}) {
   el.detailBody.hidden = false;
   el.detailBody.innerHTML = renderChat(selectedDetail);
   bindHandoffPromptControls();
-  bindContextSyncControls(taskId);
-  bindFileAccessRequestControls(taskId);
+bindContextSyncControls(taskId);
+bindFileAccessRequestControls(taskId);
+bindFileSaveControls();
   bindLocalApprovalControls(taskId);
   restoreMessageScrollState(scrollState);
   renderDashboard();
@@ -4010,6 +4132,7 @@ function renderMessages(timeline) {
           delivery +
           '<div class="bubble">' +
             (item.text ? '<pre>' + escapeHtml(item.text) + '</pre>' : '<pre>' + escapeHtml(item.title || "") + '</pre>') +
+            attachmentChips(item) +
             messageError(item) +
           '</div>' +
         '</div>' +
@@ -4038,6 +4161,17 @@ function messageSpeakerClass(item) {
   if ((item.speaker || "") === "Zac") return "speaker-zac";
   if ((item.speaker || "") === "Agent") return "speaker-agent";
   return "speaker-remote";
+}
+
+function attachmentChips(item) {
+  const files = Array.isArray(item.files) ? item.files : [];
+  if (!files.length || !item.taskId) return "";
+  return '<div class="file-attachments">' + files.map((file) =>
+    '<span class="file-chip">' +
+      '<span class="file-chip-name">' + escapeHtml(file.name) + ' · ' + escapeHtml(formatFileSize(file.sizeBytes)) + '</span>' +
+      '<button type="button" class="file-save" data-file-save-task="' + escapeAttr(item.taskId) + '" data-file-save-id="' + escapeAttr(file.fileId) + '">Save</button>' +
+    '</span>'
+  ).join("") + '</div>';
 }
 
 function deliveryIndicator(item) {
@@ -4180,6 +4314,31 @@ function bindFileAccessRequestControls(taskId) {
       } catch (error) {
         window.alert(error.message);
         for (const item of buttons) item.disabled = false;
+      }
+    });
+  }
+}
+
+function bindFileSaveControls() {
+  for (const button of document.querySelectorAll("[data-file-save-id]")) {
+    button.addEventListener("click", async () => {
+      const taskId = button.dataset.fileSaveTask;
+      const fileId = button.dataset.fileSaveId;
+      if (!taskId || !fileId) return;
+      button.disabled = true;
+      button.textContent = "saving...";
+      try {
+        const response = await fetch("/api/tasks/" + encodeURIComponent(taskId) + "/files/" + encodeURIComponent(fileId) + "/save", {
+          method: "POST"
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.message || body.error || "file save failed");
+        button.textContent = "saved to task workspace";
+        button.title = body.localPath || "";
+      } catch (error) {
+        window.alert(error.message);
+        button.disabled = false;
+        button.textContent = "Save";
       }
     });
   }
