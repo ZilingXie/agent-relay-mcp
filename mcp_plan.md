@@ -21,6 +21,8 @@ replies require an explicit root/MIME/count/byte policy. The paired Relay bundle
 revision 11 hides unreferenced uploads from the recipient, makes metadata
 immutable, isolates the large nginx body allowance to the upload route, and
 throttles file GC.
+Tracked by Server [PR #92](https://github.com/ZilingXie/agentRelay/pull/92)
+and Client [PR #92](https://github.com/ZilingXie/agent-relay-mcp/pull/92).
 
 ## Audience And Sources
 
