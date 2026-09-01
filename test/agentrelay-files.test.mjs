@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import {
   formatFileSize,
+  enforceFilePartLimits,
   hasAnyFilePart,
   hashLocalFile,
   isLocalFilePart,
@@ -15,6 +16,7 @@ import {
   rejectInitialFileParts,
   resolveReplyWireParts,
   safeFileName,
+  streamResponseToFile,
   writeDownloadedFile
 } from "../scripts/agentrelay-files-client.mjs";
 import {
@@ -127,6 +129,41 @@ test("resolveReplyWireParts uploads local parts and keeps wire parts untouched",
   });
 });
 
+test("resolveReplyWireParts uploads attachments sequentially", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const uploaded = await resolveReplyWireParts({
+    parts: ["a", "b"].map((name, index) => ({
+      kind: "file",
+      local_path: `/tmp/${name}`,
+      name,
+      size_bytes: 1,
+      sha256: sha256(name)
+    })),
+    uploadFile: async ({ name }) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+      active -= 1;
+      return { file_id: `file_${name.repeat(32)}` };
+    }
+  });
+  assert.equal(maxActive, 1);
+  assert.deepEqual(uploaded.map((part) => part.name), ["a", "b"]);
+});
+
+test("file part limits reject excessive count and aggregate bytes", () => {
+  const file = (size) => ({ kind: "file", size_bytes: size });
+  assert.throws(
+    () => enforceFilePartLimits(Array.from({ length: 9 }, () => file(1))),
+    (error) => error.code === "FILE_COUNT_LIMIT"
+  );
+  assert.throws(
+    () => enforceFilePartLimits([file(40), file(70)], { maxFiles: 8, maxTotalBytes: 100 }),
+    (error) => error.code === "FILE_TOTAL_BYTES_LIMIT"
+  );
+});
+
 test("rejectInitialFileParts blocks file parts in create and follow-up initial messages", () => {
   assert.doesNotThrow(() => rejectInitialFileParts({ subject: "s", parts: [{ kind: "text", text: "t" }] }));
   assert.throws(
@@ -155,6 +192,34 @@ test("writeDownloadedFile writes atomically with 0600 permissions", async () => 
     assert.equal(written, targetPath);
     assert.equal(await readFile(targetPath, "utf8"), "downloaded");
     assert.equal((await stat(targetPath)).mode & 0o777, 0o600);
+  });
+});
+
+test("streamResponseToFile verifies content and supports concurrent saves", async () => {
+  await withTempDir(async (root) => {
+    const bytes = Buffer.from("streamed response payload");
+    const targetPath = join(root, "files", "same-target.bin");
+    const save = () => streamResponseToFile({
+      response: new Response(bytes),
+      targetPath,
+      expectedSha256: sha256(bytes),
+      expectedSizeBytes: bytes.length
+    });
+    const [first, second] = await Promise.all([save(), save()]);
+    assert.equal(first.sha256, sha256(bytes));
+    assert.equal(second.sizeBytes, bytes.length);
+    assert.deepEqual(await readFile(targetPath), bytes);
+    assert.deepEqual(await readdir(join(root, "files")), ["same-target.bin"]);
+
+    await assert.rejects(
+      streamResponseToFile({
+        response: new Response(bytes),
+        targetPath: join(root, "files", "bad.bin"),
+        expectedSha256: sha256("different")
+      }),
+      (error) => error.code === "FILE_SHA256_MISMATCH"
+    );
+    assert.equal((await readdir(join(root, "files"))).includes("bad.bin"), false);
   });
 });
 

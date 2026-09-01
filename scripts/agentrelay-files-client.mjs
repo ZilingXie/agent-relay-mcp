@@ -1,11 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 export const FILE_ID_PATTERN = /^file_[a-f0-9]{32}$/;
 export const FILE_SHA256_PATTERN = /^[a-f0-9]{64}$/;
 export const FILE_NAME_MAX_LENGTH = 255;
 export const FILE_MIME_MAX_LENGTH = 255;
+export const MAX_FILES_PER_MESSAGE = 8;
+export const MAX_TOTAL_FILE_BYTES = 64 * 1024 * 1024;
 const SAFE_FILE_NAME_MAX_LENGTH = 80;
 
 const fileError = (code, message) => {
@@ -50,14 +55,41 @@ export async function hashLocalFile(localPath) {
   if (info.size < 1) {
     throw fileError("FILE_EMPTY", `Local file is empty and cannot be attached: ${absolutePath}`);
   }
-  const bytes = await readFile(absolutePath).catch((error) => {
+  const digest = createHash("sha256");
+  let streamedBytes = 0;
+  try {
+    for await (const chunk of createReadStream(absolutePath)) {
+      streamedBytes += chunk.length;
+      digest.update(chunk);
+    }
+  } catch (error) {
     throw fileError("FILE_UNREADABLE", `Cannot read local file ${absolutePath}: ${error.message}`);
-  });
+  }
+  if (streamedBytes !== info.size) {
+    throw fileError("FILE_CHANGED", `Local file changed while it was being inspected: ${absolutePath}`);
+  }
   return {
     localPath: absolutePath,
-    sizeBytes: bytes.length,
-    sha256: createHash("sha256").update(bytes).digest("hex")
+    sizeBytes: streamedBytes,
+    sha256: digest.digest("hex")
   };
+}
+
+export function enforceFilePartLimits(
+  parts,
+  { maxFiles = MAX_FILES_PER_MESSAGE, maxTotalBytes = MAX_TOTAL_FILE_BYTES } = {}
+) {
+  const files = Array.isArray(parts)
+    ? parts.filter((part) => part && typeof part === "object" && part.kind === "file")
+    : [];
+  if (files.length > maxFiles) {
+    throw fileError("FILE_COUNT_LIMIT", `A reply can attach at most ${maxFiles} files`);
+  }
+  const totalBytes = files.reduce((total, part) => total + Number(part.size_bytes || 0), 0);
+  if (!Number.isSafeInteger(totalBytes) || totalBytes > maxTotalBytes) {
+    throw fileError("FILE_TOTAL_BYTES_LIMIT", `Reply attachments can total at most ${maxTotalBytes} bytes`);
+  }
+  return { fileCount: files.length, totalBytes };
 }
 
 function partMimeTypeInput(part) {
@@ -82,6 +114,15 @@ function validateFilePartDisplayFields(part) {
   }
 }
 
+function normalizedFileName(part, localPath) {
+  const input = (typeof part.name === "string" && part.name.trim()) || basename(localPath);
+  return [...input]
+    .filter((char) => char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127)
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * Normalize the prepared-action payload for a reply: every file part that
  * references a local file is enriched with size and sha256 so the human
@@ -93,10 +134,23 @@ export async function normalizeReplyFileParts(payload) {
   if (!payload || typeof payload !== "object" || !Array.isArray(payload.parts)) {
     return payload;
   }
-  const parts = await Promise.all(payload.parts.map(async (part) => {
-    if (!part || typeof part !== "object" || part.kind !== "file") return part;
+  const requestedFileCount = payload.parts.filter(
+    (part) => part && typeof part === "object" && part.kind === "file"
+  ).length;
+  if (requestedFileCount > MAX_FILES_PER_MESSAGE) {
+    throw fileError("FILE_COUNT_LIMIT", `A reply can attach at most ${MAX_FILES_PER_MESSAGE} files`);
+  }
+  const parts = [];
+  for (const part of payload.parts) {
+    if (!part || typeof part !== "object" || part.kind !== "file") {
+      parts.push(part);
+      continue;
+    }
     validateFilePartDisplayFields(part);
-    if (isWireFilePart(part)) return part;
+    if (isWireFilePart(part)) {
+      parts.push(part);
+      continue;
+    }
     if (!isLocalFilePart(part)) {
       throw fileError(
         "FILE_PART_INVALID",
@@ -107,16 +161,19 @@ export async function normalizeReplyFileParts(payload) {
     const normalized = {
       kind: "file",
       local_path: hashed.localPath,
-      name: (typeof part.name === "string" && part.name.trim()) || basename(hashed.localPath),
+      name: normalizedFileName(part, hashed.localPath),
       size_bytes: hashed.sizeBytes,
       sha256: hashed.sha256
     };
-    const mimeType = typeof partMimeTypeInput(part) === "string" ? partMimeTypeInput(part).trim() : "";
+    const mimeType = typeof partMimeTypeInput(part) === "string"
+      ? partMimeTypeInput(part).trim().toLowerCase()
+      : "";
     if (mimeType) {
       normalized.mime_type = mimeType;
     }
-    return normalized;
-  }));
+    parts.push(normalized);
+  }
+  enforceFilePartLimits(parts);
   return { ...payload, parts };
 }
 
@@ -144,10 +201,14 @@ export function rejectInitialFileParts(message, { context = "initial message" } 
  */
 export async function resolveReplyWireParts({ parts, uploadFile }) {
   if (!Array.isArray(parts)) return parts;
+  enforceFilePartLimits(parts);
   let changed = false;
-  const wireParts = await Promise.all(parts.map(async (part) => {
-    if (!part || typeof part !== "object" || part.kind !== "file") return part;
-    if (isWireFilePart(part)) return part;
+  const wireParts = [];
+  for (const part of parts) {
+    if (!part || typeof part !== "object" || part.kind !== "file" || isWireFilePart(part)) {
+      wireParts.push(part);
+      continue;
+    }
     if (typeof part.local_path !== "string" || !part.local_path) {
       throw fileError("FILE_PART_INVALID", "file parts need a localPath or a file_id");
     }
@@ -167,8 +228,8 @@ export async function resolveReplyWireParts({ parts, uploadFile }) {
       sha256: part.sha256
     };
     if (part.mime_type) wirePart.mime_type = part.mime_type;
-    return wirePart;
-  }));
+    wireParts.push(wirePart);
+  }
   return changed ? wireParts : parts;
 }
 
@@ -183,10 +244,59 @@ export function safeFileName(name) {
 
 export async function writeDownloadedFile({ targetPath, bytes }) {
   await mkdir(dirname(targetPath), { recursive: true });
-  const tempPath = `${targetPath}.download-${randomUUID().hex}.tmp`;
-  await writeFile(tempPath, bytes, { mode: 0o600 });
-  await rename(tempPath, targetPath);
+  const tempPath = `${targetPath}.download-${randomUUID()}.tmp`;
+  try {
+    await writeFile(tempPath, bytes, { mode: 0o600 });
+    await rename(tempPath, targetPath);
+  } catch (error) {
+    await rm(tempPath, { force: true });
+    throw error;
+  }
   return targetPath;
+}
+
+export async function streamResponseToFile({
+  response,
+  targetPath,
+  expectedSha256 = "",
+  expectedSizeBytes = null
+}) {
+  if (!response?.body) throw fileError("FILE_DOWNLOAD_FAILED", "File download response has no body");
+  await mkdir(dirname(targetPath), { recursive: true });
+  const tempPath = `${targetPath}.download-${randomUUID()}.tmp`;
+  const digest = createHash("sha256");
+  let sizeBytes = 0;
+  const verifier = new Transform({
+    transform(chunk, _encoding, callback) {
+      sizeBytes += chunk.length;
+      digest.update(chunk);
+      callback(null, chunk);
+    }
+  });
+  const source = typeof response.body.getReader === "function"
+    ? Readable.fromWeb(response.body)
+    : response.body;
+  try {
+    await pipeline(source, verifier, createWriteStream(tempPath, { flags: "wx", mode: 0o600 }));
+    const sha256 = digest.digest("hex");
+    if (expectedSizeBytes !== null && Number(expectedSizeBytes) !== sizeBytes) {
+      throw fileError(
+        "FILE_SIZE_MISMATCH",
+        `downloaded file size mismatch: expected ${expectedSizeBytes}, got ${sizeBytes}`
+      );
+    }
+    if (expectedSha256 && expectedSha256 !== sha256) {
+      throw fileError(
+        "FILE_SHA256_MISMATCH",
+        `downloaded file sha256 mismatch: expected ${expectedSha256}, got ${sha256}`
+      );
+    }
+    await rename(tempPath, targetPath);
+    return { targetPath, sizeBytes, sha256 };
+  } catch (error) {
+    await rm(tempPath, { force: true });
+    throw error;
+  }
 }
 
 export function formatFileSize(sizeBytes) {

@@ -114,14 +114,23 @@ let the guard do the rest:
   abort and nothing is uploaded.
 - **Nothing leaves the machine before approval.** The upload to
   `POST /tasks/{task_id}/files` (v0.6 lane, participant-gated, ≤64 MiB by default)
-  happens only inside the post-approval mutation step, which then replaces the
+  happens only inside the post-approval mutation step. Hashing and upload are
+  streaming, and attachments upload sequentially. A reply is limited to 8 files
+  and 64 MiB total by default. The client then replaces the
   part with `{kind:"file", file_id, name, size_bytes, sha256}` on the wire.
 - **Initial messages cannot carry files.** Task create and follow-up first
   messages reject file parts (uploads are Task-scoped); create the Task first,
   then reply with the file part.
 - **Receiving.** Incoming file parts keep full metadata in `messages.json` and
   `context.md` (Attachments section). Use `agentrelay_download_file` to fetch and
-  verify bytes.
+  verify bytes. The default MCP and Inbox UI download paths stream to unique
+  temporary files, verify size and sha256, then atomically rename them.
+
+Service-agent policy grants deny attachments unless the reply rule explicitly
+enables them with absolute allowed roots, a MIME allowlist, a file-count limit,
+and a total-byte limit. Paths are resolved before authorization so a symlink
+cannot escape the configured roots. The bundled Project Hermes policy allows up
+to 4 files / 16 MiB only from its artifact/output directories.
 
 ### `agentrelay_download_file`
 

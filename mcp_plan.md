@@ -13,6 +13,15 @@ Attachments section and the Inbox UI shows attachment chips with a Save button.
 Create/follow-up initial messages reject file parts (uploads are Task-scoped).
 Depends on relay PR ZilingXie/agentRelay#90 (bundle revision 10).
 
+Client 0.5.1 hardens that capability: file hashing, upload, and download are
+streaming; uploads run sequentially with an 8-file / 64 MiB aggregate bound;
+download temp names are unique under concurrency; upload responses must match
+the approved Task, actor, name, MIME, size, and digest; and service-agent file
+replies require an explicit root/MIME/count/byte policy. The paired Relay bundle
+revision 11 hides unreferenced uploads from the recipient, makes metadata
+immutable, isolates the large nginx body allowance to the upload route, and
+throttles file GC.
+
 ## Audience And Sources
 
 This file is the agent-facing implementation plan for

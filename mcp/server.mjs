@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,13 +12,14 @@ import { authorizePreparedTaskActionFromConversation, authorizePreparedTaskActio
 import { resyncLocalTask, unwrapTask } from "../scripts/agentrelay-task-context-sync.mjs";
 import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, isLocalAuthorizationCurrent, listLocalActions, prepareLocalAction, taskWorkspacePathsV2 } from "../scripts/agentrelay-task-workspace.mjs";
 import {
+  FILE_ID_PATTERN,
   formatFileSize,
   hasAnyFilePart,
   normalizeReplyFileParts,
   rejectInitialFileParts,
   resolveReplyWireParts,
   safeFileName,
-  writeDownloadedFile
+  streamResponseToFile
 } from "../scripts/agentrelay-files-client.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
 import { executeSemanticCreate } from "../scripts/agentrelay-semantic-client.mjs";
@@ -1527,20 +1528,26 @@ async function relayUploadFile({ taskId, localPath, name, mimeType, sizeBytes, s
   const headers = {
     ...relayHeaders(),
     "Content-Type": mimeType || "application/octet-stream",
+    "Content-Length": String(sizeBytes),
     "X-AgentRelay-File-Name": encodeURIComponent(name || "file"),
     "X-AgentRelay-File-Sha256": sha256
   };
-  const body = await readFile(localPath).catch((error) => {
+  const info = await stat(localPath).catch((error) => {
     const uploadError = new Error(`Cannot read local file ${localPath}: ${error.message}`);
     uploadError.code = "FILE_UNREADABLE";
     throw uploadError;
   });
-  if (body.length !== sizeBytes) {
+  if (!info.isFile() || info.size !== sizeBytes) {
     const uploadError = new Error(`local file changed since approval: ${localPath}; prepare the reply again`);
     uploadError.code = "FILE_CHANGED";
     throw uploadError;
   }
-  const response = await fetch(`${baseUrl}${path}`, { method: "POST", headers, body });
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers,
+    body: createReadStream(localPath),
+    duplex: "half"
+  });
   const text = await response.text();
   let data;
   try {
@@ -1556,7 +1563,25 @@ async function relayUploadFile({ taskId, localPath, name, mimeType, sizeBytes, s
     throw uploadError;
   }
   const file = data?.file || {};
-  if (!file.file_id) throw new Error("AgentRelay file upload response is missing file_id");
+  if (!FILE_ID_PATTERN.test(String(file.file_id || ""))) {
+    throw new Error("AgentRelay file upload response has an invalid file_id");
+  }
+  const expectedMetadata = {
+    name: name || "file",
+    mime_type: mimeType || "application/octet-stream",
+    size_bytes: sizeBytes,
+    sha256
+  };
+  if (file.task_id !== taskId
+    || file.uploader_agent_id !== agentId
+    || file.name !== expectedMetadata.name
+    || file.mime_type !== expectedMetadata.mime_type
+    || Number(file.size_bytes) !== expectedMetadata.size_bytes
+    || file.sha256 !== expectedMetadata.sha256) {
+    const uploadError = new Error("AgentRelay file upload response metadata does not match the approved file");
+    uploadError.code = "FILE_UPLOAD_METADATA_MISMATCH";
+    throw uploadError;
+  }
   return { ...file, deduplicated: Boolean(data.deduplicated) };
 }
 
@@ -1579,25 +1604,30 @@ async function relayDownloadTaskFile({ taskId, fileId }) {
     error.code = "FILE_DOWNLOAD_FAILED";
     throw error;
   }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  const declaredSha = String(response.headers.get("X-AgentRelay-File-Sha256") || metadata.sha256 || "");
-  const actualSha = createHash("sha256").update(bytes).digest("hex");
-  if (declaredSha && declaredSha !== actualSha) {
-    const error = new Error(`downloaded file sha256 mismatch for ${fileId}: expected ${declaredSha}, got ${actualSha}`);
+  const headerSha = String(response.headers.get("X-AgentRelay-File-Sha256") || "");
+  if (headerSha && metadata.sha256 && headerSha !== metadata.sha256) {
+    const error = new Error(
+      `downloaded file sha256 header mismatch for ${fileId}: expected ${metadata.sha256}, got ${headerSha}`
+    );
     error.code = "FILE_SHA256_MISMATCH";
     throw error;
   }
   const paths = taskWorkspacePathsV2(stateRoot, taskId);
   const targetPath = resolve(paths.taskDir, "files", `${fileId}__${safeFileName(metadata.name)}`);
-  await writeDownloadedFile({ targetPath, bytes });
+  const downloaded = await streamResponseToFile({
+    response,
+    targetPath,
+    expectedSha256: metadata.sha256 || headerSha,
+    expectedSizeBytes: metadata.size_bytes
+  });
   return {
     ok: true,
     taskId: String(taskId),
     fileId,
     name: metadata.name,
-    sizeBytes: bytes.length,
-    sizeDisplay: formatFileSize(bytes.length),
-    sha256: actualSha,
+    sizeBytes: downloaded.sizeBytes,
+    sizeDisplay: formatFileSize(downloaded.sizeBytes),
+    sha256: downloaded.sha256,
     localPath: targetPath
   };
 }
