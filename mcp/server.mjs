@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,7 +10,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { authorizePreparedTaskActionFromConversation, authorizePreparedTaskActionWithElicitation, executePreparedTaskAction } from "../scripts/agentrelay-mcp-task-actions.mjs";
 import { resyncLocalTask, unwrapTask } from "../scripts/agentrelay-task-context-sync.mjs";
-import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, isLocalAuthorizationCurrent, listLocalActions, prepareLocalAction } from "../scripts/agentrelay-task-workspace.mjs";
+import { compareTaskContextEnvelopes, deriveTaskContextEnvelope, hashStableJson, isLocalAuthorizationCurrent, listLocalActions, prepareLocalAction, taskWorkspacePathsV2 } from "../scripts/agentrelay-task-workspace.mjs";
+import {
+  formatFileSize,
+  hasAnyFilePart,
+  normalizeReplyFileParts,
+  rejectInitialFileParts,
+  resolveReplyWireParts,
+  safeFileName,
+  writeDownloadedFile
+} from "../scripts/agentrelay-files-client.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
 import { executeSemanticCreate } from "../scripts/agentrelay-semantic-client.mjs";
 import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, negotiateProtocolVersion, readCachedVerifiedProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
@@ -694,6 +703,19 @@ function registerTools(mcpServer) {
   );
 
   mcpServer.registerTool(
+    "agentrelay_download_file",
+    {
+      title: "Download an AgentRelay task file attachment",
+      description: "Download a file attachment from a task by file id, verify its sha256, and save it into the task workspace files directory. Read-only for the relay and for the rest of the local filesystem.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        fileId: z.string().min(1)
+      }
+    },
+    async ({ taskId, fileId }) => jsonResult(await relayDownloadTaskFile({ taskId, fileId }))
+  );
+
+  mcpServer.registerTool(
     "agentrelay_prepare_local_action",
     {
       title: "Prepare local AgentRelay action",
@@ -1099,7 +1121,7 @@ async function executeSemanticTaskAction({ args, operation, resultTaskMode }) {
       }
       return buildActiveSemanticRequest({
         operation,
-        input: args,
+        input: await prepareSemanticWireInput({ operation, args }),
         task: currentTask,
         idempotencyKey
       });
@@ -1112,7 +1134,9 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
   if (generationError) {
     return { ok: false, status: "rejected", taskId: String(args.taskId || ""), ...generationError };
   }
-  const preparedPayload = preparedActionPayload(args);
+  const preparedPayload = actionType === "reply"
+    ? await normalizeReplyFileParts(preparedActionPayload(args))
+    : preparedActionPayload(args);
   let resolvedArgs = resolvePreparedAction && !args.clientActionId
     ? await resolvePreparedSemanticAction({ args, actionType, preparedPayload })
     : args;
@@ -1473,6 +1497,109 @@ async function relayGet(path) {
 
 async function relayPost(path, payload) {
   return relayRequest("POST", path, payload);
+}
+
+async function prepareSemanticWireInput({ operation, args }) {
+  if (operation === "reply") {
+    if (!hasAnyFilePart(args?.parts)) return args;
+    const normalized = await normalizeReplyFileParts({ parts: args.parts });
+    const wireParts = await resolveReplyWireParts({
+      parts: normalized.parts,
+      uploadFile: ({ localPath, name, mimeType, sizeBytes, sha256 }) => relayUploadFile({
+        taskId: args.taskId,
+        localPath,
+        name,
+        mimeType,
+        sizeBytes,
+        sha256
+      })
+    });
+    return { ...args, parts: wireParts };
+  }
+  if (operation === "create_task" || operation === "create_followup") {
+    rejectInitialFileParts(args?.message);
+  }
+  return args;
+}
+
+async function relayUploadFile({ taskId, localPath, name, mimeType, sizeBytes, sha256 }) {
+  const path = `/tasks/${encodeURIComponent(taskId)}/files`;
+  const headers = {
+    ...relayHeaders(),
+    "Content-Type": mimeType || "application/octet-stream",
+    "X-AgentRelay-File-Name": encodeURIComponent(name || "file"),
+    "X-AgentRelay-File-Sha256": sha256
+  };
+  const body = await readFile(localPath).catch((error) => {
+    const uploadError = new Error(`Cannot read local file ${localPath}: ${error.message}`);
+    uploadError.code = "FILE_UNREADABLE";
+    throw uploadError;
+  });
+  if (body.length !== sizeBytes) {
+    const uploadError = new Error(`local file changed since approval: ${localPath}; prepare the reply again`);
+    uploadError.code = "FILE_CHANGED";
+    throw uploadError;
+  }
+  const response = await fetch(`${baseUrl}${path}`, { method: "POST", headers, body });
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`AgentRelay file upload returned non-JSON response (${response.status}): ${text.slice(0, 200)}`);
+  }
+  if (!response.ok) {
+    const uploadError = new Error(`AgentRelay file upload failed (${response.status}): ${JSON.stringify(data)}`);
+    uploadError.statusCode = response.status;
+    uploadError.code = data?.error?.code || data?.code || "FILE_UPLOAD_FAILED";
+    uploadError.responseData = data;
+    throw uploadError;
+  }
+  const file = data?.file || {};
+  if (!file.file_id) throw new Error("AgentRelay file upload response is missing file_id");
+  return { ...file, deduplicated: Boolean(data.deduplicated) };
+}
+
+async function relayDownloadTaskFile({ taskId, fileId }) {
+  const listed = await relayGet(`/tasks/${encodeURIComponent(taskId)}/files`);
+  const metadata = (listed?.files || []).find((item) => item.file_id === fileId);
+  if (!metadata) {
+    const error = new Error(`file ${fileId} is not available for task ${taskId}`);
+    error.code = "FILE_NOT_FOUND";
+    throw error;
+  }
+  const response = await fetch(
+    `${baseUrl}/tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}`,
+    { method: "GET", headers: relayHeaders() }
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    const error = new Error(`AgentRelay file download failed (${response.status}): ${text.slice(0, 200)}`);
+    error.statusCode = response.status;
+    error.code = "FILE_DOWNLOAD_FAILED";
+    throw error;
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const declaredSha = String(response.headers.get("X-AgentRelay-File-Sha256") || metadata.sha256 || "");
+  const actualSha = createHash("sha256").update(bytes).digest("hex");
+  if (declaredSha && declaredSha !== actualSha) {
+    const error = new Error(`downloaded file sha256 mismatch for ${fileId}: expected ${declaredSha}, got ${actualSha}`);
+    error.code = "FILE_SHA256_MISMATCH";
+    throw error;
+  }
+  const paths = taskWorkspacePathsV2(stateRoot, taskId);
+  const targetPath = resolve(paths.taskDir, "files", `${fileId}__${safeFileName(metadata.name)}`);
+  await writeDownloadedFile({ targetPath, bytes });
+  return {
+    ok: true,
+    taskId: String(taskId),
+    fileId,
+    name: metadata.name,
+    sizeBytes: bytes.length,
+    sizeDisplay: formatFileSize(bytes.length),
+    sha256: actualSha,
+    localPath: targetPath
+  };
 }
 
 async function relayRequest(method, path, payload, options = {}) {

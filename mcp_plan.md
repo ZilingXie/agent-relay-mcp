@@ -1,16 +1,17 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-08-05
+Last updated: 2026-09-01
 
-Latest update: Listener burst delivery hardening is implemented on the client.
-The permanent WebSocket frame reader and bounded hook queue apply backpressure,
-the serial hook worker writes the raw inbox event before the intake ACK, and
-event/message delivery keys are deduplicated in memory and across restart after
-successful ACK/NACK completion. The local status file and Inbox UI expose reader
-depth, queue depth, last ACK, and hook health. The production installer still
-migrates its managed primary protocol from v0.5 to v0.6, keeps a temporary v0.5
-Listener compatibility lane, and preserves credentials while deduplicating
-managed `.env` keys.
+Latest update: v0.6 file attachments shipped (client 0.5.0). Replies can carry
+`{kind:"file", localPath, ...}` parts: preparing the reply hashes each local file
+so the human approval binds exact content, the upload
+(`POST /tasks/{task_id}/files`, participant-gated, ≤64 MiB) runs only inside the
+post-approval mutation step, and the wire part carries only
+`file_id/name/size_bytes/sha256`. `agentrelay_download_file` verifies sha256 and
+writes into the Task workspace `files/` directory; context.md gains an
+Attachments section and the Inbox UI shows attachment chips with a Save button.
+Create/follow-up initial messages reject file parts (uploads are Task-scoped).
+Depends on relay PR ZilingXie/agentRelay#90 (bundle revision 10).
 
 ## Audience And Sources
 

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 
-export const PROTOCOL_RUNTIME_VERSION = "0.4.0";
+export const PROTOCOL_RUNTIME_VERSION = "0.5.0";
 export const PROTOCOL_RUNTIME_CAPABILITIES = [
   "dynamic_protocol_bundle_v0.1",
   "semantic_protocol_adapter_v2",

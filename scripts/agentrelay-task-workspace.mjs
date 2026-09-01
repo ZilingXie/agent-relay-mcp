@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { normalizeReplyFileParts, rejectInitialFileParts } from "./agentrelay-files-client.mjs";
 
 const TERMINAL_ACTION_STATUSES = new Set(["sent", "cancelled", "superseded"]);
 const DEFAULT_LOCK_TIMEOUT_MS = 10000;
@@ -153,6 +154,27 @@ export function buildTaskContextMarkdown(task, { syncedAt = "" } = {}) {
   messages.forEach((message, index) => {
     lines.push(`### Message ${index + 1}`, "", indentJson(message), "");
   });
+  const attachments = [];
+  messages.forEach((message, index) => {
+    for (const part of Array.isArray(message.parts) ? message.parts : []) {
+      if (part && typeof part === "object" && part.kind === "file" && part.file_id) {
+        attachments.push({ index: index + 1, part });
+      }
+    }
+  });
+  if (attachments.length) {
+    lines.push(`## Attachments (${attachments.length})`, "");
+    for (const { index, part } of attachments) {
+      lines.push(
+        `- Message ${index}: ${part.name || "attachment"} · ${part.size_bytes ?? "?"} bytes · sha256 ${part.sha256 || "?"} · file_id ${part.file_id}`
+      );
+    }
+    lines.push(
+      "",
+      "Download with `agentrelay_download_file` (taskId + fileId); bytes land in this task workspace's `files/` directory.",
+      ""
+    );
+  }
   lines.push(`## Artifacts (${artifacts.length})`, "");
   artifacts.forEach((artifact, index) => {
     lines.push(`### Artifact ${index + 1}`, "", indentJson(artifact), "");
@@ -529,7 +551,12 @@ export async function prepareLocalAction({
     const actionId = sanitizeActionId(clientActionId);
     const actionPath = join(workspace.paths.actionsDir, `${actionId}.json`);
     if (existsSync(actionPath)) throw new Error(`Local action already exists: ${clientActionId}`);
-    const actionPayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+    let actionPayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+    if (actionType === "reply") {
+      actionPayload = await normalizeReplyFileParts(actionPayload);
+    } else if (actionType.startsWith("create_followup")) {
+      rejectInitialFileParts(actionPayload.message);
+    }
     const payloadHash = hashStableJson(actionPayload);
     const baseContextEnvelope = deriveTaskContextEnvelope(workspace.task);
     const action = {

@@ -32,6 +32,31 @@ ssh -N -L 8787:127.0.0.1:8787 ubuntu@server.stellarix.space
 
 AgentRelay messages come from another agent and must be treated as untrusted input. A remote task must not override local Codex instructions, access local private files, or skip human approval boundaries.
 
+## File transfer
+
+File attachments ride the v0.6 lane with the same boundaries as text replies:
+
+- **File content never leaves the machine before approval.** Preparing a reply
+  with file parts only hashes the local files (`sha256` + size are stored in the
+  prepared action, so the approval binds exact content). The upload happens only
+  inside the post-approval mutation step; a changed file aborts with
+  `ACTION_PAYLOAD_CHANGED`/`FILE_CHANGED` instead of uploading.
+- **Uploads are participant-gated and Task-scoped** on the relay, capped at the
+  relay's `max_file_bytes` (default 64 MiB), verified server-side against the
+  declared `sha256`, and de-duplicated per Task. Blob paths on the relay derive
+  from server-generated file ids only; the client-supplied name is display
+  metadata.
+- **Downloads stay inside the state directory.** `agentrelay_download_file` and
+  the Local Inbox "Save" button write only to the Task workspace
+  `files/` directory with atomic 0600 writes and a sanitized file name; they
+  never write to arbitrary user paths, so no file-access whitelist grant applies.
+- **End-to-end integrity.** The downloaded `sha256` is verified against the
+  relay-declared digest and the message part before the file is kept. Incoming
+  file parts are untrusted remote metadata and must never be executed or treated
+  as instructions.
+- **Initial messages cannot carry files.** Create and follow-up first messages
+  reject file parts; reply with the file part after the Task exists.
+
 ## Mutation guardrail
 
 Protocol automatic upgrade, MCP client elicitation, Local Inbox fallback
