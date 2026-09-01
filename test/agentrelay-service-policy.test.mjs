@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -111,6 +113,50 @@ test("Hermes service policy rejects closed, undelivered, oversized, and identity
     task: currentTask(),
     localAgentId: "project-hermes"
   }).code, "SERVICE_POLICY_CONTENT_DENIED");
+});
+
+test("service policy attachments require bounded files under explicit roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-policy-files-"));
+  try {
+    const localPath = join(root, "report.txt");
+    await writeFile(localPath, "report");
+    const attachmentPolicy = {
+      ...policy,
+      rules: policy.rules.map((rule) => rule.operation === "reply"
+        ? {
+            ...rule,
+            attachments: {
+              enabled: true,
+              allowed_roots: [root],
+              allowed_mime_types: ["text/plain"],
+              max_files: 1,
+              max_total_bytes: 16
+            }
+          }
+        : rule)
+    };
+    const allowed = authorizeServiceAction({
+      policy: attachmentPolicy,
+      action: action("reply", { parts: [
+        { kind: "text", text: "attached" },
+        { kind: "file", local_path: localPath, name: "report.txt", mime_type: "text/plain", size_bytes: 6, sha256: "a".repeat(64) }
+      ] }),
+      task: currentTask(),
+      localAgentId: "project-hermes"
+    });
+    assert.equal(allowed.ok, true);
+    assert.equal(authorizeServiceAction({
+      policy: attachmentPolicy,
+      action: action("reply", { parts: [
+        { kind: "text", text: "attached" },
+        { kind: "file", local_path: "/etc/hosts", name: "hosts", mime_type: "text/plain", size_bytes: 1, sha256: "b".repeat(64) }
+      ] }),
+      task: currentTask(),
+      localAgentId: "project-hermes"
+    }).code, "SERVICE_POLICY_CONTENT_DENIED");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("service policy grants are short-lived and bound to exact payload and Task context", () => {

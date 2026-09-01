@@ -6,6 +6,25 @@
       "id": "reply-assigned-delivered-task",
       "operation": "reply",
       "max_text_bytes": 20000,
+      "attachments": {
+        "enabled": true,
+        "allowed_roots": [
+          "/home/ubuntu/projects/hermes/project-hermes-worker/artifacts",
+          "/home/ubuntu/projects/ops/collab_workspace/05-agent-outputs/project-hermes"
+        ],
+        "allowed_mime_types": [
+          "application/json",
+          "application/pdf",
+          "application/octet-stream",
+          "image/jpeg",
+          "image/png",
+          "text/csv",
+          "text/markdown",
+          "text/plain"
+        ],
+        "max_files": 4,
+        "max_total_bytes": 16777216
+      },
       "side_effects": "none"
     },
     {

@@ -13,7 +13,7 @@ import { listenerOperationalStatus } from "./agentrelay-listener-core.mjs";
 import { resolveLocalAgentRunner } from "./agentrelay-local-agent-runner.mjs";
 import { resyncLocalTask, unwrapTask } from "./agentrelay-task-context-sync.mjs";
 import { executeSemanticCreate } from "./agentrelay-semantic-client.mjs";
-import { formatFileSize, safeFileName, writeDownloadedFile } from "./agentrelay-files-client.mjs";
+import { formatFileSize, safeFileName, streamResponseToFile, writeDownloadedFile } from "./agentrelay-files-client.mjs";
 import { PROTOCOL_V05 } from "./agentrelay-v05.mjs";
 import { PROTOCOL_V06 } from "./agentrelay-v06.mjs";
 import {
@@ -2078,7 +2078,7 @@ class AgentRelayUiHttpClient {
     return this.request("GET", `/tasks/${encodeURIComponent(taskId)}/files`);
   }
 
-  async downloadTaskFileBytes(taskId, fileId) {
+  async downloadTaskFileResponse(taskId, fileId) {
     const response = await fetch(
       `${this.baseUrl}/tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}`,
       { headers: this.headers() }
@@ -2087,8 +2087,7 @@ class AgentRelayUiHttpClient {
       const text = await response.text();
       throw new Error(`AgentRelay file download failed (${response.status}): ${text.slice(0, 200)}`);
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+    return response;
   }
 
   async createSemanticTask({ input, requesterAgentId, idempotencyKey }) {
@@ -2140,23 +2139,36 @@ async function downloadTaskFileToLocalWorkspace({ stateRoot, taskId, fileId, rel
     error.code = "file_not_found";
     throw error;
   }
-  const { bytes, sha256 } = await relayClient.downloadTaskFileBytes(taskId, fileId);
-  if (metadata.sha256 && metadata.sha256 !== sha256) {
-    const error = new Error(`downloaded file sha256 mismatch for ${fileId}: expected ${metadata.sha256}, got ${sha256}`);
-    error.statusCode = 502;
-    error.code = "file_sha256_mismatch";
-    throw error;
-  }
   const paths = taskWorkspacePathsV2(stateRoot, taskId);
   const localPath = join(paths.taskDir, "files", `${fileId}__${safeFileName(metadata.name)}`);
-  await writeDownloadedFile({ targetPath: localPath, bytes });
+  let downloaded;
+  if (typeof relayClient.downloadTaskFileResponse === "function") {
+    const response = await relayClient.downloadTaskFileResponse(taskId, fileId);
+    downloaded = await streamResponseToFile({
+      response,
+      targetPath: localPath,
+      expectedSha256: metadata.sha256,
+      expectedSizeBytes: metadata.size_bytes
+    });
+  } else {
+    // Compatibility for custom/test relay clients; the default client streams.
+    const { bytes, sha256 } = await relayClient.downloadTaskFileBytes(taskId, fileId);
+    if (metadata.sha256 && metadata.sha256 !== sha256) {
+      const error = new Error(`downloaded file sha256 mismatch for ${fileId}: expected ${metadata.sha256}, got ${sha256}`);
+      error.statusCode = 502;
+      error.code = "file_sha256_mismatch";
+      throw error;
+    }
+    await writeDownloadedFile({ targetPath: localPath, bytes });
+    downloaded = { sizeBytes: bytes.length, sha256 };
+  }
   return {
     ok: true,
     taskId: String(taskId),
     fileId,
     name: metadata.name,
-    sizeBytes: bytes.length,
-    sha256,
+    sizeBytes: downloaded.sizeBytes,
+    sha256: downloaded.sha256,
     localPath
   };
 }

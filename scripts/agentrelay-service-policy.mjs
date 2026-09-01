@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 
 const SUPPORTED_POLICY_VERSION = 1;
 
@@ -30,7 +32,7 @@ export function validateServicePolicy(policy) {
     assertAllowedKeys(
       rule,
       rule.operation === "reply"
-        ? ["id", "operation", "max_text_bytes", "side_effects"]
+        ? ["id", "operation", "max_text_bytes", "attachments", "side_effects"]
         : (rule.operation === "fail_task"
             ? ["id", "operation", "allowed_reasons", "side_effects"]
             : ["id", "operation", "side_effects"]),
@@ -46,6 +48,7 @@ export function validateServicePolicy(policy) {
     if (rule.operation === "reply" && (!Number.isInteger(rule.max_text_bytes) || rule.max_text_bytes < 1)) {
       throw new Error(`Invalid max_text_bytes for service policy rule: ${id}`);
     }
+    if (rule.operation === "reply") validateAttachmentPolicy(rule.attachments, id);
   }
   const denied = policy.denied_operations;
   const requiredDenied = ["amend_task", "change_participants", "create_followup", "create_task"];
@@ -79,8 +82,7 @@ export function authorizeServiceAction({ policy, action, task, localAgentId, at 
   const rule = policy.rules.find((candidate) => candidate.operation === action.actionType);
   if (!rule) return rejection("SERVICE_POLICY_OPERATION_DENIED");
   if (action.actionType === "reply") {
-    const text = serviceReplyText(action.payload);
-    if (!text || Buffer.byteLength(text, "utf8") > Number(rule.max_text_bytes || 20000)) {
+    if (!serviceReplyAllowed(action.payload, rule)) {
       return rejection("SERVICE_POLICY_CONTENT_DENIED");
     }
   }
@@ -110,13 +112,77 @@ export function authorizeServiceAction({ policy, action, task, localAgentId, at 
   return { ok: true, grant };
 }
 
-function serviceReplyText(payload) {
-  if (typeof payload?.text === "string") return payload.text;
-  if (!Array.isArray(payload?.parts) || payload.parts.length === 0) return "";
-  if (payload.parts.some((part) => (
-    !part || typeof part !== "object" || part.kind !== "text" || typeof part.text !== "string"
-  ))) return "";
-  return payload.parts.map((part) => part.text).join("\n");
+function validateAttachmentPolicy(attachments, ruleId) {
+  if (attachments === undefined) return;
+  if (!attachments || typeof attachments !== "object" || Array.isArray(attachments)) {
+    throw new Error(`Invalid attachments policy for service policy rule: ${ruleId}`);
+  }
+  assertAllowedKeys(
+    attachments,
+    ["enabled", "allowed_roots", "allowed_mime_types", "max_files", "max_total_bytes"],
+    `attachments policy ${ruleId}`
+  );
+  if (typeof attachments.enabled !== "boolean") throw new Error(`attachments.enabled must be boolean: ${ruleId}`);
+  if (!attachments.enabled) return;
+  if (!Array.isArray(attachments.allowed_roots) || attachments.allowed_roots.length === 0
+    || attachments.allowed_roots.some((root) => typeof root !== "string" || !isAbsolute(root))) {
+    throw new Error(`attachments.allowed_roots must contain absolute paths: ${ruleId}`);
+  }
+  if (!Array.isArray(attachments.allowed_mime_types) || attachments.allowed_mime_types.length === 0
+    || attachments.allowed_mime_types.some((mime) => typeof mime !== "string" || !mime.trim())) {
+    throw new Error(`attachments.allowed_mime_types must be non-empty: ${ruleId}`);
+  }
+  if (!Number.isInteger(attachments.max_files) || attachments.max_files < 1 || attachments.max_files > 8) {
+    throw new Error(`attachments.max_files must be between 1 and 8: ${ruleId}`);
+  }
+  if (!Number.isInteger(attachments.max_total_bytes) || attachments.max_total_bytes < 1
+    || attachments.max_total_bytes > 64 * 1024 * 1024) {
+    throw new Error(`attachments.max_total_bytes is invalid: ${ruleId}`);
+  }
+}
+
+function serviceReplyAllowed(payload, rule) {
+  const parts = typeof payload?.text === "string"
+    ? [{ kind: "text", text: payload.text }]
+    : payload?.parts;
+  if (!Array.isArray(parts) || parts.length === 0) return false;
+  const textParts = parts.filter((part) => part?.kind === "text" && typeof part.text === "string");
+  const fileParts = parts.filter((part) => part?.kind === "file");
+  if (textParts.length + fileParts.length !== parts.length || textParts.length === 0) return false;
+  const text = textParts.map((part) => part.text).join("\n");
+  if (!text || Buffer.byteLength(text, "utf8") > Number(rule.max_text_bytes || 20000)) return false;
+  if (fileParts.length === 0) return true;
+  const attachments = rule.attachments;
+  if (!attachments?.enabled || fileParts.length > attachments.max_files) return false;
+  let totalBytes = 0;
+  for (const part of fileParts) {
+    if (!serviceFilePartAllowed(part, attachments)) return false;
+    totalBytes += Number(part.size_bytes);
+  }
+  return totalBytes <= attachments.max_total_bytes;
+}
+
+function serviceFilePartAllowed(part, attachments) {
+  try {
+    if (typeof part.local_path !== "string" || !isAbsolute(part.local_path)) return false;
+    const actualPath = realpathSync(part.local_path);
+    const withinAllowedRoot = attachments.allowed_roots.some((root) => {
+      try {
+        const actualRoot = realpathSync(resolve(root));
+        const child = relative(actualRoot, actualPath);
+        return child === "" || (!child.startsWith("..") && !isAbsolute(child));
+      } catch {
+        return false;
+      }
+    });
+    if (!withinAllowedRoot) return false;
+    const info = statSync(actualPath);
+    if (!info.isFile() || info.size < 1 || info.size !== Number(part.size_bytes)) return false;
+    const mimeType = String(part.mime_type || "application/octet-stream").toLowerCase();
+    return attachments.allowed_mime_types.includes(mimeType);
+  } catch {
+    return false;
+  }
 }
 
 export function validateLocalAuthorization({
