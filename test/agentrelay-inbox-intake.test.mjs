@@ -24,6 +24,36 @@ function v05Detail({ messageId = "msg_v05", taskVersion = 1, deliveryStatus = "p
   };
 }
 
+function coordinatorDetail({ taskVersion = 3, deliveryStatus = "pending" } = {}) {
+  return {
+    task: {
+      task_id: "task_coordinator", root_task_id: "task_coordinator", protocol_version: "agent-collab-v0.6",
+      requester_agent_id: "project-hermes", target_agent_id: "zac-agent", done_criteria: "result",
+      status: "open", current_message_id: "msg_result", turn_sequence: 2, task_version: taskVersion,
+      from_agent_id: "zac-agent", to_agent_id: "project-hermes", max_turns: 1, updated_at: taskVersion
+    },
+    messages: [{
+      message_id: "msg_result", task_id: "task_coordinator", turn_sequence: 2,
+      from_agent_id: "zac-agent", to_agent_id: "project-hermes",
+      delivery_status: deliveryStatus, parts: [{ kind: "result", data: { outcome: "answered" } }]
+    }]
+  };
+}
+
+function coordinatorGrantRequest() {
+  return {
+    issuanceKey: "inv-one-round-one-authority-one",
+    investigationId: "inv-one",
+    roundId: "round-one",
+    approvedPlanDigest: `sha256:${"a".repeat(64)}`,
+    authorityRef: "authority-one",
+    targetAgentIds: ["zac-agent"],
+    taskCount: 1,
+    taskExpiresAt: 1_800_000_600,
+    grantExpiresAt: 1_800_000_900
+  };
+}
+
 test("v0.5 current Message is verified in workspace v2 before versioned ACK", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-v05-"));
   const stateRoot = join(root, "state");
@@ -55,6 +85,107 @@ test("v0.5 current Message is verified in workspace v2 before versioned ACK", as
   assert.deepEqual(calls, ["get", "ack"]);
   assert.equal(result.acked, true);
   assert.equal((await readTaskWorkspace({ stateRoot, taskId: "task_v05" })).task.task_version, 2);
+});
+
+test("Investigation sink persists Event and Grant-read authoritative snapshot before ACK", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-investigation-"));
+  const stateRoot = join(root, "state");
+  const eventPath = join(root, "event.json");
+  const detail = coordinatorDetail();
+  await writeFile(eventPath, JSON.stringify({ event: {
+    eventId: "evt_result", type: "message.pending", protocolVersion: "agent-collab-v0.6",
+    taskId: "task_coordinator", messageId: "msg_result", agentId: "project-hermes",
+    canTransitionMessage: true
+  } }));
+  const calls = [];
+  const result = await processInboxEvent({
+    eventPath,
+    stateRoot,
+    projectPath: root,
+    agentId: "project-hermes",
+    listenerInstanceId: "listener-hermes",
+    readinessEpoch: 7,
+    ackReceived: true,
+    investigationSink: {
+      async prepare(input) {
+        calls.push("sink-prepare");
+        assert.equal(input.eventId, "evt_result");
+        return { event_persisted: true, coordinator_grant_request: coordinatorGrantRequest() };
+      },
+      async persistSnapshot(input) {
+        calls.push("sink-persist-snapshot");
+        assert.equal(input.authoritativeSnapshot.task.task_id, "task_coordinator");
+        return {
+          ok: true,
+          event_id: "evt_result",
+          task_id: "task_coordinator",
+          event_persisted: true,
+          snapshot_persisted: true
+        };
+      }
+    },
+    coordinatorGrantClientFactory: () => ({
+      async issue(claims) {
+        calls.push("grant-issue");
+        assert.equal(claims.roundId, "round-one");
+        return { grant_handle: "cgh_transient", grant: { grant_id: "cgrant_one" } };
+      },
+      async getTask(handle, taskId) {
+        calls.push("grant-get-task");
+        assert.equal(handle, "cgh_transient");
+        assert.equal(taskId, "task_coordinator");
+        return detail;
+      }
+    }),
+    relayClient: {
+      async getTask() { throw new Error("coordinator Task read must use the Grant client"); },
+      async ackMessage() {
+        calls.push("ack");
+        return coordinatorDetail({ taskVersion: 4, deliveryStatus: "delivered" });
+      }
+    }
+  });
+  assert.deepEqual(calls, [
+    "sink-prepare",
+    "grant-issue",
+    "grant-get-task",
+    "sink-persist-snapshot",
+    "ack"
+  ]);
+  assert.equal(result.acked, true);
+  assert.equal(result.investigationSink.snapshot_persisted, true);
+});
+
+test("Investigation sink failure prevents Listener ACK", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-intake-investigation-fail-"));
+  const eventPath = join(root, "event.json");
+  await writeFile(eventPath, JSON.stringify({ event: {
+    eventId: "evt_sink_fail", type: "message.pending", protocolVersion: "agent-collab-v0.6",
+    taskId: "task_coordinator", messageId: "msg_result", agentId: "project-hermes",
+    canTransitionMessage: true
+  } }));
+  let acked = 0;
+  await assert.rejects(
+    processInboxEvent({
+      eventPath,
+      stateRoot: join(root, "state"),
+      projectPath: root,
+      agentId: "project-hermes",
+      listenerInstanceId: "listener-hermes",
+      readinessEpoch: 7,
+      ackReceived: true,
+      investigationSink: {
+        async prepare() { return { event_persisted: true }; },
+        async persistSnapshot() { throw new Error("database unavailable"); }
+      },
+      relayClient: {
+        async getTask() { return coordinatorDetail(); },
+        async ackMessage() { acked += 1; }
+      }
+    }),
+    /database unavailable/
+  );
+  assert.equal(acked, 0);
 });
 
 test("v0.5 stale Message Event does not ACK a newer current Message", async () => {
