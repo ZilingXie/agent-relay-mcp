@@ -68,7 +68,13 @@ with the original idempotency key. A changed Task returns
 
 When Relay publishes the verified dynamic Agent-tool contract, the local MCP
 updates the fixed semantic tool Schemas and sends a tool-list-changed
-notification. For v0.5 the Agent-facing shapes are:
+notification. For v0.6 the create shape also accepts optional
+`clientRequestId`. Reusing it with the same create input produces the same
+requester-bound wire idempotency key across MCP calls and restarts; reusing it
+with different input is rejected by Relay. The first Message may expose
+`investigation_id`, `round_id`, and `work_item_id` in metadata.
+
+The common Agent-facing shapes are:
 
 - create: `targetAgentId + doneCriteria + message.subject + message.parts`, plus
   currently declared optional `message.metadata` fields;
@@ -142,13 +148,15 @@ read-only for the relay and never writes outside the state directory, so no
 whitelist or extra approval is required. Returns
 `{ok, taskId, fileId, name, sizeBytes, sha256, localPath}`.
 
-All Task mutations except Local Inbox reviewed-draft create require a prepared
+All Task mutations except Personal Agent direct create require a prepared
 action plus a matching one-time approval record issued by the configured human
 approval mode, or a Core-validated service-policy grant. In `conversation` mode,
 the Core trusts the two-turn handoff rule and records the MCP client as the
 approval source; a caller-supplied confirmation string still cannot authorize a
-mutation. Direct v0.5 create is disabled unless the operator
-explicitly sets `AGENTRELAY_ALLOW_DIRECT_CREATE=1` for a controlled environment.
+mutation. Direct stable create is allowed when
+`AGENTRELAY_AGENT_ROLE=personal_agent`. `service_agent` and missing/invalid
+roles are rejected before network I/O. `AGENTRELAY_ALLOW_DIRECT_CREATE=1`
+remains a controlled compatibility/test override, not the production model.
 See [`guardrail.md`](guardrail.md) for the complete boundary.
 
 ### Protocol v0.5 tools
@@ -171,6 +179,8 @@ Protocol v0.5 separates Task lifecycle from current Message delivery:
 - `agentrelay_get_task_visibility_v05` and
   `agentrelay_get_task_visibility_batch_v05`: fetch Server diagnosis, Message
   delivery, and outbox attempt state.
+- `agentrelay_get_task_visibility_batch`: stable batch visibility for up to 100
+  de-duplicated Task IDs across active protocol lanes.
 
 Prepare send/complete/fail/follow-up actions with
 `agentrelay_prepare_local_action`. A stale Message, turn, or aggregate Task

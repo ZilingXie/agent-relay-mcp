@@ -51,9 +51,12 @@ validates the transition, and requires the embedded authorization to match the
 approval record. Successful submission consumes the authorization; an ambiguous
 network result may retry only the same action and idempotency key.
 
-Direct Protocol v0.5 create is disabled by default. A user creates a Task through
-the Local Inbox reviewed-draft Send action. `AGENTRELAY_ALLOW_DIRECT_CREATE=1`
-exists for controlled compatibility and test environments.
+Stable direct create is available to a configured `personal_agent`; the future
+Personal Hermes Prompt is responsible for obtaining the user's approval before
+each investigation round. `service_agent` and missing/invalid roles cannot use
+that path. `AGENTRELAY_ALLOW_DIRECT_CREATE=1` remains only as a controlled
+compatibility/test override. Relay does not infer or store investigation-round
+approval.
 
 Conversation mode prevents remote content from changing the prepared payload or
 Task context, but it does not independently prove that a local Agent observed a
