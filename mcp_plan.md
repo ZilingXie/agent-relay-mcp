@@ -1,6 +1,6 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-09-01
+Last updated: 2026-09-04
 
 Latest update: v0.6 file attachments shipped (client 0.5.0). Replies can carry
 `{kind:"file", localPath, ...}` parts: preparing the reply hashes each local file
@@ -23,6 +23,13 @@ immutable, isolates the large nginx body allowance to the upload route, and
 throttles file GC.
 Tracked by Server [PR #92](https://github.com/ZilingXie/agentRelay/pull/92)
 and Client [PR #92](https://github.com/ZilingXie/agent-relay-mcp/pull/92).
+
+Current implementation branch adds the public Personal Investigation Agent
+primitives for one human-approved round: role-gated direct create,
+restart-stable `clientRequestId`, explicit correlation metadata, and stable
+batch visibility. Service Agents (including existing `project-hermes`) remain
+unable to directly create Tasks. Round approval stays in the future Personal
+Hermes Prompt; no Coordinator Grant, subagent, or Relay Round object is added.
 
 ## Audience And Sources
 

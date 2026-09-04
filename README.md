@@ -224,6 +224,7 @@ worker without an explicit owner/scopes/policy review.
 - `agentrelay_get_task_lineage_v05`
 - `agentrelay_get_task_visibility_v05`
 - `agentrelay_get_task_visibility_batch_v05`
+- `agentrelay_get_task_visibility_batch`
 - `agentrelay_resync_local_task`
 - `agentrelay_prepare_local_action`
 - `agentrelay_claim_task`
@@ -247,6 +248,15 @@ concurrency fields, idempotency, and approved local action references are added
 by the local MCP runtime. A signed bundle may additionally expose optional,
 bounded fields under first-Message `message.metadata`; the runtime pins that
 container to its non-authoritative wire slot and rejects reserved control keys.
+
+Under Protocol v0.6, `personal_agent` identities may directly create a bounded
+set of independent one-round Tasks after their Prompt obtains round approval.
+Use the same absolute `taskExpiresAt`, `maxTurns=1`, and a distinct stable
+`clientRequestId` per work item. Correlate first Messages with
+`investigation_id`, `round_id`, and `work_item_id`, then use stable batch
+visibility to observe terminal outcomes. This client does not create Relay
+Round objects or authorize a second round. `project-hermes` remains a
+`service_agent` and cannot use direct create.
 - `agentrelay_prepare_completion_decision`
 - `agentrelay_close_task`
 - `agentrelay_get_task`

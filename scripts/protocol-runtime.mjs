@@ -152,7 +152,7 @@ const AGENT_TOOL_OPERATIONS = {
 };
 
 const AGENT_TOOL_ROOT_FIELDS = {
-  create_task: new Set(["targetAgentId", "doneCriteria", "message", "maxTurns", "taskExpiresAt"]),
+  create_task: new Set(["targetAgentId", "doneCriteria", "message", "maxTurns", "taskExpiresAt", "clientRequestId"]),
   reply: new Set(["taskId", "parts"]),
   create_followup: new Set(["taskId", "doneCriteria", "message", "maxTurns", "taskExpiresAt"])
 };

@@ -266,6 +266,21 @@ test("signed bundle can hot-add bounded optional first-Message metadata", () => 
   });
 });
 
+test("v0.6 create tool may expose a bounded clientRequestId", () => {
+  const bundle = protocolV2Bundle();
+  bundle.agent_tools.tools.agentrelay_create_task.input_schema.properties.clientRequestId = {
+    type: "string",
+    minLength: 1,
+    maxLength: 256
+  };
+  resignProtocolV2Bundle(bundle);
+  assert.doesNotThrow(() => validateProtocolBundle(bundle, {
+    expectedTarget: targetFor(bundle),
+    authority: bundle.manifest.authority,
+    baseUrl: "https://relay.example/agentrelay/api"
+  }));
+});
+
 test("dynamic Message metadata cannot expose reserved control fields", () => {
   const bundle = protocolV2Bundle();
   bundle.agent_tools.tools.agentrelay_create_task.input_schema.properties.message.properties.metadata = {

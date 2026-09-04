@@ -88,6 +88,9 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
         }
       });
     }
+    if (request.method === "POST" && url.pathname === "/agentrelay/task-visibility/batch") {
+      return sendJson(response, 200, { items: body.task_ids.map((task_id) => ({ task: { task_id } })), errors: [] });
+    }
     if (request.method === "GET" && url.pathname === `/agentrelay/tasks/${legacyTask.task_id}`) {
       return sendJson(response, 200, {
         task: legacyTask,
@@ -152,7 +155,8 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
       AGENTRELAY_TOKEN: "test-token",
       AGENTRELAY_PROTOCOL_VERSION: undefined,
       AGENTRELAY_COMPAT_PROTOCOL_VERSIONS: "agent-collab-v0.5",
-      AGENTRELAY_ALLOW_DIRECT_CREATE: "1",
+      AGENTRELAY_AGENT_ROLE: "personal_agent",
+      AGENTRELAY_ALLOW_DIRECT_CREATE: undefined,
       AGENTRELAY_STATE_DIR: stateRoot,
       AGENTRELAY_PROTOCOL_CACHE_DIR: join(stateRoot, "protocol-cache")
     },
@@ -194,6 +198,33 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
   assert.deepEqual(createPayloads[1].message, createPayloads[0].message);
   assert.equal(createPayloads[1].idempotency_key, createPayloads[0].idempotency_key);
   assert.match(createHeaders[0]["x-agentrelay-runtime-capabilities"], /deterministic_semantic_retry_v1/);
+
+  const stableArguments = {
+    targetAgentId: "vivi-agent",
+    doneCriteria: "one bounded result packet",
+    clientRequestId: "investigation-1-round-1-work-1",
+    message: {
+      subject: "One-round query",
+      metadata: {
+        investigation_id: "investigation-1",
+        round_id: "round-1",
+        work_item_id: "work-1"
+      },
+      parts: [{ kind: "text", text: "return the bounded data" }]
+    }
+  };
+  await client.callTool({ name: "agentrelay_create_task", arguments: stableArguments });
+  await client.callTool({ name: "agentrelay_create_task", arguments: stableArguments });
+  assert.equal(createPayloads.length, 4);
+  assert.equal(createPayloads[2].idempotency_key, createPayloads[3].idempotency_key);
+  assert.match(createPayloads[2].idempotency_key, /^mcp-v06-create-[a-f0-9]{64}$/);
+  assert.deepEqual(createPayloads[2].message.metadata, stableArguments.message.metadata);
+
+  const batch = JSON.parse((await client.callTool({
+    name: "agentrelay_get_task_visibility_batch",
+    arguments: { taskIds: ["task_mcp_v06", "task_mcp_v06"] }
+  })).content[0].text);
+  assert.deepEqual(batch.items.map((item) => item.task.task_id), ["task_mcp_v06"]);
 
   assert.ok(!tools.tools.some((tool) => tool.name === "agentrelay_send_message_v05"));
   await client.callTool({
@@ -252,6 +283,7 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
       ...process.env,
       AGENTRELAY_BASE_URL: baseUrlFor(relay),
       AGENTRELAY_AGENT_ID: "zac-agent",
+      AGENTRELAY_AGENT_ROLE: "service_agent",
       AGENTRELAY_USERNAME: "zac",
       AGENTRELAY_TOKEN: "test-token",
       AGENTRELAY_PROTOCOL_VERSION: "agent-collab-v0.6",
@@ -271,6 +303,18 @@ test("MCP stable create tool uses the verified v0.6 semantic bundle", async (t) 
     assert.equal(legacyStatus.human_approval_mode, "elicitation");
     const legacyTools = await legacyClient.listTools();
     assert.ok(legacyTools.tools.some((tool) => tool.name === "agentrelay_send_message_v05"));
+    const createCount = createPayloads.length;
+    const forbiddenCreate = await legacyClient.callTool({
+      name: "agentrelay_create_task",
+      arguments: {
+        targetAgentId: "vivi-agent",
+        doneCriteria: "must be rejected",
+        message: { subject: "Forbidden", parts: [{ kind: "text", text: "do not send" }] }
+      }
+    });
+    assert.equal(forbiddenCreate.isError, true);
+    assert.match(forbiddenCreate.content[0].text, /service_agent identities cannot directly create/);
+    assert.equal(createPayloads.length, createCount);
     const mismatchResult = await legacyClient.callTool({
       name: "agentrelay_send_message_v05",
       arguments: {
@@ -315,6 +359,18 @@ function v06Bundle(origin) {
       if (binding.slot === "protocol_version") binding.value = "agent-collab-v0.6";
     }
   }
+  const createProperties = bundle.agent_tools.tools.agentrelay_create_task.input_schema.properties;
+  createProperties.clientRequestId = { type: "string", minLength: 1, maxLength: 256 };
+  createProperties.message.properties.metadata = {
+    type: "object",
+    additionalProperties: false,
+    required: [],
+    properties: {
+      investigation_id: { type: "string", minLength: 1, maxLength: 256 },
+      round_id: { type: "string", minLength: 1, maxLength: 256 },
+      work_item_id: { type: "string", minLength: 1, maxLength: 256 }
+    }
+  };
   return resignProtocolV2Bundle(bundle);
 }
 

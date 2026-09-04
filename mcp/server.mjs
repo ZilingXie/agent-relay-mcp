@@ -2,7 +2,7 @@
 
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -62,6 +62,7 @@ const isNativeLifecycleProtocol = !CONFIGURED_PROTOCOL_VERSION
   || SUPPORTED_PROTOCOL_VERSIONS.includes(CONFIGURED_PROTOCOL_VERSION);
 const baseUrl = normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL);
 const agentId = process.env.AGENTRELAY_AGENT_ID || "";
+const agentRole = String(process.env.AGENTRELAY_AGENT_ROLE || "").trim();
 const username = process.env.AGENTRELAY_USERNAME || "";
 const bearerToken = process.env.AGENTRELAY_TOKEN || "";
 const allowDirectCreate = new Set(["1", "true", "yes"]).has(String(process.env.AGENTRELAY_ALLOW_DIRECT_CREATE || "").toLowerCase());
@@ -121,7 +122,8 @@ const LEGACY_AGENT_TOOL_CONFIGS = {
       nextAction: z.string().optional(),
       humanBoundaryReason: z.string().optional(),
       ttl: z.number().int().positive().optional(),
-      maxTurns: z.number().int().positive().optional()
+      maxTurns: z.number().int().positive().optional(),
+      clientRequestId: z.string().min(1).max(256).optional()
     }
   },
   agentrelay_reply: {
@@ -259,7 +261,7 @@ function registerTools(mcpServer) {
         assertDirectCreateAuthorized();
         const generationError = runtimeGenerationError();
         if (generationError) throw protocolRuntimeError(generationError.code, generationError.message, generationError);
-        const idempotencyKey = `mcp-v05-create-${randomUUID()}`;
+        const idempotencyKey = createIdempotencyKey(args.clientRequestId);
         return jsonResult(await executeSemanticCreate({
           input: {
             targetAgentId,
@@ -666,6 +668,16 @@ function registerTools(mcpServer) {
     {
       title: "Get Protocol v0.5 Task visibility batch",
       description: "Fetch Server-computed diagnosis for a de-duplicated Task list.",
+      inputSchema: { taskIds: z.array(z.string().min(1)).min(1).max(100) }
+    },
+    async ({ taskIds }) => jsonResult(await relayPost("/task-visibility/batch", { task_ids: [...new Set(taskIds)] }))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_get_task_visibility_batch",
+    {
+      title: "Get AgentRelay task visibility batch",
+      description: "Fetch Server-computed diagnosis for a de-duplicated Task list across active protocol lanes.",
       inputSchema: { taskIds: z.array(z.string().min(1)).min(1).max(100) }
     },
     async ({ taskIds }) => jsonResult(await relayPost("/task-visibility/batch", { task_ids: [...new Set(taskIds)] }))
@@ -1693,9 +1705,19 @@ function relayHeaders() {
 }
 
 function assertDirectCreateAuthorized() {
-  if (!allowDirectCreate) {
-    throw new Error("LOCAL_APPROVAL_REQUIRED: create v0.5 Tasks from the Local Inbox reviewed-draft Send action");
+  if (agentRole === "personal_agent" || allowDirectCreate) return;
+  if (agentRole === "service_agent") {
+    throw new Error("DIRECT_CREATE_FORBIDDEN: service_agent identities cannot directly create investigation Tasks");
   }
+  throw new Error("LOCAL_APPROVAL_REQUIRED: AGENTRELAY_AGENT_ROLE must be personal_agent for direct Task creation");
+}
+
+function createIdempotencyKey(clientRequestId) {
+  if (!clientRequestId) return `mcp-v06-create-${randomUUID()}`;
+  const digest = createHash("sha256")
+    .update(`${agentId}\n${clientRequestId}`, "utf8")
+    .digest("hex");
+  return `mcp-v06-create-${digest}`;
 }
 
 function jsonResult(data) {
