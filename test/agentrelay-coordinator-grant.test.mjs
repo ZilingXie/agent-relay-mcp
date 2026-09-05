@@ -61,6 +61,12 @@ test("Coordinator create rejects mutable target and correlation claims before ne
     () => buildCoordinatorTaskPayload(claims, mismatched),
     { code: "COORDINATOR_GRANT_CLAIM_MISMATCH" }
   );
+  const crossInvestigation = taskInput();
+  crossInvestigation.message.metadata.investigation_id = "inv-other-case";
+  assert.throws(
+    () => buildCoordinatorTaskPayload(claims, crossInvestigation),
+    { code: "COORDINATOR_GRANT_CLAIM_MISMATCH" }
+  );
   assert.throws(
     () => normalizeGrantClaims({ ...grantInput(), grantExpiresAt: NOW + 600 }, "project-hermes"),
     { code: "COORDINATOR_GRANT_INVALID_INPUT" }
@@ -187,6 +193,36 @@ test("unknown handles fail closed without contacting Relay", async () => {
     { code: "COORDINATOR_GRANT_HANDLE_UNKNOWN" }
   );
   assert.equal(calls, 0);
+});
+
+test("complete-own rejects a Task owned by another requester before mutation", async () => {
+  const client = new CoordinatorGrantClient({
+    baseUrl: "http://relay.test/agentrelay/api",
+    token: "identity-token",
+    agentId: "project-hermes",
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/coordinator-grants")) {
+        const claims = JSON.parse(options.body);
+        return jsonResponse(201, {
+          grant: issuedGrant(claims), coordinator_grant_token: "grant-secret"
+        });
+      }
+      if (url.endsWith("/tasks/task_other")) {
+        return jsonResponse(200, { task: {
+          task_id: "task_other", requester_agent_id: "other-agent",
+          current_message_id: "message-one", turn_sequence: 2, task_version: 3
+        } });
+      }
+      throw new Error("completion mutation must not be sent");
+    }
+  });
+  const issued = await client.issue(grantInput());
+  await assert.rejects(
+    client.completeOwnTask(issued.grant_handle, {
+      taskId: "task_other", idempotencyKey: "complete-other"
+    }),
+    { code: "COORDINATOR_GRANT_TASK_NOT_OWNED" }
+  );
 });
 
 function grantInput() {
