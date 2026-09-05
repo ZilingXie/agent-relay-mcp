@@ -14,6 +14,8 @@ import {
   PROTOCOL_V05
 } from "./agentrelay-v05.mjs";
 import { PROTOCOL_V06 } from "./agentrelay-v06.mjs";
+import { CoordinatorGrantClient } from "./agentrelay-coordinator-grant.mjs";
+import { investigationDurableSinkFromEnv } from "./agentrelay-investigation-sink.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -29,6 +31,8 @@ export async function processInboxEvent({
   listenerInstanceId = process.env.AGENTRELAY_LISTENER_INSTANCE_ID || "",
   readinessEpoch = Number(process.env.AGENTRELAY_READINESS_EPOCH || 0),
   relayClient,
+  investigationSink = investigationDurableSinkFromEnv(),
+  coordinatorGrantClientFactory,
   ackReceived = process.env.AGENTRELAY_ACK_ON_INBOX_RECEIVED === "1",
   processInboxAfterReceive = process.env.AGENTRELAY_PROCESS_INBOX_ON_RECEIVE === "1",
   executeInboxAfterReceive = process.env.AGENTRELAY_EXECUTE_INBOX_ON_RECEIVE === "1",
@@ -83,6 +87,30 @@ export async function processInboxEvent({
     agentId,
     username: process.env.AGENTRELAY_USERNAME || ""
   });
+  let authoritativeSnapshot = null;
+  let investigationSinkReceipt = null;
+  if (investigationSink) {
+    const sinkInput = { eventPath, eventId, taskId, agentId, event: payload };
+    const prepared = await investigationSink.prepare(sinkInput);
+    if (prepared.coordinator_grant_request) {
+      const grantClient = coordinatorGrantClientFactory
+        ? coordinatorGrantClientFactory()
+        : new CoordinatorGrantClient({
+          baseUrl: normalizeBaseUrl(process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL),
+          token: process.env.AGENTRELAY_TOKEN || "",
+          agentId,
+          username: process.env.AGENTRELAY_USERNAME || ""
+        });
+      const issued = await grantClient.issue(prepared.coordinator_grant_request);
+      authoritativeSnapshot = await grantClient.getTask(issued.grant_handle, taskId);
+    } else {
+      authoritativeSnapshot = await relayClient.getTask(taskId);
+    }
+    investigationSinkReceipt = await investigationSink.persistSnapshot({
+      ...sinkInput,
+      authoritativeSnapshot
+    });
+  }
   await markTaskSyncPending({
     stateRoot: stateDir,
     taskId,
@@ -169,7 +197,9 @@ export async function processInboxEvent({
       stateRoot: stateDir,
       taskId,
       fetchTask: (id) => relayClient.getTask(id),
-      initialTask: initialTaskOverride || (Object.keys(task).length ? task : null),
+      initialTask: initialTaskOverride
+        || (authoritativeSnapshot ? unwrapTask(authoritativeSnapshot) : null)
+        || (Object.keys(task).length ? task : null),
       localAgentId: agentId,
       source: event.recovery ? "reconciliation" : "event",
       eventId,
@@ -208,6 +238,7 @@ export async function processInboxEvent({
     nacked: Boolean(ackResult.nacked),
     ackError: ackResult.error,
     contextSync,
+    investigationSink: investigationSinkReceipt,
     processor: processorResult,
     executor: executorResult
   };

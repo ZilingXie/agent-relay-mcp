@@ -23,6 +23,7 @@ import {
 } from "../scripts/agentrelay-files-client.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
 import { executeSemanticCreate } from "../scripts/agentrelay-semantic-client.mjs";
+import { CoordinatorGrantClient } from "../scripts/agentrelay-coordinator-grant.mjs";
 import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, negotiateProtocolVersion, readCachedVerifiedProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
 import {
   buildSemanticRequest,
@@ -66,6 +67,7 @@ const agentRole = String(process.env.AGENTRELAY_AGENT_ROLE || "").trim();
 const username = process.env.AGENTRELAY_USERNAME || "";
 const bearerToken = process.env.AGENTRELAY_TOKEN || "";
 const allowDirectCreate = new Set(["1", "true", "yes"]).has(String(process.env.AGENTRELAY_ALLOW_DIRECT_CREATE || "").toLowerCase());
+const coordinatorToolsEnabled = envFlag("AGENTRELAY_COORDINATOR_TOOLS_ENABLED");
 const exposeLegacyProtocolTools = envFlag("AGENTRELAY_EXPOSE_LEGACY_PROTOCOL_TOOLS");
 const humanApprovalMode = parseHumanApprovalMode(process.env.AGENTRELAY_HUMAN_APPROVAL_MODE || "conversation");
 const compatibilityProtocolVersions = String(process.env.AGENTRELAY_COMPAT_PROTOCOL_VERSIONS || "")
@@ -92,6 +94,9 @@ const conversationalApprovalToolNames = new Set(["agentrelay_reply", "agentrelay
 let initialAgentToolMode = isNativeLifecycleProtocol ? "unavailable" : "legacy";
 let initialAgentToolDefinitions = [];
 const loadedRuntimeGeneration = computeRuntimeGeneration(repoRoot);
+const coordinatorGrantClient = coordinatorToolsEnabled
+  ? new CoordinatorGrantClient({ baseUrl, token: bearerToken, agentId, username })
+  : null;
 
 const messagePartsSchema = z.array(
   z.record(z.string(), z.unknown()).refine((part) => Object.keys(part).length > 0, "Message parts cannot be empty")
@@ -168,6 +173,8 @@ await server.connect(transport);
 if (!isNativeLifecycleProtocol) protocolStartupPromise = refreshProtocolRuntime();
 
 function registerTools(mcpServer) {
+  if (coordinatorGrantClient) registerCoordinatorGrantTools(mcpServer);
+
   mcpServer.registerTool(
     "agentrelay_health",
     {
@@ -212,6 +219,7 @@ function registerTools(mcpServer) {
         },
         legacy_protocol_tools_exposed: exposeLegacyProtocolTools,
         human_approval_mode: humanApprovalMode,
+        coordinator_tools_enabled: coordinatorToolsEnabled,
         configured_protocol_version: CONFIGURED_PROTOCOL_VERSION || null,
         primary_protocol_source: isNativeLifecycleProtocol ? "relay_negotiation" : "legacy_override",
         compatibility_protocol_versions: compatibilityProtocolVersions,
@@ -1106,6 +1114,117 @@ function registerTools(mcpServer) {
   );
 }
 
+function registerCoordinatorGrantTools(mcpServer) {
+  const grantHandleSchema = z.string().min(1).describe("Process-local non-secret Coordinator Grant handle");
+  const doneCriteriaSchema = z.union([
+    z.string().min(1),
+    z.record(z.string(), z.unknown()).refine((value) => Object.keys(value).length > 0, "doneCriteria cannot be empty")
+  ]);
+  const coordinatorMessageSchema = z.object({
+    subject: z.string().min(1).max(120),
+    metadata: z.record(z.string(), z.unknown()),
+    parts: messagePartsSchema
+  }).strict();
+
+  mcpServer.registerTool(
+    "agentrelay_coordinator_grant_issue",
+    {
+      title: "Issue bounded Coordinator Grant",
+      description: "Issue or reissue a Server-authoritative one-Round Coordinator Grant. The bearer secret remains in this MCP process; only a non-secret handle is returned.",
+      inputSchema: {
+        issuanceKey: z.string().min(1),
+        investigationId: z.string().min(1),
+        roundId: z.string().min(1),
+        approvedPlanDigest: z.string().min(1),
+        authorityRef: z.string().min(1),
+        targetAgentIds: z.array(z.string().min(1)).min(1).max(100),
+        taskCount: z.number().int().positive().max(100),
+        taskExpiresAt: z.number().int().positive(),
+        grantExpiresAt: z.number().int().positive()
+      }
+    },
+    async (args) => coordinatorToolResult(() => coordinatorGrantClient.issue(args))
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_coordinator_create_task",
+    {
+      title: "Create locked-Round AgentRelay Task",
+      description: "Create exactly one root Task from immutable Grant claims. Target, deadline, requester and max_turns cannot be overridden.",
+      inputSchema: {
+        grantHandle: grantHandleSchema,
+        idempotencyKey: z.string().min(1).max(256),
+        workItemId: z.string().min(1),
+        targetAgentId: z.string().min(1),
+        doneCriteria: doneCriteriaSchema,
+        message: coordinatorMessageSchema
+      }
+    },
+    async ({ grantHandle, ...args }) => coordinatorToolResult(
+      () => coordinatorGrantClient.createTask(grantHandle, args)
+    )
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_coordinator_resolve_task",
+    {
+      title: "Resolve locked-Round Task mapping",
+      description: "Resolve an unknown create outcome by the original idempotency key without creating a Task.",
+      inputSchema: {
+        grantHandle: grantHandleSchema,
+        idempotencyKey: z.string().min(1).max(256),
+        workItemId: z.string().min(1).optional()
+      }
+    },
+    async ({ grantHandle, ...args }) => coordinatorToolResult(
+      () => coordinatorGrantClient.resolveTask(grantHandle, args)
+    )
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_coordinator_get_task",
+    {
+      title: "Read locked-Round Task",
+      description: "Read one authoritative Task through its process-local Coordinator Grant handle.",
+      inputSchema: { grantHandle: grantHandleSchema, taskId: z.string().min(1) }
+    },
+    async ({ grantHandle, taskId }) => coordinatorToolResult(
+      () => coordinatorGrantClient.getTask(grantHandle, taskId)
+    )
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_coordinator_get_task_visibility_batch",
+    {
+      title: "Read locked-Round Task visibility batch",
+      description: "Read authoritative delivery and terminal visibility for the locked Round.",
+      inputSchema: {
+        grantHandle: grantHandleSchema,
+        taskIds: z.array(z.string().min(1)).min(1).max(100)
+      }
+    },
+    async ({ grantHandle, taskIds }) => coordinatorToolResult(
+      () => coordinatorGrantClient.getTaskVisibilityBatch(grantHandle, taskIds)
+    )
+  );
+
+  mcpServer.registerTool(
+    "agentrelay_coordinator_complete_own_task",
+    {
+      title: "Complete locked-Round Task",
+      description: "Requester-complete one Task created by this Grant using a fresh authoritative snapshot.",
+      inputSchema: {
+        grantHandle: grantHandleSchema,
+        taskId: z.string().min(1),
+        idempotencyKey: z.string().min(1).max(256)
+      }
+    },
+    async ({ grantHandle, taskId, idempotencyKey }) => coordinatorToolResult(
+      () => coordinatorGrantClient.completeOwnTask(grantHandle, { taskId, idempotencyKey })
+    )
+  );
+}
+
 async function executeSemanticTaskAction({ args, operation, resultTaskMode }) {
   let currentTask = null;
   return executeMcpTaskAction({
@@ -1729,6 +1848,25 @@ function jsonResult(data) {
       }
     ]
   };
+}
+
+async function coordinatorToolResult(operation) {
+  try {
+    return jsonResult(await operation());
+  } catch (error) {
+    return {
+      isError: true,
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          error: {
+            code: String(error?.code || "COORDINATOR_OPERATION_FAILED"),
+            message: String(error?.message || error)
+          }
+        })
+      }]
+    };
+  }
 }
 
 function normalizeBaseUrl(value) {

@@ -14,10 +14,28 @@ import { durableReadinessHealth, listenerOperationalStatus, listenerStatusHealth
 const DEFAULT_BASE_URL = "https://server.stellarix.space/agentrelay/api";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
+const isolated = process.argv.includes("--isolated");
 const configPath = resolveHome(getArg("--config") || "~/.codex/config.toml");
 const envPath = resolveHome(getArg("--env") || process.env.AGENTRELAY_ENV_PATH || resolve(repoRoot, ".env"));
 loadDotEnv(envPath);
 const baseUrl = (process.env.AGENTRELAY_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
+if (isolated) {
+  const missing = [
+    !getArg("--env") && "--env",
+    !getArg("--config") && "--config",
+    !process.env.AGENTRELAY_PROTOCOL_CACHE_DIR && "AGENTRELAY_PROTOCOL_CACHE_DIR"
+  ].filter(Boolean);
+  if (missing.length) {
+    console.error(`isolated doctor requires explicit ${missing.join(", ")}`);
+    process.exit(2);
+  }
+  let hostname = "";
+  try { hostname = new URL(baseUrl).hostname; } catch {}
+  if (!["127.0.0.1", "::1", "localhost"].includes(hostname)) {
+    console.error(`isolated doctor requires a loopback AGENTRELAY_BASE_URL, got ${baseUrl}`);
+    process.exit(2);
+  }
+}
 const wsBaseUrl = (process.env.AGENTRELAY_WS_URL || deriveWsUrl(baseUrl)).replace(/\/+$/, "");
 const inboxDir = resolveHome(process.env.AGENTRELAY_INBOX_DIR || resolve(repoRoot, ".agentrelay", "inbox"));
 const stateDir = resolveHome(process.env.AGENTRELAY_STATE_DIR || resolve(repoRoot, "state"));

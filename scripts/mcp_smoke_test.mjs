@@ -204,6 +204,30 @@ try {
     await guardedCreateSession.client.close().catch(() => {});
   }
 
+  const coordinatorSession = await startMcpClient(
+    relayBaseUrl, localStateRoot, "agent-collab-v0.6", false, true
+  );
+  try {
+    const coordinatorTools = await coordinatorSession.client.listTools();
+    assert(
+      coordinatorTools.tools.some((tool) => tool.name === "agentrelay_coordinator_get_task"),
+      "Coordinator tools should be exposed only when explicitly enabled"
+    );
+    const unknownHandle = await coordinatorSession.client.callTool({
+      name: "agentrelay_coordinator_get_task",
+      arguments: { grantHandle: "cgh_unknown", taskId: "task_unknown" }
+    });
+    assert(unknownHandle.isError === true, "unknown Coordinator Grant handle must fail closed");
+    const unknownError = JSON.parse(unknownHandle.content?.[0]?.text || "{}");
+    assert(
+      unknownError.error?.code === "COORDINATOR_GRANT_HANDLE_UNKNOWN",
+      "Coordinator tool error must preserve its stable code"
+    );
+  } finally {
+    await coordinatorSession.transport.close().catch(() => {});
+    await coordinatorSession.client.close().catch(() => {});
+  }
+
   const v05Session = await startMcpClient(relayBaseUrl, localStateRoot);
   try {
     const initialV05Tools = await v05Session.client.listTools();
@@ -267,7 +291,13 @@ try {
   if (localStateRoot) await rm(localStateRoot, { recursive: true, force: true });
 }
 
-async function startMcpClient(relayBaseUrl, stateRoot, protocolVersion = "", allowDirectCreate = true) {
+async function startMcpClient(
+  relayBaseUrl,
+  stateRoot,
+  protocolVersion = "",
+  allowDirectCreate = true,
+  coordinatorToolsEnabled = false
+) {
   const mcpClient = new Client({ name: "agent-relay-mcp-smoke", version: "0.1.0" });
   const mcpTransport = new StdioClientTransport({
     command: "node",
@@ -278,6 +308,7 @@ async function startMcpClient(relayBaseUrl, stateRoot, protocolVersion = "", all
       AGENTRELAY_BASE_URL: relayBaseUrl,
       AGENTRELAY_AGENT_ID: smokeAuth.agentId,
       AGENTRELAY_ALLOW_DIRECT_CREATE: allowDirectCreate ? "1" : "",
+      AGENTRELAY_COORDINATOR_TOOLS_ENABLED: coordinatorToolsEnabled ? "1" : "",
       AGENTRELAY_USERNAME: smokeAuth.username,
       AGENTRELAY_TOKEN: smokeAuth.token,
       AGENTRELAY_STATE_DIR: stateRoot,

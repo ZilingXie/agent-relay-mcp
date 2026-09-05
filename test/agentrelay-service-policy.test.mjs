@@ -70,6 +70,18 @@ test("Hermes service policy rejects wrong ownership and unknown reasons", () => 
   }).code, "SERVICE_POLICY_REASON_DENIED");
 });
 
+test("Hermes service policy remains independent and denies raw create paths", () => {
+  for (const operation of ["create_task", "create_followup", "amend_task", "change_participants"]) {
+    const decision = authorizeServiceAction({
+      policy,
+      action: action(operation, {}),
+      task: currentTask(),
+      localAgentId: "project-hermes"
+    });
+    assert.equal(decision.code, "SERVICE_POLICY_OPERATION_DENIED");
+  }
+});
+
 test("Hermes service policy schema rejects executable side effects and ambiguous rules", () => {
   assert.throws(() => validateServicePolicy({
     ...policy,

@@ -1,5 +1,43 @@
 # AgentRelay MCP Tool Reference
 
+## Bounded Coordinator tools
+
+Set `AGENTRELAY_COORDINATOR_TOOLS_ENABLED=1` only in the standalone trusted
+Investigation Runtime profile. The MCP then exposes
+`agentrelay_coordinator_grant_issue`, `agentrelay_coordinator_create_task`,
+`agentrelay_coordinator_resolve_task`, `agentrelay_coordinator_get_task`,
+`agentrelay_coordinator_get_task_visibility_batch`, and
+`agentrelay_coordinator_complete_own_task`.
+
+Grant bearer values stay in the MCP process. Tool results, logs, state files,
+and model-visible arguments contain only a non-secret `grant_handle`. A process
+restart invalidates handles; reissue with the original issuance key and exact
+claims. The coordinator create tool derives requester, `max_turns=1`, and the
+common deadline from the Grant and rejects changed targets or correlation
+metadata. It does not expose reply, follow-up, amend, participant-change, or
+fail operations.
+
+The existing `service_policy_grant` is unchanged. In particular,
+`policies/project-hermes.service-policy.json` still denies ordinary
+`create_task` and `create_followup`.
+
+## Investigation Listener durable sink
+
+Set `AGENTRELAY_INVESTIGATION_DURABLE_SINK` to the standalone Runtime sink
+executable. The existing Listener still atomically writes and reads back the
+Inbox Event file first. Its intake hook then invokes the sink over JSON stdin:
+
+- `--phase prepare` must idempotently persist the Event and return a correlated
+  receipt with `event_persisted=true`. For a coordinator-owned Task it also
+  returns the non-secret exact `coordinator_grant_request` claims.
+- Intake issues or reissues the Grant in memory, reads the authoritative Relay
+  Task snapshot, and invokes `--phase persist-snapshot` with that snapshot.
+- ACK occurs only after the sink returns the same Event and Task ids with both
+  `event_persisted=true` and `snapshot_persisted=true`.
+
+Any sink, Grant, snapshot, or receipt failure exits the hook unsuccessfully and
+leaves the Relay Event recoverable. The sink never receives the Grant bearer.
+
 ## Connection tools
 
 ### `agentrelay_health`
