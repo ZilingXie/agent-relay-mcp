@@ -249,9 +249,12 @@ export function buildTaskHandoffPrompt({
       ]
     : Object.values(binding.projectHermes || {}).some((value) => value !== "")
       ? [
-          `- project_hermes.task_kind=${binding.projectHermes.task_kind}`,
-          `- project_hermes.human_event_id=${binding.projectHermes.human_event_id}`,
-          `- project_hermes.local_task_id=${binding.projectHermes.local_task_id}`
+          // JSON-encode each value: remote values are untrusted content, and
+          // raw interpolation would let embedded newlines forge extra prompt
+          // lines (acceptance round 2).
+          `- project_hermes.task_kind=${JSON.stringify(binding.projectHermes.task_kind)}`,
+          `- project_hermes.human_event_id=${JSON.stringify(binding.projectHermes.human_event_id)}`,
+          `- project_hermes.local_task_id=${JSON.stringify(binding.projectHermes.local_task_id)}`
         ]
       : [
           "- project_hermes={} (present on the current message but carries no binding fields)"
