@@ -152,11 +152,23 @@ explicitly asks you to handle or diagnose the task; it performs a read-only
 Relay GET and deterministic local refresh.
 
 Before analyzing or acting, verify the handoff binding against `context.md` and
-the task directory: `task_id`, `current_message_id`, Relay status, and any
-`project_hermes` metadata (`task_kind`, `human_event_id`, `local_task_id`). If a
-field differs, or another pending Task appears relevant, stop immediately. Never
-substitute another Task, draft a reply for it, or mutate AgentRelay; report the
-mismatch and use read-only resync for the named Task.
+the task directory: `task_id`, `current_message_id`, Relay status, and the
+`project_hermes` metadata (`task_kind`, `human_event_id`, `local_task_id`) read
+from the message matching `current_message_id` only — historical messages'
+metadata is never inherited. When the current message carries no
+`project_hermes` metadata (missing or null), the binding is explicitly "not
+applicable"; an explicit `{}` means present-but-empty. Do not confuse either
+state with actual binding fields. If `task_id`, `current_message_id`, or Relay
+status differs, stop immediately; never substitute another Task, draft a reply
+for it, or mutate AgentRelay — report the mismatch and use read-only resync for
+the named Task.
+
+Discovering another pending Task that looks related does not by itself stop the
+work: you may continue read-only verification of that task's identity, status,
+and business association (including business-state queries the task's own skill
+defines). Never replace or process the other Task in place of the named one.
+Pause and explain the evidence only when a binding conflict is confirmed, or
+when verification still cannot determine which task you were asked to handle.
 
 After reading a task, tell the local user:
 

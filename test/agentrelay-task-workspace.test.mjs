@@ -61,8 +61,9 @@ test("persistTaskWorkspace writes complete local context and projections atomica
     "- task_id=task_complete",
     "- current_message_id=none",
     "- relay_status=delivery_pending",
-    "- project_hermes={}",
-    "If any binding differs, or another pending Task appears relevant, stop immediately; do not substitute Tasks, draft a reply, or mutate AgentRelay. Explain the mismatch and use read-only resync for this Task.",
+    "- project_hermes=not applicable (the current message carries no project_hermes metadata)",
+    "If task_id, current_message_id, or relay_status differs, stop immediately; do not substitute Tasks, draft a reply, or mutate AgentRelay. Explain the mismatch and use read-only resync for this Task.",
+    "Discovering another pending Task that looks related does not by itself stop this work: you may continue read-only verification of that task's identity, status, and business association (including business-state queries the task's own skill defines). Never replace or process the other Task in place of this one. Pause and explain the evidence only when a binding conflict is confirmed, or when verification still cannot determine which task you were asked to handle.",
     "",
     "In this turn, only explain what this task asks, what I need to decide or provide, and the exact draft external action or reply.",
     "Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this turn. Stop after the draft and wait for my next message so I can approve it, revise it, or continue discussing the task.",
@@ -71,7 +72,9 @@ test("persistTaskWorkspace writes complete local context and projections atomica
   ].join("\n"));
   assert.doesNotMatch(workspace.handoffPrompt, /remote\.json/);
   assert.doesNotMatch(workspace.handoffPrompt, /Local task directory/);
-  assert.match(workspace.handoffPrompt, /another pending Task appears relevant/);
+  assert.match(workspace.handoffPrompt, /not applicable \(the current message carries no project_hermes metadata\)/);
+  assert.doesNotMatch(workspace.handoffPrompt, /project_hermes=\{\}/);
+  assert.match(workspace.handoffPrompt, /continue read-only verification/);
   assert.equal((await stat(workspace.paths.remotePath)).mode & 0o777, 0o600);
   assert.equal((await stat(workspace.paths.taskDir)).mode & 0o777, 0o700);
   const index = await readTaskIndex({ stateRoot });
@@ -399,6 +402,170 @@ test("handoff binding includes current Message and Project Hermes metadata", asy
     assert.match(result.handoffPrompt, /task-local/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+import { buildTaskHandoffPrompt, deriveTaskHandoffBinding } from "../scripts/agentrelay-task-workspace.mjs";
+
+function hermesTask(taskId, { metadata, currentMessageId = "message_1", historicalMetadata = null }) {
+  const messages = [{
+    message_id: "message_1",
+    from_agent_id: "frank-agent",
+    to_agent_id: "zac-agent",
+    parts: [{ kind: "text", text: "Please inspect the dashboard." }],
+    ...(metadata !== undefined ? { metadata: { project_hermes: metadata } } : {})
+  }];
+  if (historicalMetadata !== null) {
+    messages.unshift({
+      message_id: "message_0",
+      from_agent_id: "frank-agent",
+      to_agent_id: "zac-agent",
+      parts: [{ kind: "text", text: "older message" }],
+      metadata: { project_hermes: historicalMetadata }
+    });
+  }
+  return {
+    ...sampleTask(taskId),
+    current_message_id: currentMessageId,
+    messages
+  };
+}
+
+test("handoff binding metadata matrix: missing, null, empty object, fields, historical-only", () => {
+  const agentsMdPath = "/tmp/AGENTS.md";
+  const base = { taskId: "t", taskDir: "/tmp/t", contextPath: "/tmp/t/context.md", agentsMdPath };
+
+  const missing = buildTaskHandoffPrompt({ ...base, task: hermesTask("t", { metadata: undefined }) });
+  assert.match(missing, /project_hermes=not applicable \(the current message carries no project_hermes metadata\)/);
+  assert.doesNotMatch(missing, /project_hermes=\{\}/);
+  assert.doesNotMatch(missing, /project_hermes\.task_kind/);
+
+  const nullMetadata = buildTaskHandoffPrompt({ ...base, task: hermesTask("t", { metadata: null }) });
+  assert.match(nullMetadata, /project_hermes=not applicable/);
+
+  const emptyObject = buildTaskHandoffPrompt({ ...base, task: hermesTask("t", { metadata: {} }) });
+  assert.match(emptyObject, /project_hermes=\{\} \(present on the current message but carries no binding fields\)/);
+  assert.doesNotMatch(emptyObject, /not applicable/);
+
+  const fields = buildTaskHandoffPrompt({
+    ...base,
+    task: hermesTask("t", {
+      metadata: { task_kind: "enablement", human_event_id: "he_1", local_task_id: "p2-163" }
+    })
+  });
+  assert.match(fields, /project_hermes\.task_kind=enablement/);
+  assert.match(fields, /project_hermes\.human_event_id=he_1/);
+  assert.match(fields, /project_hermes\.local_task_id=p2-163/);
+  assert.doesNotMatch(fields, /not applicable/);
+
+  // Historical message carries metadata; the CURRENT message does not: the
+  // binding must not inherit the historical values.
+  const historicalOnly = buildTaskHandoffPrompt({
+    ...base,
+    task: hermesTask("t", {
+      metadata: undefined,
+      historicalMetadata: { task_kind: "stale", human_event_id: "old", local_task_id: "old" }
+    })
+  });
+  assert.match(historicalOnly, /project_hermes=not applicable/);
+  assert.doesNotMatch(historicalOnly, /stale/);
+
+  const binding = deriveTaskHandoffBinding(
+    hermesTask("t", { metadata: { task_kind: "k" } })
+  );
+  assert.deepEqual(Object.keys(binding.projectHermes), ["task_kind", "human_event_id", "local_task_id"]);
+  assert.equal(binding.projectHermesPresent, true);
+  const missingBinding = deriveTaskHandoffBinding(hermesTask("t", { metadata: undefined }));
+  assert.equal(missingBinding.projectHermesPresent, false);
+  assert.equal(missingBinding.projectHermes, null);
+});
+
+test("mismatched identity still demands an immediate stop, related task allows read-only verification", () => {
+  const agentsMdPath = "/tmp/AGENTS.md";
+  const base = { taskId: "t", taskDir: "/tmp/t", contextPath: "/tmp/t/context.md", agentsMdPath };
+  const prompt = buildTaskHandoffPrompt({ ...base, task: hermesTask("t", { metadata: {} }) });
+  assert.match(prompt, /If task_id, current_message_id, or relay_status differs, stop immediately/);
+  assert.match(prompt, /continue read-only verification of that task's identity, status, and business association/);
+  assert.match(prompt, /Never replace or process the other Task in place of this one/);
+  assert.match(prompt, /Pause and explain the evidence only when a binding conflict is confirmed/);
+  // Approval constraints preserved.
+  assert.match(prompt, /Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this turn/);
+});
+
+test("persistTaskWorkspace renders the not-applicable binding for metadata-free messages", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const task = hermesTask("task_no_meta", { metadata: undefined });
+  await persistTaskWorkspace({
+    stateRoot, task, localAgentId: "zac-agent", source: "test",
+    eventId: "evt_1", syncedAt: "2026-07-13T01:00:00.000Z",
+    agentsMdPath: join(root, "AGENTS.md")
+  });
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_no_meta" });
+  assert.match(workspace.handoffPrompt, /project_hermes=not applicable/);
+  assert.doesNotMatch(workspace.handoffPrompt, /project_hermes=\{\}/);
+  assert.match(await readFile(workspace.paths.handoffPath, "utf8"), /not applicable/);
+});
+
+test("same-version resync overwrites an old handoff with the new prompt rules", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  // Old-format task saved with metadata on the current message.
+  const oldTask = hermesTask("task_resync", {
+    metadata: { task_kind: "enablement", human_event_id: "he_9", local_task_id: "p2-163" }
+  });
+  await persistTaskWorkspace({
+    stateRoot, task: oldTask, localAgentId: "zac-agent", source: "test",
+    eventId: "evt_old", syncedAt: "2026-07-13T01:00:00.000Z",
+    agentsMdPath: join(root, "AGENTS.md")
+  });
+  // Simulate an OLD handoff written by the previous generator version.
+  const workspaceBefore = await readTaskWorkspace({ stateRoot, taskId: "task_resync" });
+  await writeFile(workspaceBefore.paths.handoffPath, "- project_hermes={}\n", "utf8");
+
+  // Same version, metadata REMOVED from the current message after resync.
+  const freshTask = hermesTask("task_resync", { metadata: undefined });
+  await resyncLocalTask({
+    stateRoot, taskId: "task_resync",
+    fetchTask: async () => freshTask,
+    agentsMdPath: join(root, "AGENTS.md"),
+    now: () => new Date("2026-07-13T02:00:00.000Z")
+  });
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: "task_resync" });
+  const handoff = await readFile(workspace.paths.handoffPath, "utf8");
+  assert.match(handoff, /not applicable/);
+  assert.doesNotMatch(handoff, /project_hermes=\{\}/);
+  const inbox = JSON.parse(await readFile(join(stateRoot, "issues.json"), "utf8"));
+  const issue = Object.values(inbox.issues || {}).find((entry) => entry.taskId === "task_resync");
+  assert.ok(issue, "inbox projection exists");
+  assert.match(issue.handoffPrompt, /not applicable/);
+  assert.match(issue.handoffPrompt, /continue read-only verification/);
+});
+
+test("rebuildTaskIndex regenerates prompts with the new rules and approval constraints", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const tasks = [
+    hermesTask("task_rebuild_a", { metadata: { task_kind: "k1", human_event_id: "h1", local_task_id: "l1" } }),
+    hermesTask("task_rebuild_b", { metadata: {} })
+  ];
+  for (const [index, task] of tasks.entries()) {
+    await persistTaskWorkspace({
+      stateRoot, task, localAgentId: "zac-agent", source: "test",
+      eventId: `evt_${index}`, syncedAt: "2026-07-13T01:00:00.000Z",
+      agentsMdPath: join(root, "AGENTS.md")
+    });
+  }
+  await rm(join(stateRoot, "task-index.json"), { force: true });
+  await rm(join(stateRoot, "issues.json"), { force: true });
+  const summary = await rebuildTaskIndex({ stateRoot, agentsMdPath: join(root, "AGENTS.md") });
+  assert.equal(summary.rebuilt, 2);
+  const index = await readTaskIndex({ stateRoot });
+  assert.match(index.tasks.task_rebuild_a.handoffPrompt, /project_hermes\.task_kind=k1/);
+  assert.match(index.tasks.task_rebuild_b.handoffPrompt, /present on the current message but carries no binding fields/);
+  for (const taskId of ["task_rebuild_a", "task_rebuild_b"]) {
+    assert.match(index.tasks[taskId].handoffPrompt, /continue read-only verification/);
+    assert.match(index.tasks[taskId].handoffPrompt, /Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this turn/);
   }
 });
 
