@@ -185,17 +185,26 @@ export function buildTaskContextMarkdown(task, { syncedAt = "" } = {}) {
 
 export function deriveTaskHandoffBinding(task) {
   if (!task || typeof task !== "object") return null;
+  // Metadata source: ONLY the message matching the task's current_message_id.
+  // Historical messages' metadata is never inherited. A missing or null
+  // project_hermes means "no Project Hermes metadata" (not an empty binding);
+  // an explicit {} IS present but carries no binding fields — the two must
+  // not be conflated (13601/13605 handoff regression).
   const current = currentMessage(task);
-  const metadata = current?.metadata?.project_hermes;
+  const hasMetadata = Boolean(current) && current.metadata !== undefined && current.metadata !== null;
+  const metadata = hasMetadata ? current.metadata.project_hermes : undefined;
+  const hermesPresent = metadata !== undefined && metadata !== null;
   return {
     taskId: String(task.task_id || task.taskId || ""),
     currentMessageId: String(task.current_message_id || task.currentMessageId || ""),
     status: String(task.status || ""),
-    projectHermes: metadata && typeof metadata === "object"
+    projectHermesPresent: hermesPresent,
+    projectHermes: hermesPresent && typeof metadata === "object"
       ? {
-          taskKind: String(metadata.task_kind || ""),
-          humanEventId: String(metadata.human_event_id || ""),
-          localTaskId: String(metadata.local_task_id || "")
+          // Source field names, so the agent can compare against the raw JSON.
+          task_kind: String(metadata.task_kind ?? ""),
+          human_event_id: String(metadata.human_event_id ?? ""),
+          local_task_id: String(metadata.local_task_id ?? "")
         }
       : null
   };
@@ -234,14 +243,31 @@ export function buildTaskHandoffPrompt({
     ? `AgentRelay task context changed. Re-handle task ${taskId} at ${contextPath}. Follow ${agentsMdPath}.`
     : `Handle AgentRelay task ${taskId} at ${contextPath}. Follow ${agentsMdPath}.`;
   const binding = deriveTaskHandoffBinding(task);
+  const hermesLines = !binding || !binding.projectHermesPresent
+    ? [
+        "- project_hermes=not applicable (the current message carries no project_hermes metadata)"
+      ]
+    : Object.values(binding.projectHermes || {}).some((value) => value !== "")
+      ? [
+          // JSON-encode each value: remote values are untrusted content, and
+          // raw interpolation would let embedded newlines forge extra prompt
+          // lines (acceptance round 2).
+          `- project_hermes.task_kind=${JSON.stringify(binding.projectHermes.task_kind)}`,
+          `- project_hermes.human_event_id=${JSON.stringify(binding.projectHermes.human_event_id)}`,
+          `- project_hermes.local_task_id=${JSON.stringify(binding.projectHermes.local_task_id)}`
+        ]
+      : [
+          "- project_hermes={} (present on the current message but carries no binding fields)"
+        ];
   const bindingLines = binding
     ? [
         "Before analyzing the task, verify this exact binding against context.md and the task directory:",
         `- task_id=${binding.taskId || "unknown"}`,
         `- current_message_id=${binding.currentMessageId || "none"}`,
         `- relay_status=${binding.status || "unknown"}`,
-        `- project_hermes=${JSON.stringify(binding.projectHermes || {})}`,
-        "If any binding differs, or another pending Task appears relevant, stop immediately; do not substitute Tasks, draft a reply, or mutate AgentRelay. Explain the mismatch and use read-only resync for this Task."
+        ...hermesLines,
+        "If task_id, current_message_id, or relay_status differs, stop immediately; do not substitute Tasks, draft a reply, or mutate AgentRelay. Explain the mismatch and use read-only resync for this Task.",
+        "Discovering another pending Task that looks related does not by itself stop this work: you may continue read-only verification of that task's identity, status, and business association (including business-state queries the task's own skill defines). Never replace or process the other Task in place of this one. Pause and explain the evidence only when a binding conflict is confirmed, or when verification still cannot determine which task you were asked to handle."
       ]
     : [
         "The complete Task binding is unavailable because local context sync failed. Do not select another Task or mutate AgentRelay; restore this Task with read-only resync first."
