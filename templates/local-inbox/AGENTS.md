@@ -85,6 +85,53 @@ Do not call agentrelay_prepare_local_action or any AgentRelay mutation in this t
 Only after I explicitly approve the exact draft in a later message should you prepare that action and call the matching AgentRelay MCP mutation.
 ```
 
+This default boundary applies to ordinary tasks. Staged local-execution tasks
+get a different, task-kind-specific handoff (see "Staged local-execution
+tasks" below); the generated `handoff.md` always states which profile applies.
+
+## Staged Local-Execution Tasks (SupportPortal Media Relay Enablement)
+
+When the current message of a task carries an
+`enablement-relay-request-v1` JSON payload, the generated handoff uses the
+enablement profile and the local agent must follow the
+`supportportal-media-relay-enablement` skill. That profile differs from the
+default boundary in exactly one dimension: LOCAL READ-ONLY PREPARATION IS
+REQUIRED BEFORE THE FIRST APPROVAL, while the Archer write and the AgentRelay
+reply remain gated behind two explicit local approvals.
+
+Order of work:
+
+1. Pilot login readiness first (`pilot auth status`; an expired session is a
+   structured blocker — ask the user to run `pilot auth login --device` and
+   wait; do not treat it as task failure).
+2. Task-binding verification and the SupportPortal request readback
+   (fail-closed binding gate unchanged).
+3. Ownership lookup, current-configuration status, and dry-run
+   (`pilot archer appid --email`, `pilot archer status`,
+   `pilot archer open --dry-run`) — all read-only and allowed now.
+4. First report (ownership, current configuration, dry-run plan,
+   recommendation, `report_digest`), then stop for the first approval.
+5. Missing local configuration (`SUPPORTPORTAL_RELAY_API_BASE` /
+   `SUPPORTPORTAL_RELAY_TOKEN`), expired SSO, ownership mismatch, duplicate
+   AppID conflicts, or a cancelled request are STRUCTURED PREFLIGHT BLOCKERS:
+   report the blocker code and next action; they never mean "the task cannot
+   start". An `ownership_mismatch` / `project_not_found` precheck skips the
+   execution approval: draft the failure result directly (send still needs
+   approval).
+6. After the first explicit approval: at most ONE `pilot archer open` and an
+   INDEPENDENT `pilot archer status` read-back (the write command's own
+   success output never substitutes for it).
+7. Draft the `enablement-relay-result-v1` JSON, stop for the second approval.
+8. After the second explicit approval: `agentrelay_prepare_local_action` plus
+   the single matching AgentRelay reply. That reply is the only AgentRelay
+   mutation from the local side.
+
+Until the applicable approval, the enablement profile forbids exactly: any
+Archer write (`pilot archer open` without `--dry-run`) and every AgentRelay
+mutation (including `agentrelay_prepare_local_action`). `max_turns` caps
+AgentRelay replies, not local approvals: both approvals happen in the local
+conversation and the result is sent once.
+
 Incoming remote task:
 
 1. Listener receives the Relay event.
