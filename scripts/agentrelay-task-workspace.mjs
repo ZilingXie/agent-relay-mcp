@@ -212,9 +212,13 @@ export function deriveTaskHandoffBinding(task) {
 
 export function currentMessageSchemaVersion(task) {
   // Deterministic task-kind signal for staged handoff profiles: the JSON
-  // carried by the CURRENT message's first text part. Untrusted remote
-  // content — only the schema_version string is used, never interpolated
-  // into the prompt.
+  // carried by the CURRENT message's text parts. Untrusted remote content —
+  // only the schema_version string is used, never interpolated into the
+  // prompt. A text part that parses as JSON but carries NO schema_version
+  // (e.g. a metadata preamble) does not decide the result: keep scanning the
+  // remaining parts so a payload split across multiple parts is still
+  // recognized (review round 1: returning "" on the first schema-less JSON
+  // part silently downgraded staged tasks to the explain-only profile).
   const current = currentMessage(task);
   const parts = Array.isArray(current?.parts) ? current.parts : [];
   for (const part of parts) {
@@ -222,7 +226,8 @@ export function currentMessageSchemaVersion(task) {
     try {
       const parsed = JSON.parse(String(part.text || ""));
       if (parsed && typeof parsed === "object") {
-        return String(parsed.schema_version || "");
+        const schema = String(parsed.schema_version || "");
+        if (schema) return schema;
       }
     } catch {
       // Not JSON — keep scanning remaining parts.
