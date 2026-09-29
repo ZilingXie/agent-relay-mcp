@@ -689,6 +689,63 @@ test("normal tasks keep the default explain-then-approve handoff", async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+test("schema in a later text part is still recognized after a schema-less JSON preamble", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const task = sampleTask("task_multipart");
+  task.status = "open";
+  task.current_message_id = "message_1";
+  task.messages[0].parts = [
+    { kind: "text", text: JSON.stringify({ request_id: "metadata-preamble" }) },
+    { kind: "text", text: JSON.stringify({ schema_version: "enablement-relay-request-v1" }) },
+  ];
+  const agentsMdPath = join(root, "AGENTS.md");
+
+  await persistTaskWorkspace({
+    stateRoot,
+    task,
+    localAgentId: "zac-agent",
+    source: "test",
+    eventId: "evt_multipart",
+    syncedAt: "2026-09-29T08:00:00.000Z",
+    agentsMdPath
+  });
+
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: task.task_id });
+  const handoff = workspace.handoffPrompt;
+  assert.match(handoff, /SupportPortal Media Relay enablement AgentRelay task task_multipart/);
+  assert.match(handoff, /Wait for my first approval/);
+  assert.doesNotMatch(handoff, /In this turn, only explain what this task asks/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("all schema-less JSON parts fall back to the default profile", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const task = sampleTask("task_no_schema");
+  task.status = "open";
+  task.current_message_id = "message_1";
+  task.messages[0].parts = [
+    { kind: "text", text: JSON.stringify({ request_id: "metadata-preamble" }) },
+    { kind: "text", text: JSON.stringify({ note: "also-no-schema" }) },
+  ];
+  const agentsMdPath = join(root, "AGENTS.md");
+
+  await persistTaskWorkspace({
+    stateRoot,
+    task,
+    localAgentId: "zac-agent",
+    source: "test",
+    eventId: "evt_no_schema",
+    syncedAt: "2026-09-29T08:00:00.000Z",
+    agentsMdPath
+  });
+
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: task.task_id });
+  assert.match(workspace.handoffPrompt, /In this turn, only explain what this task asks/);
+  await rm(root, { recursive: true, force: true });
+});
+
 test("enablement schema on a HISTORICAL message does not flip the profile", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
   const stateRoot = join(root, "state");
