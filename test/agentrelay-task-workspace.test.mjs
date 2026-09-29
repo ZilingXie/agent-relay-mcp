@@ -598,6 +598,125 @@ test("rebuildTaskIndex regenerates prompts with the new rules and approval const
   }
 });
 
+
+function enablementTask(taskId) {
+  const request = {
+    schema_version: "enablement-relay-request-v1",
+    request_id: "enr-AC-13751-v1",
+    request_version: 1,
+    app_id: "8cb7aea984c4457daad802e6960e2475",
+    customer_email: "xieziling97@163.com",
+    zendesk_ticket_id: "13751",
+    target_params: {
+      archer_url: "https://archer.agora.io", typeId: 6, status: 1, region: 2, maxSubscribeLoad: 10
+    }
+  };
+  const task = sampleTask(taskId);
+  task.status = "open";
+  task.current_message_id = "message_1";
+  task.messages[0].parts = [{ kind: "text", text: JSON.stringify(request) }];
+  return task;
+}
+
+test("enablement relay request gets the staged two-approval handoff profile", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const task = enablementTask("task_enablement");
+  const agentsMdPath = join(root, "AGENTS.md");
+
+  await persistTaskWorkspace({
+    stateRoot,
+    task,
+    localAgentId: "zac-agent",
+    source: "test",
+    eventId: "evt_enablement",
+    syncedAt: "2026-09-29T05:00:00.000Z",
+    agentsMdPath
+  });
+
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: task.task_id });
+  const handoff = workspace.handoffPrompt;
+  assert.match(handoff, /SupportPortal Media Relay enablement AgentRelay task task_enablement/);
+  assert.match(handoff, /supportportal-media-relay-enablement skill/);
+  // Read-only preparation is explicitly required before the first approval.
+  assert.match(handoff, /Local read-only preparation is REQUIRED before the first approval/);
+  assert.match(handoff, /pilot auth status/);
+  assert.match(handoff, /pilot auth login --device/);
+  assert.match(handoff, /report_digest/);
+  // The gated actions are exactly the Archer write and the Relay mutation.
+  assert.match(handoff, /do NOT run any Archer write/);
+  assert.match(handoff, /do NOT call agentrelay_prepare_local_action or any AgentRelay mutation/);
+  assert.match(handoff, /at most ONE `pilot archer open`/);
+  assert.match(handoff, /independently run `pilot archer status` read-back/);
+  assert.match(handoff, /enablement-relay-result-v1/);
+  assert.match(handoff, /Wait for my first approval/);
+  assert.match(handoff, /Wait for my second approval/);
+  assert.match(handoff, /STRUCTURED PREFLIGHT BLOCKERS/);
+  assert.match(handoff, /ownership_mismatch or project_not_found precheck result skips the execution approval/);
+  // The default boundary must not appear on the staged profile.
+  assert.doesNotMatch(handoff, /In this turn, only explain what this task asks/);
+  // The untrusted remote payload never leaks into the prompt verbatim.
+  assert.doesNotMatch(handoff, /8cb7aea984c4457daad802e6960e2475/);
+  assert.doesNotMatch(handoff, /xieziling97@163\.com/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("normal tasks keep the default explain-then-approve handoff", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const task = sampleTask("task_plain");
+  const agentsMdPath = join(root, "AGENTS.md");
+  // A non-JSON text part must not flip the profile.
+  task.status = "open";
+  task.current_message_id = "message_1";
+  task.messages[0].parts = [{ kind: "text", text: "plain conversational request" }];
+
+  await persistTaskWorkspace({
+    stateRoot,
+    task,
+    localAgentId: "zac-agent",
+    source: "test",
+    eventId: "evt_plain",
+    syncedAt: "2026-09-29T05:00:00.000Z",
+    agentsMdPath
+  });
+
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: task.task_id });
+  const handoff = workspace.handoffPrompt;
+  assert.match(handoff, /Handle AgentRelay task task_plain/);
+  assert.match(handoff, /In this turn, only explain what this task asks/);
+  assert.doesNotMatch(handoff, /pilot archer/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("enablement schema on a HISTORICAL message does not flip the profile", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const task = enablementTask("task_historical");
+  task.current_message_id = "message_2";
+  task.messages.push({
+    message_id: "message_2",
+    from_agent_id: "frank-agent",
+    to_agent_id: "zac-agent",
+    parts: [{ kind: "text", text: "follow-up note" }]
+  });
+  const agentsMdPath = join(root, "AGENTS.md");
+
+  await persistTaskWorkspace({
+    stateRoot,
+    task,
+    localAgentId: "zac-agent",
+    source: "test",
+    eventId: "evt_historical",
+    syncedAt: "2026-09-29T05:00:00.000Z",
+    agentsMdPath
+  });
+
+  const workspace = await readTaskWorkspace({ stateRoot, taskId: task.task_id });
+  assert.match(workspace.handoffPrompt, /In this turn, only explain what this task asks/);
+  await rm(root, { recursive: true, force: true });
+});
+
 function sampleTask(taskId) {
   return {
     task_id: taskId,

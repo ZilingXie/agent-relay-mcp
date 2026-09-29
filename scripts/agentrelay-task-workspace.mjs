@@ -210,6 +210,48 @@ export function deriveTaskHandoffBinding(task) {
   };
 }
 
+export function currentMessageSchemaVersion(task) {
+  // Deterministic task-kind signal for staged handoff profiles: the JSON
+  // carried by the CURRENT message's first text part. Untrusted remote
+  // content — only the schema_version string is used, never interpolated
+  // into the prompt.
+  const current = currentMessage(task);
+  const parts = Array.isArray(current?.parts) ? current.parts : [];
+  for (const part of parts) {
+    if (!part || String(part.kind || "") !== "text") continue;
+    try {
+      const parsed = JSON.parse(String(part.text || ""));
+      if (parsed && typeof parsed === "object") {
+        return String(parsed.schema_version || "");
+      }
+    } catch {
+      // Not JSON — keep scanning remaining parts.
+    }
+  }
+  return "";
+}
+
+const ENABLEMENT_REQUEST_SCHEMA = "enablement-relay-request-v1";
+
+function enablementHandoffLines({ taskId, contextPath, agentsMdPath, bindingLines }) {
+  return [
+    `Handle SupportPortal Media Relay enablement AgentRelay task ${taskId} at ${contextPath}. Follow ${agentsMdPath} and the supportportal-media-relay-enablement skill.`,
+    "",
+    ...bindingLines,
+    "",
+    "This is a staged enablement task with two local approvals. Local read-only preparation is REQUIRED before the first approval; only the write and the Relay reply are gated.",
+    "",
+    "Step 1 (this turn, read-only): check Pilot login readiness (pilot auth status; if the session is expired, ask me to run `pilot auth login --device` and wait), verify the task binding and the SupportPortal request readback, then run the skill preflight/ownership/status/dry-run. Missing SUPPORTPORTAL_RELAY_API_BASE/TOKEN, an expired Pilot SSO session, an ownership mismatch, a duplicate-AppID conflict, or a cancelled request are STRUCTURED PREFLIGHT BLOCKERS: report them as a blocking report (with the skill's blocker codes) and the next action — they are not reasons to declare the task unstartable.",
+    "An ownership_mismatch or project_not_found precheck result skips the execution approval entirely: draft the failure result (enablement-relay-result-v1 with write_attempted=false) directly and wait for the send approval.",
+    "Step 2: present the first report (ownership, current configuration, dry-run plan, recommendation, report_digest) and STOP. Wait for my first approval.",
+    "Before my first approval: do NOT run any Archer write (never `pilot archer open` without `--dry-run`) and do NOT call agentrelay_prepare_local_action or any AgentRelay mutation. Local read-only commands and the SupportPortal readback are allowed and expected.",
+    "Step 3 (after my first explicit approval of the exact report): execute at most ONE `pilot archer open` for the approved request, then independently run `pilot archer status` read-back; the write command's own success output never substitutes for that read-back.",
+    "Step 4: draft the enablement-relay-result-v1 JSON (outcome, write_attempted, independent readback, approval_ref) and STOP. Wait for my second approval. Revision discussion does not authorize sending.",
+    "Step 5 (after my second explicit approval): record the approved draft with agentrelay_prepare_local_action and send exactly ONE bound AgentRelay reply carrying the result JSON. Do not send anything before that approval; the single reply is the only AgentRelay mutation of this task from the local side.",
+    "max_turns only caps AgentRelay replies, not local approvals: both approvals happen in this local conversation and the final result is sent once."
+  ];
+}
+
 export function buildTaskHandoffPrompt({
   taskId,
   taskDir,
@@ -272,6 +314,12 @@ export function buildTaskHandoffPrompt({
     : [
         "The complete Task binding is unavailable because local context sync failed. Do not select another Task or mutate AgentRelay; restore this Task with read-only resync first."
       ];
+  if (
+    type !== "investigation"
+    && currentMessageSchemaVersion(task) === ENABLEMENT_REQUEST_SCHEMA
+  ) {
+    return `${enablementHandoffLines({ taskId, contextPath, agentsMdPath, bindingLines }).join("\n").trimEnd()}\n`;
+  }
   const lines = [
     instruction,
     "",
