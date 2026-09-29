@@ -102,7 +102,7 @@ reply remain gated behind two explicit local approvals.
 Order of work:
 
 1. Pilot login readiness first (`pilot auth status`; an expired session is a
-   structured blocker — ask the user to run `pilot auth login --device` and
+   structured blocker — ask the user to run `pilot auth login` (browser SSO flow;
    wait; do not treat it as task failure).
 2. Task-binding verification and the SupportPortal request readback
    (fail-closed binding gate unchanged).
