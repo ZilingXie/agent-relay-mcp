@@ -641,7 +641,7 @@ test("enablement relay request gets the staged two-approval handoff profile", as
   // Read-only preparation is explicitly required before the first approval.
   assert.match(handoff, /Local read-only preparation is REQUIRED before the first approval/);
   assert.match(handoff, /pilot auth status/);
-  assert.match(handoff, /pilot auth login --device/);
+  assert.match(handoff, /pilot auth login` \(browser SSO flow/);
   assert.match(handoff, /report_digest/);
   // The gated actions are exactly the Archer write and the Relay mutation.
   assert.match(handoff, /do NOT run any Archer write/);
