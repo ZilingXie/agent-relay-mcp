@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -405,7 +405,7 @@ test("handoff binding includes current Message and Project Hermes metadata", asy
   }
 });
 
-import { buildTaskHandoffPrompt, deriveTaskHandoffBinding } from "../scripts/agentrelay-task-workspace.mjs";
+import { buildTaskHandoffPrompt, deriveTaskHandoffBinding, selectTaskHandoffProfile } from "../scripts/agentrelay-task-workspace.mjs";
 
 function hermesTask(taskId, { metadata, currentMessageId = "message_1", historicalMetadata = null }) {
   const messages = [{
@@ -599,6 +599,38 @@ test("rebuildTaskIndex regenerates prompts with the new rules and approval const
 });
 
 
+test("rebuildTaskIndex without a local agent id regenerates enablement tasks fail-closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
+  const stateRoot = join(root, "state");
+  const agentsMdPath = join(root, "AGENTS.md");
+  await persistTaskWorkspace({
+    stateRoot,
+    task: enablementTask("task_rebuild_enablement"),
+    localAgentId: "zac-agent",
+    source: "test",
+    eventId: "evt_rebuild_enablement",
+    syncedAt: "2026-09-30T01:00:00.000Z",
+    agentsMdPath
+  });
+
+  // rebuild-task-index.mjs passes process.env.AGENTRELAY_AGENT_ID || "":
+  // without a local identity the staged profile must not be regenerated.
+  await rebuildTaskIndex({ stateRoot, agentsMdPath });
+  let index = await readTaskIndex({ stateRoot });
+  let handoff = index.tasks.task_rebuild_enablement.handoffPrompt;
+  assert.match(handoff, /In this turn, only explain what this task asks/);
+  assert.match(handoff, /unmet: task direction/);
+  assert.doesNotMatch(handoff, /Wait for my first approval/);
+
+  // With the local identity the trusted enablement profile comes back.
+  await rebuildTaskIndex({ stateRoot, agentsMdPath, localAgentId: "zac-agent" });
+  index = await readTaskIndex({ stateRoot });
+  handoff = index.tasks.task_rebuild_enablement.handoffPrompt;
+  assert.match(handoff, /SupportPortal Media Relay enablement AgentRelay task task_rebuild_enablement/);
+  assert.doesNotMatch(handoff, /Classification anomaly/);
+  await rm(root, { recursive: true, force: true });
+});
+
 function enablementTask(taskId) {
   const request = {
     schema_version: "enablement-relay-request-v1",
@@ -612,8 +644,14 @@ function enablementTask(taskId) {
     }
   };
   const task = sampleTask(taskId);
+  // Trusted sender set: the real SupportPortal preproduction relay identity.
   task.status = "open";
   task.current_message_id = "message_1";
+  task.requester_agent_id = "supportportal-preproduction";
+  task.from_agent_id = "supportportal-preproduction";
+  task.to_agent_id = "zac-agent";
+  task.messages[0].from_agent_id = "supportportal-preproduction";
+  task.messages[0].to_agent_id = "zac-agent";
   task.messages[0].parts = [{ kind: "text", text: JSON.stringify(request) }];
   return task;
 }
@@ -655,9 +693,14 @@ test("enablement relay request gets the staged two-approval handoff profile", as
   assert.match(handoff, /ownership_mismatch or project_not_found precheck result skips the execution approval/);
   // The default boundary must not appear on the staged profile.
   assert.doesNotMatch(handoff, /In this turn, only explain what this task asks/);
+  // A fully trusted enablement task carries no classification anomaly note.
+  assert.doesNotMatch(handoff, /Classification anomaly/);
   // The untrusted remote payload never leaks into the prompt verbatim.
   assert.doesNotMatch(handoff, /8cb7aea984c4457daad802e6960e2475/);
   assert.doesNotMatch(handoff, /xieziling97@163\.com/);
+  // Profile selection itself prepares no action and mutates no approval state.
+  const actions = await readdir(join(stateRoot, "tasks", "task_enablement", "actions"));
+  assert.equal(actions.length, 0);
   await rm(root, { recursive: true, force: true });
 });
 
@@ -692,12 +735,10 @@ test("normal tasks keep the default explain-then-approve handoff", async () => {
 test("schema in a later text part is still recognized after a schema-less JSON preamble", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentrelay-task-workspace-"));
   const stateRoot = join(root, "state");
-  const task = sampleTask("task_multipart");
-  task.status = "open";
-  task.current_message_id = "message_1";
+  const task = enablementTask("task_multipart");
   task.messages[0].parts = [
     { kind: "text", text: JSON.stringify({ request_id: "metadata-preamble" }) },
-    { kind: "text", text: JSON.stringify({ schema_version: "enablement-relay-request-v1" }) },
+    task.messages[0].parts[0]
   ];
   const agentsMdPath = join(root, "AGENTS.md");
 
@@ -772,6 +813,98 @@ test("enablement schema on a HISTORICAL message does not flip the profile", asyn
   const workspace = await readTaskWorkspace({ stateRoot, taskId: task.task_id });
   assert.match(workspace.handoffPrompt, /In this turn, only explain what this task asks/);
   await rm(root, { recursive: true, force: true });
+});
+
+test("enablement profile selection matrix: spoofed sender, missing fields, unknown type, conflicting markers, context change, sync failure", () => {
+  const agentsMdPath = "/tmp/AGENTS.md";
+  const base = { taskId: "t", taskDir: "/tmp/t", contextPath: "/tmp/t/context.md", agentsMdPath, localAgentId: "zac-agent" };
+  const defaultBoundary = /In this turn, only explain what this task asks/;
+
+  // Spoofed requester: the schema claims enablement but the sender identity
+  // is not the trusted preproduction agent -> default + anomaly note.
+  const spoofed = enablementTask("t");
+  spoofed.requester_agent_id = "frank-agent";
+  spoofed.from_agent_id = "frank-agent";
+  spoofed.messages[0].from_agent_id = "frank-agent";
+  const spoofedPrompt = buildTaskHandoffPrompt({ ...base, task: spoofed });
+  assert.match(spoofedPrompt, defaultBoundary);
+  assert.match(spoofedPrompt, /Classification anomaly: .*unmet: requester identity/);
+  assert.doesNotMatch(spoofedPrompt, /Wait for my first approval/);
+  assert.doesNotMatch(spoofedPrompt, /8cb7aea984c4457daad802e6960e2475/);
+  assert.doesNotMatch(spoofedPrompt, /xieziling97@163\.com/);
+
+  // Missing request id: trusted sender, but the payload carries no request_id.
+  const noRequestId = enablementTask("t");
+  noRequestId.messages[0].parts = [{ kind: "text", text: JSON.stringify({ schema_version: "enablement-relay-request-v1" }) }];
+  const noRequestIdPrompt = buildTaskHandoffPrompt({ ...base, task: noRequestId });
+  assert.match(noRequestIdPrompt, defaultBoundary);
+  assert.match(noRequestIdPrompt, /unmet: request id/);
+
+  // Unknown single schema type: plain default WITHOUT a classification anomaly.
+  const unknownType = enablementTask("t");
+  unknownType.messages[0].parts = [{ kind: "text", text: JSON.stringify({ schema_version: "some-other-v1", request_id: "x" }) }];
+  const unknownPrompt = buildTaskHandoffPrompt({ ...base, task: unknownType });
+  assert.match(unknownPrompt, defaultBoundary);
+  assert.doesNotMatch(unknownPrompt, /Classification anomaly/);
+
+  // Conflicting schema markers: default + anomaly naming the conflict.
+  const conflicting = enablementTask("t");
+  conflicting.messages[0].parts = [
+    ...conflicting.messages[0].parts,
+    { kind: "text", text: JSON.stringify({ schema_version: "some-other-v1" }) }
+  ];
+  const conflictingPrompt = buildTaskHandoffPrompt({ ...base, task: conflicting });
+  assert.match(conflictingPrompt, defaultBoundary);
+  assert.match(conflictingPrompt, /unmet: conflicting schema markers/);
+
+  // Task direction and message sender mismatches are each reported.
+  const selfAddressed = enablementTask("t");
+  selfAddressed.to_agent_id = "supportportal-preproduction";
+  assert.match(buildTaskHandoffPrompt({ ...base, task: selfAddressed }), /unmet: task direction/);
+  const wrongLocalRecipient = enablementTask("t");
+  wrongLocalRecipient.to_agent_id = "vivi-agent";
+  assert.match(buildTaskHandoffPrompt({ ...base, task: wrongLocalRecipient }), /unmet: task direction/);
+  const wrongMessageSender = enablementTask("t");
+  wrongMessageSender.messages[0].from_agent_id = "frank-agent";
+  assert.match(buildTaskHandoffPrompt({ ...base, task: wrongMessageSender }), /unmet: message sender/);
+
+  // Fail-closed without a local identity: the receive direction cannot be
+  // confirmed, so the enablement profile is NEVER selected — even for a task
+  // whose recipient happens to be someone else (rebuild-task-index.mjs may
+  // run without AGENTRELAY_AGENT_ID).
+  assert.deepEqual(selectTaskHandoffProfile(enablementTask("t")), {
+    profile: "default",
+    anomalyReasons: ["task direction"]
+  });
+  const noLocalIdentity = buildTaskHandoffPrompt({
+    taskId: "t", taskDir: "/tmp/t", contextPath: "/tmp/t/context.md", agentsMdPath,
+    task: enablementTask("t")
+  });
+  assert.match(noLocalIdentity, defaultBoundary);
+  assert.match(noLocalIdentity, /unmet: task direction/);
+  assert.doesNotMatch(noLocalIdentity, /Wait for my first approval/);
+
+  // A context change re-handles the task but keeps the selected profile:
+  // the enablement handoff keeps its own staged instruction, ordinary tasks
+  // get the explicit re-handle wording and stay explain-first.
+  const changedEnablement = buildTaskHandoffPrompt({ ...base, task: enablementTask("t"), type: "changed_context" });
+  assert.match(changedEnablement, /SupportPortal Media Relay enablement AgentRelay task t/);
+  assert.match(changedEnablement, /Wait for my first approval/);
+  assert.doesNotMatch(changedEnablement, /In this turn, only explain what this task asks/);
+  const changedPlain = buildTaskHandoffPrompt({ ...base, task: sampleTask("t"), type: "changed_context" });
+  assert.match(changedPlain, /AgentRelay task context changed/);
+  assert.match(changedPlain, defaultBoundary);
+
+  // Sync failure keeps the investigation prompt and restores context first.
+  const investigation = buildTaskHandoffPrompt({
+    ...base,
+    type: "investigation",
+    sync: { lastError: { category: "network" }, lastAttemptAt: "x", lastEventId: "e" }
+  });
+  assert.match(investigation, /Please investigate AgentRelay local context sync for task id: t/);
+  assert.match(investigation, /Do not submit, amend, revise, claim, or close the Relay task/);
+  assert.doesNotMatch(investigation, defaultBoundary);
+  assert.doesNotMatch(investigation, /Wait for my first approval/);
 });
 
 function sampleTask(taskId) {
