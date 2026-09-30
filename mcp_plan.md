@@ -1,6 +1,6 @@
 # AgentRelay MCP Implementation Plan
 
-Last updated: 2026-09-04
+Last updated: 2026-09-30
 
 Latest update: v0.6 file attachments shipped (client 0.5.0). Replies can carry
 `{kind:"file", localPath, ...}` parts: preparing the reply hashes each local file
@@ -30,6 +30,18 @@ restart-stable `clientRequestId`, explicit correlation metadata, and stable
 batch visibility. Service Agents (including existing `project-hermes`) remain
 unable to directly create Tasks. Round approval stays in the future Personal
 Hermes Prompt; no Coordinator Grant, subagent, or Relay Round object is added.
+
+Listener transport observability shipped with Server
+[PR #95](https://github.com/ZilingXie/agentRelay/pull/95) (Client
+[PR #99](https://github.com/ZilingXie/agent-relay-mcp/pull/99)):
+`listener-status.json` now carries `transportState`
+(starting/connected/disconnected) and `lastTransportActivityAt`, alongside the
+existing `disconnectedAt`. The WebSocket frame reader already auto-answers
+Server control Pings and now tracks control-frame activity for those fields.
+The delivery protocol is unchanged — no client polling was added, and HTTP
+recovery remains reconnect/reconciliation-only. Covered by the new
+listener-core tests (Ping auto-pong, Pong ignored but tracked, Close fails the
+reader).
 
 ## Audience And Sources
 

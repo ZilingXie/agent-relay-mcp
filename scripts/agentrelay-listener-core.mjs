@@ -151,7 +151,8 @@ export class WebSocketFrameReader {
       pauseCount: this.pauseCount,
       resumeCount: this.resumeCount,
       framesReceived: this.framesReceived,
-      lastFrameAt: this.lastFrameAt ? new Date(this.lastFrameAt).toISOString() : null
+      lastFrameAt: this.lastFrameAt ? new Date(this.lastFrameAt).toISOString() : null,
+      lastTransportActivityAt: new Date(this.lastDataAt).toISOString()
     };
   }
 
