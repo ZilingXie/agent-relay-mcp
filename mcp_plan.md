@@ -31,7 +31,9 @@ batch visibility. Service Agents (including existing `project-hermes`) remain
 unable to directly create Tasks. Round approval stays in the future Personal
 Hermes Prompt; no Coordinator Grant, subagent, or Relay Round object is added.
 
-Listener transport observability shipped with Server PR #PRN (client PR #PRN):
+Listener transport observability shipped with Server
+[PR #95](https://github.com/ZilingXie/agentRelay/pull/95) (Client
+[PR #99](https://github.com/ZilingXie/agent-relay-mcp/pull/99)):
 `listener-status.json` now carries `transportState`
 (starting/connected/disconnected) and `lastTransportActivityAt`, alongside the
 existing `disconnectedAt`. The WebSocket frame reader already auto-answers
