@@ -89,6 +89,7 @@ const listenerStatus = {
   version: 1,
   agentId,
   state: "starting",
+  transportState: "starting",
   relayReadiness: "unknown",
   pendingRemoteMessages: null,
   reader: {
@@ -100,7 +101,8 @@ const listenerStatus = {
     resumeCount: 0,
     bufferedBytes: 0,
     framesReceived: 0,
-    lastFrameAt: null
+    lastFrameAt: null,
+    lastTransportActivityAt: null
   },
   queue: {
     depth: 0,
@@ -156,6 +158,7 @@ while (true) {
       console.error(`[agentrelay-listener] recovery ${superseded ? "blocked" : "failed"}: ${error.message}`);
       await updateListenerStatus({
         state: superseded ? "superseded" : "disconnected",
+        transportState: "disconnected",
         lastError: error.message,
         lastRecoveryError: error.message,
         relayReadiness: "stale",
@@ -172,6 +175,7 @@ while (true) {
     console.error(`[agentrelay-listener] disconnected: ${error.message}`);
     await updateListenerStatus({
       state: "disconnected",
+      transportState: "disconnected",
       disconnectedAt: new Date().toISOString(),
       lastError: error.message,
       relayReadiness: "stale",
@@ -207,7 +211,10 @@ async function listenOnce() {
   try {
     while (true) {
       const frame = await reader.nextJson();
-      await updateListenerStatus({ reader: reader.stats });
+      await updateListenerStatus({
+        reader: reader.stats,
+        lastTransportActivityAt: reader.stats.lastTransportActivityAt
+      });
       if (frame.type === "hello") {
         if (isDurableProtocol && (frame.protocolVersion !== protocolVersion
           || frame.listenerInstanceId !== listenerIdentity.instanceId
@@ -217,7 +224,7 @@ async function listenOnce() {
         console.error(`[agentrelay-listener] hello ${frame.agentId}`);
         await tryReconcilePending({ required: isDurableProtocol });
         if (isDurableProtocol) await publishDurableReadiness(true);
-        await updateListenerStatus({ state: "connected", connectedAt: new Date().toISOString(), lastError: null, ready: isDurableProtocol ? true : undefined });
+        await updateListenerStatus({ state: "connected", transportState: "connected", connectedAt: new Date().toISOString(), lastError: null, ready: isDurableProtocol ? true : undefined });
         continue;
       }
       if (frame.type === "heartbeat") {

@@ -255,6 +255,33 @@ test("readJsonFrame responds to ping and continues to the next text frame", asyn
   socket.destroy();
 });
 
+test("reader tracks transport activity for ping and pong frames without surfacing them", async () => {
+  const socket = new MemorySocket();
+  const reader = new WebSocketFrameReader(socket, { inactivityMs: 1000 });
+  const before = Date.now() - 5;
+  socket.push(frame(10, Buffer.alloc(0)));
+  socket.push(frame(9, Buffer.alloc(0)));
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.push(frame(1, Buffer.from(JSON.stringify({ type: "heartbeat", serverTime: 456 }))));
+
+  assert.deepEqual(await reader.nextJson(), { type: "heartbeat", serverTime: 456 });
+  assert.equal(reader.stats.framesReceived, 1);
+  const activityAt = Date.parse(reader.stats.lastTransportActivityAt);
+  assert.ok(Number.isFinite(activityAt) && activityAt >= before, "transport activity must track control frames");
+  assert.equal(socket.writes.length, 1);
+  assert.equal(socket.writes[0][0] & 0x0f, 10);
+  reader.close();
+});
+
+test("reader fails the connection when the server sends a close frame", async () => {
+  const socket = new MemorySocket();
+  const reader = new WebSocketFrameReader(socket, { inactivityMs: 1000 });
+  socket.push(frame(8, Buffer.from([0x03, 0xe8])));
+
+  await assert.rejects(() => reader.nextJson(), /close frame/);
+  reader.close();
+});
+
 test("BoundedAsyncQueue applies producer backpressure without dropping items", async () => {
   const queue = new BoundedAsyncQueue({ maxSize: 2 });
   await queue.push("one");
