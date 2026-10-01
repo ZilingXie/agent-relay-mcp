@@ -91,10 +91,28 @@ tasks" below); the generated `handoff.md` always states which profile applies.
 
 ## Staged Local-Execution Tasks (SupportPortal Media Relay Enablement)
 
-When the current message of a task carries an
-`enablement-relay-request-v1` JSON payload, the generated handoff uses the
-enablement profile and the local agent must follow the
-`supportportal-media-relay-enablement` skill. That profile differs from the
+The enablement profile is selected by the LOCAL client, not by the Relay
+server. The server keeps delivering generic Tasks; the generated `handoff.md`
+uses the enablement profile only when the CURRENT message (the one matching
+`current_message_id`) carries an `enablement-relay-request-v1` JSON payload AND
+every local trust check passes:
+
+- `requester_agent_id`, the Task's current `from_agent_id`, and the current
+  Message's `from_agent_id` all equal the trusted Preproduction identity
+  (`supportportal-preproduction`; `supportportal-production` is deliberately
+  not trusted for this profile yet).
+- The expected receive direction holds (from the trusted identity to this
+  local agent) and the payload carries a non-empty `request_id`.
+- The type markers do not conflict (multiple different `schema_version` values
+  in one message is a classification anomaly).
+
+A schema marker on a HISTORICAL message is never inherited. If the message
+claims the enablement schema but any check fails, the handoff falls back to
+the default profile and appends a classification-anomaly note: this turn must
+not run the enablement workflow or act on the payload's business fields; the
+mismatch is reported to the local user for verification instead. When that
+profile applies, the local agent must follow the
+`supportportal-media-relay-enablement` skill. The profile differs from the
 default boundary in exactly one dimension: LOCAL READ-ONLY PREPARATION IS
 REQUIRED BEFORE THE FIRST APPROVAL, while the Archer write and the AgentRelay
 reply remain gated behind two explicit local approvals.
@@ -150,7 +168,12 @@ Incoming remote task:
    action or reply. It reads `remote.json` only when it needs to verify the
    readable projection against the raw Relay snapshot.
 7. The local agent stops after the draft without preparing or calling any
-   mutation and waits for the user's next message.
+   mutation and waits for the user's next message. Exception: when the
+   generated `handoff.md` selects a staged local-execution profile (see
+   "Staged Local-Execution Tasks" above), the read-only preparation that
+   profile requires — including the business-side checks its skill defines —
+   is expected in this first turn, and only the write and the Relay reply
+   stay gated behind their explicit approvals.
 8. The user may ask questions or revise the draft. Discussion and edits do not
    authorize a Relay mutation.
 9. Only after the user explicitly approves that exact draft in a later message,
