@@ -286,8 +286,14 @@ npm run check              # syntax and unit tests
 npm test                   # check + MCP smoke test
 ```
 
-MCP runtime v0.3 negotiates the current protocol at startup and after protocol
-errors. Verified bundles are isolated by Relay authority/origin, stored in
+MCP runtime v0.3 starts from the locally verified protocol cache, completes MCP
+initialize without waiting on the Relay, and negotiates the current protocol in
+the background (also after protocol errors). When negotiation changes the
+active bundle, dynamic Agent tools are hot-updated with
+`tools/list_changed`; an unchanged bundle emits no notification, and a valid
+cache keeps serving tools when the Relay is slow or unreachable. Without a
+verified cache, dynamic Agent tools stay hidden until the first negotiation
+succeeds. Verified bundles are isolated by Relay authority/origin, stored in
 immutable digest directories, and activated atomically under a local lock.
 Stable semantic tools use restricted bundle bindings to assemble wire payloads;
 identity, confirmation, authorization guardrails, idempotency, endpoint
