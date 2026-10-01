@@ -88,11 +88,12 @@ const servicePolicyPath = process.env.AGENTRELAY_SERVICE_POLICY_PATH
   ? resolve(process.env.AGENTRELAY_SERVICE_POLICY_PATH)
   : (agentId === "project-hermes" ? resolve(repoRoot, "policies/project-hermes.service-policy.json") : "");
 let protocolRuntimeStatus = { status: "checking", checked_at: new Date().toISOString() };
-let protocolStartupPromise = null;
+let protocolRefreshPromise = null;
 const agentToolRegistrations = new Map();
 const conversationalApprovalToolNames = new Set(["agentrelay_reply", "agentrelay_create_followup"]);
 let initialAgentToolMode = isNativeLifecycleProtocol ? "unavailable" : "legacy";
 let initialAgentToolDefinitions = [];
+let appliedAgentToolFingerprint = "";
 const loadedRuntimeGeneration = computeRuntimeGeneration(repoRoot);
 const coordinatorGrantClient = coordinatorToolsEnabled
   ? new CoordinatorGrantClient({ baseUrl, token: bearerToken, agentId, username })
@@ -157,8 +158,7 @@ const LEGACY_AGENT_TOOL_CONFIGS = {
 };
 
 if (isNativeLifecycleProtocol) {
-  protocolStartupPromise = refreshProtocolRuntime();
-  await protocolStartupPromise;
+  await loadStartupProtocolCache();
 }
 
 const server = new McpServer({
@@ -170,7 +170,7 @@ registerTools(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-if (!isNativeLifecycleProtocol) protocolStartupPromise = refreshProtocolRuntime();
+requestProtocolRefresh();
 
 function registerTools(mcpServer) {
   if (coordinatorGrantClient) registerCoordinatorGrantTools(mcpServer);
@@ -205,8 +205,8 @@ function registerTools(mcpServer) {
       inputSchema: { refresh: z.boolean().optional() }
     },
     async ({ refresh = false }) => {
-      if (refresh) protocolStartupPromise = refreshProtocolRuntime();
-      if (protocolStartupPromise) await protocolStartupPromise;
+      if (refresh) await requestProtocolRefresh();
+      else if (protocolRefreshPromise) await protocolRefreshPromise;
       const generation = runtimeGenerationState();
       return jsonResult({
         runtime_version: PROTOCOL_RUNTIME_VERSION,
@@ -1333,6 +1333,40 @@ async function executeMcpTaskAction({ args, actionType, remotePayload, remotePay
   };
 }
 
+async function loadStartupProtocolCache() {
+  try {
+    const cached = await readCachedVerifiedProtocol({ baseUrl });
+    if (!cached) return;
+    const agentTools = await applyAgentToolBundle(cached);
+    protocolRuntimeStatus = {
+      status: "startup_cached_bundle",
+      active: cached,
+      agent_tools: agentTools,
+      checked_at: new Date().toISOString(),
+      last_error: null
+    };
+  } catch (error) {
+    setAgentToolsUnavailable();
+    protocolRuntimeStatus = {
+      status: "startup_cache_invalid",
+      agent_tools: { status: "unavailable", reason: "startup_cache_invalid" },
+      checked_at: new Date().toISOString(),
+      last_error: `startup protocol cache load failed: ${String(error?.message || error)}`
+    };
+  }
+}
+
+function requestProtocolRefresh() {
+  if (!protocolRefreshPromise) {
+    const tracked = refreshProtocolRuntime().finally(() => {
+      if (protocolRefreshPromise === tracked) protocolRefreshPromise = null;
+    });
+    tracked.catch(() => {});
+    protocolRefreshPromise = tracked;
+  }
+  return protocolRefreshPromise;
+}
+
 async function refreshProtocolRuntime() {
   try {
     const result = await negotiateCurrentProtocol({
@@ -1387,6 +1421,11 @@ async function applyAgentToolBundle(active) {
   const bundle = JSON.parse(await readFile(active.bundle_path || resolve(active.cache_dir, "bundle.json"), "utf8"));
   validateProtocolBundle(bundle, { expectedTarget: active, authority: active.authority, baseUrl });
   if (!bundle.agent_tools) {
+    const fingerprint = agentToolFingerprint("legacy", active);
+    if (fingerprint === appliedAgentToolFingerprint) {
+      return { status: "legacy", contract_version: bundle.adapters?.contract_version || null, unchanged: true };
+    }
+    appliedAgentToolFingerprint = fingerprint;
     initialAgentToolMode = "legacy";
     initialAgentToolDefinitions = [];
     for (const [name, config] of Object.entries(LEGACY_AGENT_TOOL_CONFIGS)) {
@@ -1401,6 +1440,16 @@ async function applyAgentToolBundle(active) {
     return { status: "legacy", contract_version: bundle.adapters?.contract_version || null };
   }
   const definitions = compileAgentToolDefinitions(bundle);
+  const fingerprint = agentToolFingerprint("dynamic", active);
+  if (fingerprint === appliedAgentToolFingerprint) {
+    return {
+      status: "active",
+      contract_version: bundle.agent_tools.contract_version,
+      tools: definitions.map((item) => item.name),
+      unchanged: true
+    };
+  }
+  appliedAgentToolFingerprint = fingerprint;
   initialAgentToolMode = "dynamic";
   initialAgentToolDefinitions = definitions;
   for (const definition of definitions) {
@@ -1418,6 +1467,10 @@ async function applyAgentToolBundle(active) {
     contract_version: bundle.agent_tools.contract_version,
     tools: definitions.map((item) => item.name)
   };
+}
+
+function agentToolFingerprint(mode, active) {
+  return `${mode}:${active.authority?.id || ""}:${active.bundle_digest}`;
 }
 
 function registerStableAgentTool(mcpServer, name, handler) {
@@ -1473,6 +1526,8 @@ function registerLegacyMutationTool(mcpServer, name, config, handler) {
 }
 
 function setAgentToolsUnavailable() {
+  if (appliedAgentToolFingerprint === "unavailable") return;
+  appliedAgentToolFingerprint = "unavailable";
   initialAgentToolMode = "unavailable";
   initialAgentToolDefinitions = [];
   for (const registered of agentToolRegistrations.values()) registered.disable();

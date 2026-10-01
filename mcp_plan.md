@@ -896,7 +896,9 @@ Inbox check.
 - Stable semantic create/reply/complete/fail/follow-up tools sit above a
   versioned wire adapter. Local identity and current Task context supply protocol
   fields that Local Agents must not invent.
-- Startup and 426 recovery negotiate with Relay. Verified bundles are isolated
+- Startup applies the locally verified bundle cache and completes MCP initialize
+  without waiting on Relay, then negotiates the current protocol in the
+  background; 426 recovery negotiates on demand. Verified bundles are isolated
   by authority/origin, staged, digest-checked, schema-checked, and atomically
   activated under an inter-process lock with last-known-good recovery.
 - The adapter is restricted data mapping, never remotely programmable code.
@@ -908,6 +910,11 @@ Inbox check.
 - Verified 2026-07-19 with 190 unit tests, MCP smoke coverage for same-key
   one-time 426 retry, and real HTTP negotiation/assembly of all five v0.5
   semantic operations.
+- Verified 2026-10-01: cache-first MCP startup (initialize with no remote wait,
+  cached dynamic tools before the relay answers, background negotiation with
+  deduped in-flight refresh and change-only `tools/list_changed`) with 298 unit
+  tests, the MCP smoke test, and cold-start probes (initialize 185-345ms under
+  a 2500-3000ms delayed relay) in PR #101.
 - Production Relay negotiation returned `hot_patch` for runtime `0.2.0`, bundle
   revision `1`, and an authority/origin-bound v0.5 bundle with no missing
   capabilities.

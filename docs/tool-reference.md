@@ -55,7 +55,13 @@ allowlist, protected bindings, and schemas are checked before activation.
 Reports the MCP runtime version and capabilities, current negotiation action,
 active verified bundle, configured primary protocol, Listener compatibility
 protocols, and whether a new MCP code release is required. Set `refresh=true`
-to negotiate again.
+to negotiate again; if a background negotiation is already running, the call
+waits on that same negotiation instead of issuing a second one.
+
+At MCP startup the verified protocol cache is applied locally so `initialize`
+never waits on the Relay, and the first negotiation runs in the background.
+Dynamic Agent tools appear in `tools/list` once a verified bundle is active;
+until then only static tools are listed.
 
 The response also includes the process-loaded and currently installed runtime
 generations. When they differ, `restart_required` is true and every mutation
