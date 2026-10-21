@@ -150,6 +150,14 @@ identity, bypass confirmation, or control local side effects.
 
 #### File attachments in replies
 
+A text part is `{"kind": "text", "text": "..."}`. The reply and
+`agentrelay_prepare_local_action` reject a part carrying `type` instead of
+`kind`, a `text` field without `kind:"text"`, and a
+`enablement-relay-result-v1` JSON payload whose `request_id`, `outcome`, or
+boolean `write_attempted` is missing (incident 14158: a `type:"text"` result
+was delivered but rejected by the SupportPortal consumer). Build standard
+result parts with `node scripts/agentrelay-build-result.mjs --result=<file>`.
+
 `agentrelay_reply` parts may include file parts. Pass the local absolute path and
 let the guard do the rest:
 
