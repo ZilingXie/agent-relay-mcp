@@ -22,6 +22,7 @@ import {
   streamResponseToFile
 } from "../scripts/agentrelay-files-client.mjs";
 import { compileAgentToolDefinitions } from "../scripts/agentrelay-agent-tools.mjs";
+import { validateReplyParts } from "../scripts/agentrelay-message-parts.mjs";
 import { executeSemanticCreate } from "../scripts/agentrelay-semantic-client.mjs";
 import { CoordinatorGrantClient } from "../scripts/agentrelay-coordinator-grant.mjs";
 import { maybeHandleProtocolNegotiation, negotiateCurrentProtocol, negotiateProtocolVersion, readCachedVerifiedProtocol, syncCurrentProtocol, syncProtocolVersion } from "../scripts/protocol-sync.mjs";
@@ -751,6 +752,21 @@ function registerTools(mcpServer) {
     },
     async ({ taskId, actionType, payloadJson, clientActionId, confirmationRef }) => {
       const payload = parseRequiredJsonObject(payloadJson, "payloadJson");
+      // Reject a malformed reply-part contract before it can be prepared
+      // (14158: {"type":"text"} slipped through and was rejected downstream).
+      if (actionType === "reply") {
+        try {
+          validateReplyParts(payload?.parts);
+        } catch (error) {
+          return jsonResult({
+            ok: false,
+            status: "rejected",
+            code: "MESSAGE_PARTS_INVALID",
+            taskId,
+            message: error.message
+          });
+        }
+      }
       return jsonResult(await prepareLocalAction({
         stateRoot,
         taskId,
@@ -1227,6 +1243,22 @@ function registerCoordinatorGrantTools(mcpServer) {
 
 async function executeSemanticTaskAction({ args, operation, resultTaskMode }) {
   let currentTask = null;
+  if (operation === "reply") {
+    // Send-side message-part contract (C1/C2): reject before any Relay
+    // interaction. Structural errors only — payload content never enters
+    // the error text.
+    try {
+      validateReplyParts(args?.parts);
+    } catch (error) {
+      return {
+        ok: false,
+        status: "rejected",
+        code: "MESSAGE_PARTS_INVALID",
+        taskId: String(args?.taskId || ""),
+        message: error.message
+      };
+    }
+  }
   return executeMcpTaskAction({
     args,
     actionType: operation,

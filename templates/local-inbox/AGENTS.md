@@ -143,7 +143,10 @@ Order of work:
    success output never substitutes for it).
 7. Draft the `enablement-relay-result-v1` JSON, stop for the second approval.
 8. After the second explicit approval: `agentrelay_prepare_local_action` plus
-   the single matching AgentRelay reply. That reply is the only AgentRelay
+   the single matching AgentRelay reply. A reply text part is
+   `{"kind":"text","text":...}` — `type` is not an alias and both the
+   prepare and send boundaries reject it; build enablement result parts with
+   `node scripts/agentrelay-build-result.mjs --result=<approved.json>`. That reply is the only AgentRelay
    mutation from the local side.
 
 Until the applicable approval, the enablement profile forbids exactly: any
