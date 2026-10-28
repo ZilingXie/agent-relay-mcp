@@ -773,8 +773,8 @@ test("inbox UI recomputes expired Relay visibility without mutating the local is
     assert.equal(issue.needsHuman, false);
     assert.equal(snapshot.counts.needsHuman, 0);
     assert.equal(snapshot.counts.total, 2);
-    assert.equal(snapshot.counts.closed, 1);
-    assert.equal(issueWorkflowStatus(issue), "complete");
+    assert.equal(snapshot.counts.closed, 0);
+    assert.equal(issueWorkflowStatus(issue), "expired");
     assert.equal(await readFile(issuesPath, "utf8"), before);
   } finally {
     await new Promise((resolveClose) => server.close(resolveClose));
@@ -1260,7 +1260,7 @@ test("issueWorkflowStatus assigns each task to one sidebar folder by precedence"
   const cases = [
     [{ taskId: "archived", localStatus: "archived", relayStatus: "failed", executorStatus: "failed" }, "archived"],
     [{ taskId: "complete", localStatus: "closed", messageDeliveryStatus: "failed" }, "complete"],
-    [{ taskId: "expired", relayStatus: "expired", messageDeliveryStatus: "failed", needsHuman: true }, "complete"],
+    [{ taskId: "expired", relayStatus: "expired", messageDeliveryStatus: "failed", needsHuman: true }, "expired"],
     [{ taskId: "cancelled", relayStatus: "cancelled", pendingOnHumanId: "zac", needsHuman: true }, "complete"],
     [{ taskId: "task-failed", relayStatus: "failed" }, "failed"],
     [{ taskId: "delivery-failed", messageDeliveryStatus: "failed" }, "failed"],
@@ -1277,11 +1277,11 @@ test("issueWorkflowStatus assigns each task to one sidebar folder by precedence"
     assert.equal(issueWorkflowStatus(issue), expected, issue.taskId);
   }
   assert.deepEqual(
-    Object.fromEntries(["pending", "replied", "failed", "archived", "complete"].map((status) => [
+    Object.fromEntries(["pending", "replied", "failed", "archived", "complete", "expired"].map((status) => [
       status,
       cases.filter(([issue]) => issueWorkflowStatus(issue) === status).length
     ])),
-    { pending: 2, replied: 2, failed: 5, archived: 1, complete: 3 }
+    { pending: 2, replied: 2, failed: 5, archived: 1, complete: 2, expired: 1 }
   );
   assert.equal(classifyIssueFilter(cases[9][0], "pending_tasks"), true);
   assert.equal(classifyIssueFilter(cases[11][0], "replied"), true);
@@ -1289,7 +1289,8 @@ test("issueWorkflowStatus assigns each task to one sidebar folder by precedence"
   assert.equal(classifyIssueFilter(cases[0][0], "all"), true);
   assert.equal(classifyIssueFilter(cases[1][0], "complete"), true);
   assert.equal(classifyIssueFilter(cases[2][0], "pending_tasks"), false);
-  assert.equal(classifyIssueFilter(cases[2][0], "complete"), true);
+  assert.equal(classifyIssueFilter(cases[2][0], "complete"), false);
+  assert.equal(classifyIssueFilter(cases[2][0], "expired"), true);
 });
 
 test("inbox UI server disables local reply submission for personal-agent notifier mode", async () => {
@@ -2202,6 +2203,30 @@ test("inbox UI serves a two-pane chat workspace and dashboard as a separate page
     assert.match(js, /method: "DELETE"/);
     assert.match(js, /trashIcon/);
     assert.match(js, /function issueFolders/);
+    // Execute the functions actually served to the browser in both sidebar modes.
+    const folderContext = vm.createContext({});
+    const functionSource = (name, nextName) => js.slice(js.indexOf("function " + name + "("), js.indexOf("function " + nextName + "("));
+    vm.runInContext(
+      'let showCompleted = false; const ARCHIVE_FOLDER_KEY = "archive";\n' +
+      functionSource("isNonActionableTerminalIssue", "issueWorkflowStatus") +
+      js.slice(js.indexOf("function issueWorkflowStatus("), js.indexOf("const SIDEBAR_MIN_WIDTH")) +
+      functionSource("issueFolders", "issueFolder"), folderContext);
+    for (const showClosed of [false, true]) {
+      const folders = vm.runInContext(`
+        showCompleted = ${showClosed};
+        issueFolders([
+          { taskId: "deadline", relayStatus: "open", taskExpiresAt: 1, needsHuman: true },
+          { taskId: "expired", relayStatus: "expired", needsHuman: true },
+          { taskId: "active", relayStatus: "open", needsHuman: true },
+          { taskId: "archived", relayStatus: "expired", localStatus: "archived" }
+        ]).map(folder => ({ key: folder.key, tasks: folder.issues.map(issue => issue.taskId) }))
+      `, folderContext);
+      const plainFolders = JSON.parse(JSON.stringify(folders));
+      assert.deepEqual(plainFolders.find(folder => folder.key === "expired").tasks, ["deadline", "expired"]);
+      assert.deepEqual(plainFolders.find(folder => folder.key === "pending_tasks").tasks, ["active"]);
+      assert.deepEqual(plainFolders.find(folder => folder.key === "archive").tasks, ["archived"]);
+    }
+
     assert.match(js, /function isNonActionableTerminalIssue/);
     assert.match(js, /function issueFolder/);
     assert.match(js, /FOLDER_COLLAPSE_KEY/);
@@ -2592,3 +2617,17 @@ async function withTimeout(promise, timeoutMs, message) {
     clearTimeout(timer);
   }
 }
+
+
+test("deadline expiration removes open tasks from pending while preserving archive and closure", () => {
+  const now = 2000000;
+  const issue = { relayStatus: "open", taskExpiresAt: 2000, needsHuman: true };
+  assert.equal(issueWorkflowStatus(issue, { now: now - 1 }), "pending");
+  assert.equal(issueWorkflowStatus(issue, { now }), "expired");
+  assert.equal(issueWorkflowStatus({ ...issue, localStatus: "archived" }, { now }), "archived");
+  assert.equal(issueWorkflowStatus({ ...issue, localStatus: "closed" }, { now }), "complete");
+  assert.equal(issueWorkflowStatus({ ...issue, relayStatus: "completed" }, { now }), "complete");
+  for (const taskExpiresAt of [null, 0, "invalid"]) {
+    assert.equal(issueWorkflowStatus({ ...issue, taskExpiresAt }, { now }), "pending");
+  }
+});

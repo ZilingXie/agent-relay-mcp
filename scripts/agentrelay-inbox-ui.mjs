@@ -904,13 +904,17 @@ export function classifyIssueFilter(issue, filter, { localAgentId = process.env.
   if (filter === "needs" || filter === "pending_human" || filter === "pending_tasks") return status === "pending";
   if (filter === "pending_remote" || filter === "delivered" || filter === "replied") return status === "replied";
   if (filter === "failed") return status === "failed";
+  if (filter === "expired") return status === "expired";
   if (filter === "completed" || filter === "complete") return status === "complete";
   return true;
 }
 
-export function issueWorkflowStatus(issue) {
+export function issueWorkflowStatus(issue, { now = Date.now() } = {}) {
   if (issue.localStatus === "archived") return "archived";
+  if (issue.relayStatus === "expired" && issue.localStatus !== "closed") return "expired";
   if (isNonActionableTerminalIssue(issue)) return "complete";
+  const expiresAt = Number(issue.taskExpiresAt);
+  if (issue.relayStatus === "open" && Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt * 1000 <= now) return "expired";
   if (
     issue.relayStatus === "failed" ||
     issue.messageDeliveryStatus === "failed" ||
@@ -3921,6 +3925,11 @@ function issueFolders(issues) {
       issues: issues.filter((issue) => issueWorkflowStatus(issue) === "failed")
     },
     {
+      key: "expired",
+      title: "Expired",
+      issues: issues.filter((issue) => issueWorkflowStatus(issue) === "expired")
+    },
+    {
       key: ARCHIVE_FOLDER_KEY,
       title: "Archive",
       issues: issues.filter((issue) => issueWorkflowStatus(issue) === "archived")
@@ -3937,6 +3946,7 @@ function issueFolders(issues) {
     folders.find((folder) => folder.key === "pending_tasks"),
     folders.find((folder) => folder.key === "replied"),
     folders.find((folder) => folder.key === "failed"),
+    folders.find((folder) => folder.key === "expired"),
     folders.find((folder) => folder.key === ARCHIVE_FOLDER_KEY)
   ].filter(Boolean);
 }
@@ -3988,6 +3998,7 @@ function classifyIssue(issue, filter) {
   if (filter === "needs" || filter === "pending_human" || filter === "pending_tasks") return status === "pending";
   if (filter === "pending_remote" || filter === "delivered" || filter === "replied") return status === "replied";
   if (filter === "failed") return status === "failed";
+  if (filter === "expired") return status === "expired";
   if (filter === "completed" || filter === "complete") return status === "complete";
   return true;
 }
